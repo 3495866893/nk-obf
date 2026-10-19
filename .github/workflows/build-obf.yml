@@ -73,7 +73,7 @@ jobs:
         run: |
           set -eux
           tar -xzf kit.tar.gz
-          ls ensia ensia/src | head
+          ls ensia/src | head
 
       - name: build ensia plugin (host x86_64)
         run: |
@@ -90,17 +90,17 @@ jobs:
           set -eux
           curl -L --retry 3 -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
           unzip -q ndk.zip
-          ls -d android-ndk-r29*/ | head
+          NDK_DIR=$(ls -d android-ndk-r29*/ | head -1)
+          echo "NDK_DIR=${NDK_DIR%/}" >> $GITHUB_ENV
+          ls "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld"
+          ls "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/21/lib/linux/aarch64/libunwind.a" || true
 
       - name: smoke test (hello + plugin)
         run: |
           set -eux
-          cd $GITHUB_WORKSPACE
-          NDK=$(ls -d android-ndk-r29*/ | head -1)
-          SYS=$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot
-          LLD=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld
+          SYS=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+          LLD=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld
           PLUGIN=$(find ensia-build -name "*.so" | head -1)
-          echo "PLUGIN=$PLUGIN"
           cat > /tmp/hello.c <<'EOF'
           #include <stdio.h>
           int main(void){ printf("hello %s\n", "obf-marker-string"); return 0; }
@@ -109,11 +109,11 @@ jobs:
           export ENSIA_PRESET=max
           export ENSIA_CONFIG=$PWD/ensia/config/presets/max-all.toml
           llvm-build/bin/clang --target=aarch64-linux-android21 --sysroot=$SYS \
-            -fpass-plugin=$PLUGIN -O2 --ld-path=$LLD \
-            -o /tmp/hello /tmp/hello.c 2>&1 | tail -40 || true
+            -fpass-plugin=$PLUGIN -O2 --ld-path=$LLD -nostdlib++ \
+            -o /tmp/hello /tmp/hello.c 2>&1 | tail -60 || true
           if [ -f /tmp/hello ]; then
             echo "SMOKE OK"; ls -l /tmp/hello
-            strings /tmp/hello | grep -c "obf-marker-string" || true
+            echo "明文残留次数: $(strings /tmp/hello | grep -c obf-marker-string || true)"
           else
             echo "SMOKE FAILED"
           fi
@@ -121,26 +121,27 @@ jobs:
       - name: build obfuscated lucifer
         run: |
           set -eux
-          NDK=$(ls -d android-ndk-r29*/ | head -1)
-          SYS=$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot
-          LLD=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld
+          SYS=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+          LLD=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld
+          RT=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/21/lib/linux/aarch64
+          LIBDIR=$SYS/usr/lib/aarch64-linux-android
           PLUGIN=$(find ensia-build -name "*.so" | head -1)
           export ENSIA=1
           export ENSIA_PRESET=max
           export ENSIA_CONFIG=$PWD/ensia/config/presets/max-all.toml
-          LIBDIR=$SYS/usr/lib/aarch64-linux-android
           llvm-build/bin/clang++ --target=aarch64-linux-android21 --sysroot=$SYS \
             -fpass-plugin=$PLUGIN \
             -O2 -fPIE -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
             -fvisibility=hidden -ffunction-sections -fdata-sections -fno-ident \
             -DDEFENSE_LEVEL=3 -DDEFENSE_INTERVAL_MS=2000 \
-            -nostdlib++ \
-            --ld-path=$LLD \
+            -nostdlib++ --ld-path=$LLD \
             -Wl,--gc-sections -Wl,--exclude-libs,ALL \
             -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack \
             -Wl,--build-id=none -Wl,--strip-all \
+            -Wl,--start-group \
+            "$LIBDIR/libc++_static.a" "$LIBDIR/libc++abi.a" "$RT/libunwind.a" \
+            -lc -lm -ldl -Wl,--end-group \
             -o lucifer proj/mian.cpp proj/defense.c \
-            "$LIBDIR/libc++_static.a" "$LIBDIR/libc++abi.a" "$LIBDIR/libunwind.a" \
             -lEGL -lGLESv2 -lGLESv3 -landroid -llog
 
       - name: inspect
@@ -148,7 +149,6 @@ jobs:
         run: |
           ls -l lucifer 2>/dev/null || echo "no binary"
           file lucifer 2>/dev/null || true
-          strings lucifer 2>/dev/null | wc -l || true
 
       - uses: actions/upload-artifact@v4
         if: always()
