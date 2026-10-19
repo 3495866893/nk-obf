@@ -1,0 +1,48 @@
+name: build-plugin
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps (clang-21 + llvm-21-dev)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget lsb-release gnupg ninja-build unzip xz-utils
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm.asc >/dev/null
+          CODENAME=$(lsb_release -cs)
+          echo "deb http://apt.llvm.org/$CODENAME/ llvm-toolchain-$CODENAME-21 main" | sudo tee /etc/apt/sources.list.d/llvm21.list
+          sudo apt-get update
+          sudo apt-get install -y clang-21 llvm-21-dev
+          clang-21 --version | head -1
+          ls -d /usr/lib/llvm-21/include
+
+      - name: ndk sysroot
+        run: |
+          curl -fL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q ndk.zip
+          echo "NDK=$PWD/android-ndk-r29" >> "$GITHUB_ENV"
+
+      - name: unpack kit
+        run: |
+          mkdir -p kit
+          tar -xzf kit.tar.gz -C kit
+          chmod +x kit/ensia/oneclick/*.sh
+
+      - name: build libEnsia.so (aarch64 android)
+        run: |
+          bash kit/ensia/oneclick/build-plugin-android-cross.sh \
+            --sysroot "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" \
+            --src "$PWD/kit/ensia/src" \
+            --api 21 --jobs 4 --out "$PWD/libEnsia.so"
+          readelf -h libEnsia.so | grep -E 'Machine|Type'
+          readelf --dyn-syms -W libEnsia.so | grep -c llvmGetPassPluginInfo || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libEnsia
+          path: libEnsia.so
+          if-no-files-found: error
