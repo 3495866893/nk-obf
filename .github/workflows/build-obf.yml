@@ -6,9 +6,11 @@ on:
     paths:
       - "proj/**"
       - ".github/workflows/build-obf.yml"
+      - "ci/**"
 
 env:
   LLVM_VER: "21.1.8"
+  WORK: /mnt/work
 
 jobs:
   build:
@@ -17,38 +19,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: deps
+      - name: disk & deps
         run: |
+          set -eux
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build cmake ccache xz-utils curl unzip zlib1g-dev
+          sudo mkdir -p $WORK && sudo chown $(id -u):$(id -g) $WORK
+          df -h / $WORK
 
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1
+      - name: restore llvm build
+        id: restore
+        uses: actions/cache/restore@v4
         with:
-          key: llvm-${{ env.LLVM_VER }}
-
-      - name: cache llvm build
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: llvm-build
-          key: llvm-build-${{ env.LLVM_VER }}-v1
+          path: /mnt/work/llvm-build
+          key: llvm-build-${{ env.LLVM_VER }}-v3
 
       - name: fetch llvm source
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: steps.restore.outputs.cache-hit != 'true'
         run: |
           set -eux
-          V=$LLVM_VER
-          curl -L --retry 3 -o llvm.tar.xz \
-            https://github.com/llvm/llvm-project/releases/download/llvmorg-$V/llvm-project-$V.src.tar.xz
-          mkdir -p llvm-src
-          tar -xf llvm.tar.xz -C llvm-src --strip-components=1
+          curl -L --retry 3 -o $WORK/llvm.tar.xz \
+            https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VER }}/llvm-project-${{ env.LLVM_VER }}.src.tar.xz
+          mkdir -p $WORK/llvm-src
+          tar -xf $WORK/llvm.tar.xz -C $WORK/llvm-src --strip-components=1
+          rm -f $WORK/llvm.tar.xz
 
       - name: configure llvm
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: steps.restore.outputs.cache-hit != 'true'
         run: |
           set -eux
-          cmake -S llvm-src/llvm -B llvm-build -G Ninja \
+          cmake -S $WORK/llvm-src/llvm -B $WORK/llvm-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_PROJECTS=clang \
             -DLLVM_TARGETS_TO_BUILD=AArch64 \
@@ -58,16 +58,21 @@ jobs:
             -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_DOCS=OFF \
             -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_ENABLE_ARCMT=OFF \
-            -DLLVM_ENABLE_ZSTD=OFF \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DLLVM_ENABLE_ZSTD=OFF
 
       - name: build clang
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: steps.restore.outputs.cache-hit != 'true'
         run: |
           set -eux
-          ninja -C llvm-build clang
-          ls -lh llvm-build/bin/clang++
+          ninja -C $WORK/llvm-build clang llvm-config 2>&1 | tail -100
+          ls -lh $WORK/llvm-build/bin/clang++
+
+      - name: save llvm build cache
+        if: always() && steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /mnt/work/llvm-build
+          key: llvm-build-${{ env.LLVM_VER }}-v3
 
       - name: unpack ensia kit
         run: |
@@ -75,85 +80,48 @@ jobs:
           tar -xzf kit.tar.gz
           ls ensia/src | head
 
-      - name: build ensia plugin (host x86_64)
+      - name: build ensia plugin (只编 Ensia 目标，跳过 Rust 变体)
         run: |
           set -eux
-          cmake -S ensia/src -B ensia-build -G Ninja \
+          cmake -S ensia/src -B $WORK/ensia-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_DIR=$PWD/llvm-build/lib/cmake/llvm \
-            -DLLVM_NEXT=1
-          ninja -C ensia-build
-          find ensia-build -name "*.so" -exec ls -lh {} \;
+            -DLLVM_DIR=$WORK/llvm-build/lib/cmake/llvm 2>&1 | tail -30
+          ninja -C $WORK/ensia-build Ensia 2>&1 | tail -80
+          find $WORK/ensia-build -name "*.so" -exec ls -lh {} \;
+          OBJ=$(find $WORK/ensia-build -name "*.so" | head -1)
+          nm -D "$OBJ" | grep -c llvmGetPassPluginInfo || true
 
       - name: fetch android ndk r29
         run: |
           set -eux
-          curl -L --retry 3 -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
-          unzip -q ndk.zip
-          NDK_DIR=$(ls -d android-ndk-r29*/ | head -1)
+          curl -L --retry 3 -o $WORK/ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q $WORK/ndk.zip -d $WORK
+          rm -f $WORK/ndk.zip
+          NDK_DIR=$(ls -d $WORK/android-ndk-r29*/ | head -1)
           echo "NDK_DIR=${NDK_DIR%/}" >> $GITHUB_ENV
-          ls "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld"
-          ls "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/21/lib/linux/aarch64/libunwind.a" || true
 
-      - name: smoke test (hello + plugin)
+      - name: build lucifer
         run: |
           set -eux
-          SYS=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot
-          LLD=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld
-          PLUGIN=$(find ensia-build -name "*.so" | head -1)
-          cat > /tmp/hello.c <<'EOF'
-          #include <stdio.h>
-          int main(void){ printf("hello %s\n", "obf-marker-string"); return 0; }
-          EOF
-          export ENSIA=1
-          export ENSIA_PRESET=max
-          export ENSIA_CONFIG=$PWD/ensia/config/presets/max-all.toml
-          llvm-build/bin/clang --target=aarch64-linux-android21 --sysroot=$SYS \
-            -fpass-plugin=$PLUGIN -O2 --ld-path=$LLD -nostdlib++ \
-            -o /tmp/hello /tmp/hello.c 2>&1 | tail -60 || true
-          if [ -f /tmp/hello ]; then
-            echo "SMOKE OK"; ls -l /tmp/hello
-            echo "明文残留次数: $(strings /tmp/hello | grep -c obf-marker-string || true)"
-          else
-            echo "SMOKE FAILED"
-          fi
+          export CLANG=$WORK/llvm-build/bin/clang++
+          export LLVM_DIR=$WORK/llvm-build
+          bash ci/build-lucifer.sh "$NDK_DIR" "$(find $WORK/ensia-build -name '*.so' | head -1)" lucifer 2>&1 | tail -120
 
-      - name: build obfuscated lucifer
-        run: |
-          set -eux
-          SYS=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot
-          LLD=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld
-          RT=$PWD/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/21/lib/linux/aarch64
-          LIBDIR=$SYS/usr/lib/aarch64-linux-android
-          PLUGIN=$(find ensia-build -name "*.so" | head -1)
-          export ENSIA=1
-          export ENSIA_PRESET=max
-          export ENSIA_CONFIG=$PWD/ensia/config/presets/max-all.toml
-          llvm-build/bin/clang++ --target=aarch64-linux-android21 --sysroot=$SYS \
-            -fpass-plugin=$PLUGIN \
-            -O2 -fPIE -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
-            -fvisibility=hidden -ffunction-sections -fdata-sections -fno-ident \
-            -DDEFENSE_LEVEL=3 -DDEFENSE_INTERVAL_MS=2000 \
-            -nostdlib++ --ld-path=$LLD \
-            -Wl,--gc-sections -Wl,--exclude-libs,ALL \
-            -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack \
-            -Wl,--build-id=none -Wl,--strip-all \
-            -Wl,--start-group \
-            "$LIBDIR/libc++_static.a" "$LIBDIR/libc++abi.a" "$RT/libunwind.a" \
-            -lc -lm -ldl -Wl,--end-group \
-            -o lucifer proj/mian.cpp proj/defense.c \
-            -lEGL -lGLESv2 -lGLESv3 -landroid -llog
-
-      - name: inspect
+      - name: verify
         if: always()
         run: |
+          echo "=== 产物检查 ==="
           ls -l lucifer 2>/dev/null || echo "no binary"
           file lucifer 2>/dev/null || true
+          if [ -f lucifer ]; then
+            echo "体积: $(stat -c%s lucifer) 字节"
+            echo "机器码: $(od -An -tu2 -j18 -N2 lucifer)  (183=AArch64)"
+            echo "clang 指纹残留: $(strings lucifer | grep -ci 'clang version' || true)"
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: lucifer-obf
-          path: |
-            lucifer
+          path: lucifer
           if-no-files-found: warn
