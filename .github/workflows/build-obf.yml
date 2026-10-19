@@ -1,0 +1,159 @@
+name: build-obf
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "proj/**"
+      - ".github/workflows/build-obf.yml"
+
+env:
+  LLVM_VER: "21.1.8"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build cmake ccache xz-utils curl unzip zlib1g-dev
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: llvm-${{ env.LLVM_VER }}
+
+      - name: cache llvm build
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: llvm-build
+          key: llvm-build-${{ env.LLVM_VER }}-v1
+
+      - name: fetch llvm source
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          V=$LLVM_VER
+          curl -L --retry 3 -o llvm.tar.xz \
+            https://github.com/llvm/llvm-project/releases/download/llvmorg-$V/llvm-project-$V.src.tar.xz
+          mkdir -p llvm-src
+          tar -xf llvm.tar.xz -C llvm-src --strip-components=1
+
+      - name: configure llvm
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          cmake -S llvm-src/llvm -B llvm-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS=clang \
+            -DLLVM_TARGETS_TO_BUILD=AArch64 \
+            -DLLVM_ENABLE_PLUGINS=ON \
+            -DLLVM_EXPORT_SYMBOLS_FOR_PLUGINS=ON \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_DOCS=OFF \
+            -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_ENABLE_ARCMT=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: build clang
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          ninja -C llvm-build clang
+          ls -lh llvm-build/bin/clang++
+
+      - name: unpack ensia kit
+        run: |
+          set -eux
+          tar -xzf kit.tar.gz
+          ls ensia ensia/src | head
+
+      - name: build ensia plugin (host x86_64)
+        run: |
+          set -eux
+          cmake -S ensia/src -B ensia-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_DIR=$PWD/llvm-build/lib/cmake/llvm \
+            -DLLVM_NEXT=1
+          ninja -C ensia-build
+          find ensia-build -name "*.so" -exec ls -lh {} \;
+
+      - name: fetch android ndk r29
+        run: |
+          set -eux
+          curl -L --retry 3 -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q ndk.zip
+          ls -d android-ndk-r29*/ | head
+
+      - name: smoke test (hello + plugin)
+        run: |
+          set -eux
+          cd $GITHUB_WORKSPACE
+          NDK=$(ls -d android-ndk-r29*/ | head -1)
+          SYS=$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+          LLD=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld
+          PLUGIN=$(find ensia-build -name "*.so" | head -1)
+          echo "PLUGIN=$PLUGIN"
+          cat > /tmp/hello.c <<'EOF'
+          #include <stdio.h>
+          int main(void){ printf("hello %s\n", "obf-marker-string"); return 0; }
+          EOF
+          export ENSIA=1
+          export ENSIA_PRESET=max
+          export ENSIA_CONFIG=$PWD/ensia/config/presets/max-all.toml
+          llvm-build/bin/clang --target=aarch64-linux-android21 --sysroot=$SYS \
+            -fpass-plugin=$PLUGIN -O2 --ld-path=$LLD \
+            -o /tmp/hello /tmp/hello.c 2>&1 | tail -40 || true
+          if [ -f /tmp/hello ]; then
+            echo "SMOKE OK"; ls -l /tmp/hello
+            strings /tmp/hello | grep -c "obf-marker-string" || true
+          else
+            echo "SMOKE FAILED"
+          fi
+
+      - name: build obfuscated lucifer
+        run: |
+          set -eux
+          NDK=$(ls -d android-ndk-r29*/ | head -1)
+          SYS=$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+          LLD=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld
+          PLUGIN=$(find ensia-build -name "*.so" | head -1)
+          export ENSIA=1
+          export ENSIA_PRESET=max
+          export ENSIA_CONFIG=$PWD/ensia/config/presets/max-all.toml
+          LIBDIR=$SYS/usr/lib/aarch64-linux-android
+          llvm-build/bin/clang++ --target=aarch64-linux-android21 --sysroot=$SYS \
+            -fpass-plugin=$PLUGIN \
+            -O2 -fPIE -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
+            -fvisibility=hidden -ffunction-sections -fdata-sections -fno-ident \
+            -DDEFENSE_LEVEL=3 -DDEFENSE_INTERVAL_MS=2000 \
+            -nostdlib++ \
+            --ld-path=$LLD \
+            -Wl,--gc-sections -Wl,--exclude-libs,ALL \
+            -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack \
+            -Wl,--build-id=none -Wl,--strip-all \
+            -o lucifer proj/mian.cpp proj/defense.c \
+            "$LIBDIR/libc++_static.a" "$LIBDIR/libc++abi.a" "$LIBDIR/libunwind.a" \
+            -lEGL -lGLESv2 -lGLESv3 -landroid -llog
+
+      - name: inspect
+        if: always()
+        run: |
+          ls -l lucifer 2>/dev/null || echo "no binary"
+          file lucifer 2>/dev/null || true
+          strings lucifer 2>/dev/null | wc -l || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lucifer-obf
+          path: |
+            lucifer
+          if-no-files-found: warn
