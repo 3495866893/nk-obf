@@ -1,47 +1,39 @@
 #!/usr/bin/env bash
-# 构建 Ensia 插件（host x86_64），产出两个变体：
-#   libEnsia.so          —— LLVM 符号全部 UND，由宿主 clang 提供（首选）
-#   libEnsia-linked.so   —— 显式 DT_NEEDED libLLVM.so（兜底）
-set -uo pipefail
+# 构建 Ensia 插件（host x86_64）。失败就真失败（不再静默通过）。
+# 用法: bash ci/build-ensia.sh <src> <build> <llvm-build> [llvm-src]
+set -euo pipefail
 SRC="${1:-ensia/src}"
 BUILD="${2:-ensia-build}"
 LLVM_DIR="${3:-$PWD/llvm-build}"
+LLVM_SRC="${4:-$PWD/llvm-src}"
 
 CXX="$LLVM_DIR/bin/clang++"
 [ -x "$CXX" ] || CXX=$(command -v clang++)
+
 mkdir -p "$BUILD"
-
-CFLAGS=$("$LLVM_DIR/bin/llvm-config" --cxxflags 2>/dev/null || echo "-I$LLVM_DIR/include -std=c++17")
-CFLAGS="$CFLAGS -fPIC -O2 -fexceptions -DLLVM_NEXT=1 -DENSIA_TARGET_LLVM_VERSION=21"
-
 mapfile -t SRCS < <(find "$SRC/obfuscation" -name "*.cpp" ! -name "RustCompat.cpp")
-echo "源文件: ${#SRCS[@]}"
+echo "源文件: ${#SRCS[@]} 个"
+[ ${#SRCS[@]} -gt 0 ] || { echo "!! 没找到 ensia 源码"; exit 1; }
 
-echo "== 变体 1：不链 LLVM（符号留 UND）"
-# shellcheck disable=SC2086
-"$CXX" $CFLAGS -shared -Wl,-soname,libEnsia.so \
-  -I"$SRC/obfuscation/include" "${SRCS[@]}" -o "$BUILD/libEnsia.so" 2>&1 | tail -25
-ls -lh "$BUILD/libEnsia.so" 2>/dev/null || true
+INC=(-I"$LLVM_SRC/llvm/include" -I"$LLVM_DIR/include" -I"$SRC/obfuscation/include")
+FLAGS=(-fPIC -O2 -std=c++17 -fno-rtti -fexceptions -DLLVM_NEXT=1
+       -DENSIA_TARGET_LLVM_VERSION=21 -w)
 
-LLVMSO=$(ls "$LLVM_DIR"/lib/libLLVM*.so* 2>/dev/null | head -1 || true)
-if [ -n "$LLVMSO" ]; then
-  echo "== 变体 2：链接 $LLVMSO"
-  LLVM_LINK_DIR=$(dirname "$LLVMSO")
-  LLVM_LINK_NAME=$(basename "$LLVMSO" | sed 's/^lib//; s/\.so.*//')
-  # shellcheck disable=SC2086
-  "$CXX" $CFLAGS -shared -Wl,-soname,libEnsia-linked.so \
-    -I"$SRC/obfuscation/include" \
-    -L"$LLVM_LINK_DIR" -Wl,--no-as-needed -l"$LLVM_LINK_NAME" \
-    -Wl,-rpath,"$LLVM_LINK_DIR" \
-    "${SRCS[@]}" -o "$BUILD/libEnsia-linked.so" 2>&1 | tail -25
-  ls -lh "$BUILD/libEnsia-linked.so" 2>/dev/null || true
+echo "== 直接编译为插件（LLVM 符号留 UND，由宿主 clang 提供）"
+"$CXX" "${FLAGS[@]}" -shared -Wl,-soname,libEnsia.so "${INC[@]}" \
+  "${SRCS[@]}" -o "$BUILD/libEnsia.so"
+
+[ -f "$BUILD/libEnsia.so" ] || { echo "!! libEnsia.so 没生成"; exit 1; }
+ls -lh "$BUILD/libEnsia.so"
+
+echo "== 校验导出入口"
+if nm -D "$BUILD/libEnsia.so" | grep -q llvmGetPassPluginInfo; then
+  echo "OK: 导出 llvmGetPassPluginInfo"
 else
-  echo "（没有 libLLVM*.so，跳过变体 2）"
+  echo "!! 缺少 llvmGetPassPluginInfo"
+  exit 1
 fi
 
-echo "导出检查:"
-for f in "$BUILD"/libEnsia*.so; do
-  printf "  %s  entry=%s  UND_llvm=%s\n" "$(basename "$f")" \
-    "$(nm -D "$f" | grep -c llvmGetPassPluginInfo || true)" \
-    "$(nm -D "$f" | grep -c ' U .*llvm' || true)"
-done
+UND=$(nm -D "$BUILD/libEnsia.so" | grep -c " U .*llvm" || true)
+echo "UND llvm 符号: $UND"
+[ "$UND" -gt 100 ] || echo "!! 警告：UND 符号偏少，可能误链了 LLVM 静态库"
