@@ -2,6 +2,22 @@ name: build-obf
 
 on:
   workflow_dispatch:
+    inputs:
+      src_dir:
+        description: '源码目录（仓库内，如 proj）'
+        default: 'proj'
+      src_files:
+        description: '源文件（空格分隔，相对 src_dir）'
+        default: 'mian.cpp defense.c'
+      presets:
+        description: '混淆预设尝试顺序'
+        default: 'max mid'
+      defense_level:
+        description: 'defense.c 强度 0-3'
+        default: '3'
+      config_file:
+        description: 'Ensia TOML（反调试开关）'
+        default: 'ci/tuned.toml'
   push:
     paths:
       - "proj/**"
@@ -10,6 +26,7 @@ on:
 env:
   LLVM_VER: "21.1.8"
   WORK: /mnt/work
+  NK_VENDOR: "NK-Ollvm[QQ:3495866893][TG:https://t.me/nkhoook][Bilibili:小白鱼游戏] "
 
 jobs:
   build:
@@ -24,43 +41,49 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build cmake xz-utils curl unzip zlib1g-dev binutils zstd
           sudo mkdir -p $WORK && sudo chown $(id -u):$(id -g) $WORK
-          df -h / $WORK
+          df -h /
 
-      - name: 从上一次完成的 run 恢复 LLVM 构建树（成功/失败都试）
+      - name: restore llvm build tree
         id: restore
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
-          found=0
-          IDS=$(gh run list --workflow=build-obf.yml --limit 20 \
-                  --json databaseId,status \
-                  --jq '.[] | select(.status=="completed") | .databaseId' || true)
-          for id in $IDS; do
-            echo "尝试 run $id …"
-            rm -rf "$WORK/dl" && mkdir -p "$WORK/dl"
-            if gh run download "$id" -n llvm-build -D "$WORK/dl" 2>/dev/null \
-               && [ -f "$WORK/dl/llvm-build.tar.zst" ]; then
-              echo "拿到构建树: run $id"
-              mv "$WORK/dl/llvm-build.tar.zst" "$WORK/llvm-build.tar.zst"
-              found=1
-              break
-            fi
-          done
-          if [ "$found" = "1" ]; then
-            tar -I zstd -xf "$WORK/llvm-build.tar.zst" -C "$WORK"
+          got=""
+          echo "== 1) Release asset"
+          if gh release download llvm-build-21.1.8 -p llvm-build.tar.zst -D "$WORK" \
+               --repo "$GITHUB_REPOSITORY" --clobber 2>/dev/null \
+             && [ -f "$WORK/llvm-build.tar.zst" ]; then
+            got=release
+          fi
+          if [ -z "$got" ]; then
+            echo "== 2) recent run artifacts"
+            for id in $(gh run list --workflow=build-obf.yml --limit 20 \
+                          --json databaseId,status \
+                          --jq '.[] | select(.status=="completed") | .databaseId' || true); do
+              rm -rf "$WORK/dl"; mkdir -p "$WORK/dl"
+              if gh run download "$id" -n llvm-build -D "$WORK/dl" \
+                   --repo "$GITHUB_REPOSITORY" 2>/dev/null \
+                 && [ -f "$WORK/dl/llvm-build.tar.zst" ]; then
+                mv "$WORK/dl/llvm-build.tar.zst" "$WORK/llvm-build.tar.zst"
+                got="run-$id"
+                break
+              fi
+            done
+          fi
+          if [ -n "$got" ]; then
+            echo "source: $got ($(stat -c%s "$WORK/llvm-build.tar.zst") bytes)"
+            tar -I zstd -xf "$WORK/llvm-build.tar.zst" -C "$WORK" || true
             rm -f "$WORK/llvm-build.tar.zst"
             if [ -x "$WORK/llvm-build/bin/clang++" ]; then
               echo "hit=true" >> $GITHUB_OUTPUT
               du -sh "$WORK/llvm-build"
               exit 0
             fi
-            echo "解压后没有 clang++，仍从头编"
           fi
           echo "hit=false" >> $GITHUB_OUTPUT
 
       - name: fetch llvm source
-        if: steps.restore.outputs.hit != 'true'
         run: |
           set -eux
           curl -L --retry 3 -o $WORK/llvm.tar.xz \
@@ -69,8 +92,7 @@ jobs:
           tar -xf $WORK/llvm.tar.xz -C $WORK/llvm-src --strip-components=1
           rm -f $WORK/llvm.tar.xz
 
-      - name: configure llvm (动态 libLLVM，插件靠它解析符号)
-        if: steps.restore.outputs.hit != 'true'
+      - name: configure (CLANG_VENDOR = NK info)
         run: |
           set -eux
           cmake -S $WORK/llvm-src/llvm -B $WORK/llvm-build -G Ninja \
@@ -85,40 +107,45 @@ jobs:
             -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_DOCS=OFF \
             -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_ENABLE_ARCMT=OFF \
-            -DLLVM_ENABLE_ZSTD=OFF
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DCLANG_VENDOR="$NK_VENDOR"
 
-      - name: build clang
-        if: steps.restore.outputs.hit != 'true'
+      - name: build clang (incremental)
         run: |
           set -eux
-          ninja -C $WORK/llvm-build clang llvm-config 2>&1 | tail -60
-          ls -lh $WORK/llvm-build/bin/clang++ $WORK/llvm-build/lib/libLLVM*.so* || true
+          ninja -C $WORK/llvm-build clang llvm-config 2>&1 | tail -30
+          export LD_LIBRARY_PATH=$WORK/llvm-build/lib
+          $WORK/llvm-build/bin/clang --version
 
-      - name: 打包构建树（供下次复用）
-        if: steps.restore.outputs.hit != 'true'
+      - name: repack build tree
         run: |
           set -eux
           tar -I 'zstd -1 -T0' -cf $WORK/llvm-build.tar.zst -C $WORK llvm-build
           ls -lh $WORK/llvm-build.tar.zst
 
-      - name: 上传构建树 artifact
-        if: steps.restore.outputs.hit != 'true'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: llvm-build
           path: /mnt/work/llvm-build.tar.zst
           retention-days: 3
 
+      - name: upload build tree to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload llvm-build-21.1.8 "$WORK/llvm-build.tar.zst" \
+            --repo "$GITHUB_REPOSITORY" --clobber || true
+
       - name: unpack ensia kit
         run: |
           set -eux
           tar -xzf kit.tar.gz
-          ls ensia/src | head -5
+          ls ensia/src | head -3
 
       - name: build ensia plugin
         run: |
           set -eux
-          bash ci/build-ensia.sh ensia/src $WORK/ensia-build $WORK/llvm-build 2>&1 | tail -40
+          bash ci/build-ensia.sh ensia/src $WORK/ensia-build $WORK/llvm-build $WORK/llvm-src 2>&1 | tail -30
 
       - name: fetch android ndk r29
         run: |
@@ -129,34 +156,68 @@ jobs:
           NDK_DIR=$(ls -d $WORK/android-ndk-r29*/ | head -1)
           echo "NDK_DIR=${NDK_DIR%/}" >> $GITHUB_ENV
 
-      - name: smoke test (插件能否加载)
+      - name: smoke test
         run: |
           set -eux
           export LD_LIBRARY_PATH=$WORK/llvm-build/lib
           TC=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64
           PLUGIN=$(find $WORK/ensia-build -name "*.so" | head -1)
+          [ -n "$PLUGIN" ] || { echo "!! 没找到插件"; ls -R $WORK/ensia-build | head -20; exit 1; }
+          echo "插件: $PLUGIN"
           printf '#include <stdio.h>\nint main(void){printf("%%s\\n","marker-plain-string");return 0;}\n' > /tmp/h.c
           export ENSIA=1 ENSIA_PRESET=max
           export ENSIA_CONFIG=$PWD/ci/tuned.toml
-          set +e
           timeout 240 $WORK/llvm-build/bin/clang --target=aarch64-linux-android21 \
             --sysroot=$TC/sysroot --ld-path=$TC/bin/ld.lld \
-            -fpass-plugin=$PLUGIN -O2 -nostdlib++ -o /tmp/h /tmp/h.c 2>&1 | tail -20
-          set -e
+            -fpass-plugin=$PLUGIN -O2 -nostdlib++ -o /tmp/h /tmp/h.c 2>&1 | tail -15 || true
           if [ -f /tmp/h ]; then
-            echo "SMOKE OK  $(stat -c%s /tmp/h) 字节"
-            echo "明文残留(0=已加密): $(strings /tmp/h | grep -c marker-plain-string || true)"
+            echo "SMOKE OK $(stat -c%s /tmp/h) bytes"
+            echo "plaintext left: $(strings /tmp/h | grep -c marker-plain-string || true)"
+            echo "clang version strings: $(strings /tmp/h | grep -c 'clang version' || true)"
+            echo "NK strings: $(strings /tmp/h | grep -c 'NK-Ollvm' || true)"
           else
-            echo "SMOKE FAILED（继续尝试正式编译）"
+            echo "SMOKE FAILED"
           fi
 
       - name: build lucifer
         run: |
           set -eux
           export CLANG=$WORK/llvm-build/bin/clang++
-          export ENV_CFG_MAX=$PWD/ci/tuned.toml
-          export ENV_CFG_MID=$PWD/ensia/config/presets/mid.toml
-          bash ci/build-lucifer.sh "$NDK_DIR" "$(find $WORK/ensia-build -name '*.so' | head -1)" lucifer 2>&1 | tail -80
+          CFG="${{ github.event.inputs.config_file || 'ci/tuned.toml' }}"
+          [ -f "$CFG" ] && cp "$CFG" ensia/config/presets/max.toml && echo "使用配置: $CFG"
+          export SRC_DIR="${{ github.event.inputs.src_dir || 'proj' }}"
+          export SRC_FILES="${{ github.event.inputs.src_files || 'mian.cpp defense.c' }}"
+          export PRESETS="${{ github.event.inputs.presets || 'max mid' }}"
+          export DEFENSE_LVL="${{ github.event.inputs.defense_level || '3' }}"
+          bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" lucifer 2>&1 | tail -80
+          test -f lucifer || { echo "!! lucifer 未生成"; exit 1; }
+
+      - name: make nk-toolchain bundle
+        run: |
+          set -eux
+          mkdir -p nk-toolchain/bin
+          cat > nk-toolchain/source.properties <<EOF
+Pkg.Desc = NK-Ollvm toolchain (self-built LLVM $LLVM_VER + Ensia plugin)
+Pkg.Revision = $LLVM_VER
+Pkg.Ollvm = NK-Ollvm
+Pkg.Maintainer.QQ = 3495866893
+Pkg.Maintainer.TG = https://t.me/nkhoook
+Pkg.Maintainer.Bilibili = 小白鱼游戏
+Pkg.Tag = [NK-Ollvm]
+EOF
+          cat > nk-toolchain/bin/nk-banner <<'EOF'
+#!/bin/sh
+echo "------------------------------------------------"
+echo "        NK-Ollvm toolchain  (LLVM 21 + Ensia)"
+echo "  QQ: 3495866893"
+echo "  TG: https://t.me/nkhoook"
+echo "  Bilibili: 小白鱼游戏"
+echo "------------------------------------------------"
+EOF
+          chmod 755 nk-toolchain/bin/nk-banner
+          cp ci/brand.txt nk-toolchain/bin/nk-brand.txt
+          tar -czf nk-toolchain.tar.gz nk-toolchain
+          ls -l nk-toolchain.tar.gz
 
       - name: verify
         if: always()
@@ -164,9 +225,10 @@ jobs:
           ls -l lucifer 2>/dev/null || echo "no binary"
           file lucifer 2>/dev/null || true
           if [ -f lucifer ]; then
-            echo "体积: $(stat -c%s lucifer) 字节"
-            echo "机器码: $(od -An -tu2 -j18 -N2 lucifer)"
-            echo "clang 指纹: $(strings lucifer | grep -ci 'clang version' || true)"
+            echo "size: $(stat -c%s lucifer)"
+            echo "machine: $(od -An -tu2 -j18 -N2 lucifer)"
+            echo "NK-Ollvm strings: $(strings lucifer | grep -c 'NK-Ollvm' || true)"
+            echo "old fingerprints: $(strings lucifer | grep -Eic 'TUSI|clang version' || true)"
           fi
 
       - uses: actions/upload-artifact@v4
@@ -174,4 +236,11 @@ jobs:
         with:
           name: lucifer-obf
           path: lucifer
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nk-toolchain
+          path: nk-toolchain.tar.gz
           if-no-files-found: warn
