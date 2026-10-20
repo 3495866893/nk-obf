@@ -26,27 +26,38 @@ jobs:
           sudo mkdir -p $WORK && sudo chown $(id -u):$(id -g) $WORK
           df -h / $WORK
 
-      - name: 尝试从上次 run 的 artifact 恢复 LLVM 构建树
+      - name: 从上一次完成的 run 恢复 LLVM 构建树（成功/失败都试）
         id: restore
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
-          RUNID=$(gh run list --workflow=build-obf.yml --status=success --limit 10 \
-                    --json databaseId,createdAt --jq '.[0].databaseId' || true)
-          echo "候选 run: ${RUNID:-<无>}"
-          if [ -n "${RUNID:-}" ]; then
-            gh run download "$RUNID" -n llvm-build -D $WORK --repo "$GITHUB_REPOSITORY" || true
-          fi
-          if [ -f "$WORK/llvm-build.tar.zst" ]; then
-            echo "发现构建树压缩包，解压…"
-            tar -I zstd -xf "$WORK/llvm-build.tar.zst" -C $WORK
+          found=0
+          IDS=$(gh run list --workflow=build-obf.yml --limit 20 \
+                  --json databaseId,status \
+                  --jq '.[] | select(.status=="completed") | .databaseId' || true)
+          for id in $IDS; do
+            echo "尝试 run $id …"
+            rm -rf "$WORK/dl" && mkdir -p "$WORK/dl"
+            if gh run download "$id" -n llvm-build -D "$WORK/dl" 2>/dev/null \
+               && [ -f "$WORK/dl/llvm-build.tar.zst" ]; then
+              echo "拿到构建树: run $id"
+              mv "$WORK/dl/llvm-build.tar.zst" "$WORK/llvm-build.tar.zst"
+              found=1
+              break
+            fi
+          done
+          if [ "$found" = "1" ]; then
+            tar -I zstd -xf "$WORK/llvm-build.tar.zst" -C "$WORK"
             rm -f "$WORK/llvm-build.tar.zst"
-            echo "hit=true" >> $GITHUB_OUTPUT
-          else
-            echo "没有构建树缓存，需从头编译"
-            echo "hit=false" >> $GITHUB_OUTPUT
+            if [ -x "$WORK/llvm-build/bin/clang++" ]; then
+              echo "hit=true" >> $GITHUB_OUTPUT
+              du -sh "$WORK/llvm-build"
+              exit 0
+            fi
+            echo "解压后没有 clang++，仍从头编"
           fi
+          echo "hit=false" >> $GITHUB_OUTPUT
 
       - name: fetch llvm source
         if: steps.restore.outputs.hit != 'true'
