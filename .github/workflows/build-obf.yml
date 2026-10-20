@@ -126,9 +126,9 @@ jobs:
           PLUGIN=$(find $WORK/ensia-build -name "*.so" | head -1)
           printf '#include <stdio.h>\nint main(void){printf("%%s\\n","marker-plain-string");return 0;}\n' > /tmp/h.c
           export ENSIA=1 ENSIA_PRESET=max
-          export ENSIA_CONFIG=$PWD/ensia/config/presets/max-all.toml
+          export ENSIA_CONFIG=$PWD/ci/tuned.toml
           set +e
-          $WORK/llvm-build/bin/clang --target=aarch64-linux-android21 \
+          timeout 240 $WORK/llvm-build/bin/clang --target=aarch64-linux-android21 \
             --sysroot=$TC/sysroot --ld-path=$TC/bin/ld.lld \
             -fpass-plugin=$PLUGIN -O2 -nostdlib++ -o /tmp/h /tmp/h.c 2>&1 | tail -20
           set -e
@@ -143,6 +143,8 @@ jobs:
         run: |
           set -eux
           export CLANG=$WORK/llvm-build/bin/clang++
+          export ENV_CFG_MAX=$PWD/ci/tuned.toml
+          export ENV_CFG_MID=$PWD/ensia/config/presets/mid.toml
           bash ci/build-lucifer.sh "$NDK_DIR" "$(find $WORK/ensia-build -name '*.so' | head -1)" lucifer 2>&1 | tail -80
 
       - name: verify
