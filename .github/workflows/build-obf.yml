@@ -99,6 +99,7 @@ jobs:
           rm -f $WORK/llvm.tar.xz
 
       - name: configure (CLANG_VENDOR = NK info)
+        if: steps.restore.outputs.hit != 'true'
         run: |
           set -eux
           cmake -S $WORK/llvm-src/llvm -B $WORK/llvm-build -G Ninja \
@@ -117,6 +118,7 @@ jobs:
             -DCLANG_VENDOR="$NK_VENDOR"
 
       - name: build clang (incremental)
+        if: steps.restore.outputs.hit != 'true'
         run: |
           set -eux
           ninja -C $WORK/llvm-build clang llvm-config 2>&1 | tail -30
@@ -124,18 +126,21 @@ jobs:
           $WORK/llvm-build/bin/clang --version
 
       - name: repack build tree
+        if: steps.restore.outputs.hit != 'true'
         run: |
           set -eux
           tar -I 'zstd -1 -T0' -cf $WORK/llvm-build.tar.zst -C $WORK llvm-build
           ls -lh $WORK/llvm-build.tar.zst
 
       - uses: actions/upload-artifact@v4
+        if: steps.restore.outputs.hit != 'true'
         with:
           name: llvm-build
           path: /mnt/work/llvm-build.tar.zst
           retention-days: 3
 
       - name: upload build tree to release
+        if: steps.restore.outputs.hit != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
