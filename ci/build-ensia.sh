@@ -25,8 +25,10 @@ echo "源文件: ${#SRCS[@]} 个"
 [ ${#SRCS[@]} -gt 0 ] || { echo "!! 没找到 ensia 源码"; exit 1; }
 
 INC=(-I"$LLVM_SRC/llvm/include" -I"$LLVM_DIR/include" -I"$SRC/obfuscation" -I"$SRC/obfuscation/include" -I"$SRC")
+HASH=$(git -C "$PWD" rev-parse HEAD 2>/dev/null || echo unknown)
 FLAGS=(-fPIC -O2 -std=c++17 -fno-rtti -fexceptions -DLLVM_NEXT=1
-       -DENSIA_TARGET_LLVM_VERSION=21 -w)
+       -DENSIA_TARGET_LLVM_VERSION=21 -w
+       "-DGIT_COMMIT_HASH=\"$HASH\"" )
 
 echo "== 编译插件（LLVM 符号留 UND）"
 "$CXX" "${FLAGS[@]}" -shared -Wl,-soname,libEnsia.so "${INC[@]}" \
