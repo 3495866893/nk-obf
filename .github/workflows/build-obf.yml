@@ -75,6 +75,9 @@ jobs:
             done
           fi
           if [ -n "$got" ]; then
+            # 关键：把已有的 .o/.a 时间戳刷新到"现在"，否则新解压的源码比它们新，
+            # ninja 会认为全部过期 -> 每轮重新编 140 分钟
+            find "$WORK/llvm-build" -type f \( -name '*.o' -o -name '*.a' \) -exec touch {} + 2>/dev/null || true
             echo "source: $got ($(stat -c%s "$WORK/llvm-build.tar.zst") bytes)"
             tar -I zstd -xf "$WORK/llvm-build.tar.zst" -C "$WORK" || true
             rm -f "$WORK/llvm-build.tar.zst"
