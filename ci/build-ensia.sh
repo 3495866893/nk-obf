@@ -24,7 +24,7 @@ mapfile -t SRCS < <(find "$SRC/obfuscation" -name "*.cpp" ! -name "RustCompat.cp
 echo "源文件: ${#SRCS[@]} 个"
 [ ${#SRCS[@]} -gt 0 ] || { echo "!! 没找到 ensia 源码"; exit 1; }
 
-INC=(-I"$LLVM_SRC/llvm/include" -I"$LLVM_DIR/include" -I"$SRC/obfuscation/include")
+INC=(-I"$LLVM_SRC/llvm/include" -I"$LLVM_DIR/include" -I"$SRC/obfuscation" -I"$SRC/obfuscation/include" -I"$SRC")
 FLAGS=(-fPIC -O2 -std=c++17 -fno-rtti -fexceptions -DLLVM_NEXT=1
        -DENSIA_TARGET_LLVM_VERSION=21 -w)
 
