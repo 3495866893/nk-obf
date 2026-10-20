@@ -18,6 +18,9 @@ on:
       config_file:
         description: 'Ensia TOML（反调试开关）'
         default: 'ci/tuned.toml'
+      out_name:
+        description: '产物名'
+        default: 'lucifer'
   push:
     paths:
       - "proj/**"
@@ -189,6 +192,7 @@ jobs:
           export SRC_FILES="${{ github.event.inputs.src_files || 'mian.cpp defense.c' }}"
           export PRESETS="${{ github.event.inputs.presets || 'max mid' }}"
           export DEFENSE_LVL="${{ github.event.inputs.defense_level || '3' }}"
+          export OUT_NAME="${{ github.event.inputs.out_name || 'lucifer' }}"
           bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" lucifer 2>&1 | tail -80
           test -f lucifer || { echo "!! lucifer 未生成"; exit 1; }
 
@@ -196,24 +200,24 @@ jobs:
         run: |
           set -eux
           mkdir -p nk-toolchain/bin
-          cat > nk-toolchain/source.properties <<EOF
-Pkg.Desc = NK-Ollvm toolchain (self-built LLVM $LLVM_VER + Ensia plugin)
-Pkg.Revision = $LLVM_VER
-Pkg.Ollvm = NK-Ollvm
-Pkg.Maintainer.QQ = 3495866893
-Pkg.Maintainer.TG = https://t.me/nkhoook
-Pkg.Maintainer.Bilibili = 小白鱼游戏
-Pkg.Tag = [NK-Ollvm]
-EOF
-          cat > nk-toolchain/bin/nk-banner <<'EOF'
-#!/bin/sh
-echo "------------------------------------------------"
-echo "        NK-Ollvm toolchain  (LLVM 21 + Ensia)"
-echo "  QQ: 3495866893"
-echo "  TG: https://t.me/nkhoook"
-echo "  Bilibili: 小白鱼游戏"
-echo "------------------------------------------------"
-EOF
+          {
+            echo "Pkg.Desc = NK-Ollvm toolchain (self-built LLVM $LLVM_VER + Ensia plugin)"
+            echo "Pkg.Revision = $LLVM_VER"
+            echo "Pkg.Ollvm = NK-Ollvm"
+            echo "Pkg.Maintainer.QQ = 3495866893"
+            echo "Pkg.Maintainer.TG = https://t.me/nkhoook"
+            echo "Pkg.Maintainer.Bilibili = 小白鱼游戏"
+            echo "Pkg.Tag = [NK-Ollvm]"
+          } > nk-toolchain/source.properties
+          {
+            echo '#!/bin/sh'
+            echo 'echo "------------------------------------------------"'
+            echo 'echo "        NK-Ollvm toolchain  (LLVM 21 + Ensia)"'
+            echo 'echo "  QQ: 3495866893"'
+            echo 'echo "  TG: https://t.me/nkhoook"'
+            echo 'echo "  Bilibili: 小白鱼游戏"'
+            echo 'echo "------------------------------------------------"'
+          } > nk-toolchain/bin/nk-banner
           chmod 755 nk-toolchain/bin/nk-banner
           cp ci/brand.txt nk-toolchain/bin/nk-brand.txt
           tar -czf nk-toolchain.tar.gz nk-toolchain
