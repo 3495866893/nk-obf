@@ -6,7 +6,6 @@ on:
     paths:
       - "proj/**"
       - ".github/workflows/build-obf.yml"
-      - "ci/**"
 
 env:
   LLVM_VER: "21.1.8"
@@ -23,19 +22,34 @@ jobs:
         run: |
           set -eux
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ninja-build cmake ccache xz-utils curl unzip zlib1g-dev
+          sudo apt-get install -y -qq ninja-build cmake xz-utils curl unzip zlib1g-dev binutils zstd
           sudo mkdir -p $WORK && sudo chown $(id -u):$(id -g) $WORK
           df -h / $WORK
 
-      - name: restore llvm build
+      - name: 尝试从上次 run 的 artifact 恢复 LLVM 构建树
         id: restore
-        uses: actions/cache/restore@v4
-        with:
-          path: /mnt/work/llvm-build
-          key: llvm-build-${{ env.LLVM_VER }}-v3
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          RUNID=$(gh run list --workflow=build-obf.yml --status=success --limit 10 \
+                    --json databaseId,createdAt --jq '.[0].databaseId' || true)
+          echo "候选 run: ${RUNID:-<无>}"
+          if [ -n "${RUNID:-}" ]; then
+            gh run download "$RUNID" -n llvm-build -D $WORK --repo "$GITHUB_REPOSITORY" || true
+          fi
+          if [ -f "$WORK/llvm-build.tar.zst" ]; then
+            echo "发现构建树压缩包，解压…"
+            tar -I zstd -xf "$WORK/llvm-build.tar.zst" -C $WORK
+            rm -f "$WORK/llvm-build.tar.zst"
+            echo "hit=true" >> $GITHUB_OUTPUT
+          else
+            echo "没有构建树缓存，需从头编译"
+            echo "hit=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: fetch llvm source
-        if: steps.restore.outputs.cache-hit != 'true'
+        if: steps.restore.outputs.hit != 'true'
         run: |
           set -eux
           curl -L --retry 3 -o $WORK/llvm.tar.xz \
@@ -44,8 +58,8 @@ jobs:
           tar -xf $WORK/llvm.tar.xz -C $WORK/llvm-src --strip-components=1
           rm -f $WORK/llvm.tar.xz
 
-      - name: configure llvm
-        if: steps.restore.outputs.cache-hit != 'true'
+      - name: configure llvm (动态 libLLVM，插件靠它解析符号)
+        if: steps.restore.outputs.hit != 'true'
         run: |
           set -eux
           cmake -S $WORK/llvm-src/llvm -B $WORK/llvm-build -G Ninja \
@@ -54,6 +68,9 @@ jobs:
             -DLLVM_TARGETS_TO_BUILD=AArch64 \
             -DLLVM_ENABLE_PLUGINS=ON \
             -DLLVM_EXPORT_SYMBOLS_FOR_PLUGINS=ON \
+            -DLLVM_BUILD_LLVM_DYLIB=ON \
+            -DLLVM_LINK_LLVM_DYLIB=ON \
+            -DCLANG_LINK_CLANG_DYLIB=ON \
             -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_DOCS=OFF \
@@ -61,35 +78,37 @@ jobs:
             -DLLVM_ENABLE_ZSTD=OFF
 
       - name: build clang
-        if: steps.restore.outputs.cache-hit != 'true'
+        if: steps.restore.outputs.hit != 'true'
         run: |
           set -eux
-          ninja -C $WORK/llvm-build clang llvm-config 2>&1 | tail -100
-          ls -lh $WORK/llvm-build/bin/clang++
+          ninja -C $WORK/llvm-build clang llvm-config 2>&1 | tail -60
+          ls -lh $WORK/llvm-build/bin/clang++ $WORK/llvm-build/lib/libLLVM*.so* || true
 
-      - name: save llvm build cache
-        if: always() && steps.restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+      - name: 打包构建树（供下次复用）
+        if: steps.restore.outputs.hit != 'true'
+        run: |
+          set -eux
+          tar -I 'zstd -1 -T0' -cf $WORK/llvm-build.tar.zst -C $WORK llvm-build
+          ls -lh $WORK/llvm-build.tar.zst
+
+      - name: 上传构建树 artifact
+        if: steps.restore.outputs.hit != 'true'
+        uses: actions/upload-artifact@v4
         with:
-          path: /mnt/work/llvm-build
-          key: llvm-build-${{ env.LLVM_VER }}-v3
+          name: llvm-build
+          path: /mnt/work/llvm-build.tar.zst
+          retention-days: 3
 
       - name: unpack ensia kit
         run: |
           set -eux
           tar -xzf kit.tar.gz
-          ls ensia/src | head
+          ls ensia/src | head -5
 
-      - name: build ensia plugin (只编 Ensia 目标，跳过 Rust 变体)
+      - name: build ensia plugin
         run: |
           set -eux
-          cmake -S ensia/src -B $WORK/ensia-build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_DIR=$WORK/llvm-build/lib/cmake/llvm 2>&1 | tail -30
-          ninja -C $WORK/ensia-build Ensia 2>&1 | tail -80
-          find $WORK/ensia-build -name "*.so" -exec ls -lh {} \;
-          OBJ=$(find $WORK/ensia-build -name "*.so" | head -1)
-          nm -D "$OBJ" | grep -c llvmGetPassPluginInfo || true
+          bash ci/build-ensia.sh ensia/src $WORK/ensia-build $WORK/llvm-build 2>&1 | tail -40
 
       - name: fetch android ndk r29
         run: |
@@ -100,23 +119,42 @@ jobs:
           NDK_DIR=$(ls -d $WORK/android-ndk-r29*/ | head -1)
           echo "NDK_DIR=${NDK_DIR%/}" >> $GITHUB_ENV
 
+      - name: smoke test (插件能否加载)
+        run: |
+          set -eux
+          export LD_LIBRARY_PATH=$WORK/llvm-build/lib
+          TC=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64
+          PLUGIN=$(find $WORK/ensia-build -name "*.so" | head -1)
+          printf '#include <stdio.h>\nint main(void){printf("%%s\\n","marker-plain-string");return 0;}\n' > /tmp/h.c
+          export ENSIA=1 ENSIA_PRESET=max
+          export ENSIA_CONFIG=$PWD/ensia/config/presets/max-all.toml
+          set +e
+          $WORK/llvm-build/bin/clang --target=aarch64-linux-android21 \
+            --sysroot=$TC/sysroot --ld-path=$TC/bin/ld.lld \
+            -fpass-plugin=$PLUGIN -O2 -nostdlib++ -o /tmp/h /tmp/h.c 2>&1 | tail -20
+          set -e
+          if [ -f /tmp/h ]; then
+            echo "SMOKE OK  $(stat -c%s /tmp/h) 字节"
+            echo "明文残留(0=已加密): $(strings /tmp/h | grep -c marker-plain-string || true)"
+          else
+            echo "SMOKE FAILED（继续尝试正式编译）"
+          fi
+
       - name: build lucifer
         run: |
           set -eux
           export CLANG=$WORK/llvm-build/bin/clang++
-          export LLVM_DIR=$WORK/llvm-build
-          bash ci/build-lucifer.sh "$NDK_DIR" "$(find $WORK/ensia-build -name '*.so' | head -1)" lucifer 2>&1 | tail -120
+          bash ci/build-lucifer.sh "$NDK_DIR" "$(find $WORK/ensia-build -name '*.so' | head -1)" lucifer 2>&1 | tail -80
 
       - name: verify
         if: always()
         run: |
-          echo "=== 产物检查 ==="
           ls -l lucifer 2>/dev/null || echo "no binary"
           file lucifer 2>/dev/null || true
           if [ -f lucifer ]; then
             echo "体积: $(stat -c%s lucifer) 字节"
-            echo "机器码: $(od -An -tu2 -j18 -N2 lucifer)  (183=AArch64)"
-            echo "clang 指纹残留: $(strings lucifer | grep -ci 'clang version' || true)"
+            echo "机器码: $(od -An -tu2 -j18 -N2 lucifer)"
+            echo "clang 指纹: $(strings lucifer | grep -ci 'clang version' || true)"
           fi
 
       - uses: actions/upload-artifact@v4
