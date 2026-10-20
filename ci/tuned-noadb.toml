@@ -1,0 +1,134 @@
+# ==============================================================================
+# max-all.toml —— 所有功能全开 + 全部参数顶到上限
+# ------------------------------------------------------------------------------
+# 用法（Android.mk）：
+#   -mllvm -ensia-config=$(ENSIA_DIR)/config/presets/max-all.toml
+#   显式给 -ensia-config 会自动打开总开关，不需要再写 -mllvm -ensia。
+#
+# ⚠ 代价：体积 5–10×、编译时间 2–4×、真机启动与运行变慢；
+#   -fco（函数调用混淆）在 Android 上依赖 dlopen，最容易出问题；
+#   -adb / -antihook 会主动杀调试器与注入环境。
+#   flash 崩溃时按下面「降级顺序」逐项关：
+#     passes.function_call_obfuscate.enabled = false
+#     passes.anti_debugging.enabled = false
+#     passes.function_wrapper.enabled = false
+#     passes.vector_obfuscation.enabled = false
+# ==============================================================================
+
+[global]
+preset = "max"          # 先套内置 max 预设（BCF 100%、CSM 双层、Feistel 等）
+seed = "0xDEADBEEF"     # 固定种子，便于复现/对比
+verbose = false
+trace = false
+demangle_names = true
+
+# ── 字符串加密：全量 + 抗 dump ────────────────────────────────────────────────
+[passes.string_encryption]
+enabled = true
+probability = 100
+anti_dump = true
+force_content = [".*"]                 # 任何字符串都加密
+skip_content = ["^%[0-9]*[a-zA-Z]$"]   # 只放过 printf 格式串
+
+# ── 常量加密：3 轮 + 8 分片 + Feistel + 全局池 ───────────────────────────────
+[passes.constant_encryption]
+enabled = true
+iterations = 3
+share_count = 8
+feistel = true
+substitute_xor = true
+substitute_xor_prob = 100
+globalize = true
+globalize_prob = 100
+skip_value = ["^0x0$"]
+
+# ── 虚假控制流：概率 100、3 轮、复杂度 10、熵链 + 垃圾屏障 ───────────────────
+[passes.bcf]
+enabled = true
+probability = 100
+iterations = 3
+complexity = 10
+entropy_chain = true
+junk_asm = true
+junk_asm_min = 4
+junk_asm_max = 10
+nested = true
+create_func = true
+only_junk_asm = false
+
+# ── 指令替换：概率 100、3 层 ──────────────────────────────────────────────────
+[passes.substitution]
+enabled = true
+probability = 100
+iterations = 3
+
+# ── MBA：概率 100、3 层 ──────────────────────────────────────────────────────
+[passes.mba]
+enabled = true
+probability = 100
+layers = 3
+heuristic = true
+
+# ── 基本块切分：10 刀 + 栈干扰 ───────────────────────────────────────────────
+[passes.split_blocks]
+enabled = true
+splits = 10
+stack_confusion = true
+
+# ── 混沌状态机：双层派发 ─────────────────────────────────────────────────────
+[passes.chaos_state_machine]
+enabled = true
+warmup = 256
+nested_dispatch = true
+max_blocks = 10000
+
+# 经典平坦化：CSM 因块数超限跳过时兜底
+[passes.flattening]
+enabled = true
+
+# ── 向量混淆：概率 100、128bit（arm64 只有 NEON）──────────────────────────────
+[passes.vector_obfuscation]
+enabled = true
+probability = 100
+width = 128
+shuffle = true
+lift_comparisons = true
+
+# ── 间接跳转：栈上跳转表 + 目标加密 ──────────────────────────────────────────
+[passes.indirect_branch]
+enabled = true
+use_stack = true
+enc_jump_target = true
+
+# ── 函数包装：100%、3 层代理 ─────────────────────────────────────────────────
+[passes.function_wrapper]
+enabled = false
+probability = 100
+times = 3
+
+# ── 函数调用混淆（Android 最危险的一项，先留 true 即为“全开”）────────────────
+[passes.function_call_obfuscate]
+enabled = false
+flag = 0
+symbol_config_path = ""
+
+# ── 反 Hook / 完整性 ────────────────────────────────────────────────────────
+[passes.anti_hooking]
+enabled = false
+inline_x86 = true
+inline_aarch64 = true
+inline_win = true
+objc_runtime = false
+antirebind = true
+direct_syscall = true
+check_integrity = true
+
+# ── 反调试：100% 函数入口 ───────────────────────────────────────────────────
+[passes.anti_debugging]
+enabled = false
+probability = 100
+
+# ── ObjC（Android 上无实际作用，保留“全开”完整性）─────────────────────────────
+[passes.anti_class_dump]
+enabled = true
+dummy_count = 8
