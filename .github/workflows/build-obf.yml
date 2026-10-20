@@ -26,6 +26,10 @@ on:
       - "proj/**"
       - ".github/workflows/build-obf.yml"
 
+permissions:
+  contents: write
+  actions: read
+
 env:
   LLVM_VER: "21.1.8"
   WORK: /mnt/work
@@ -61,9 +65,15 @@ jobs:
           fi
           if [ -z "$got" ]; then
             echo "== 2) recent run artifacts"
-            for id in $(gh run list --workflow=build-obf.yml --limit 20 \
-                          --json databaseId,status \
-                          --jq '.[] | select(.status=="completed") | .databaseId' || true); do
+            IDS=$(gh run list --workflow=build-obf.yml --limit 20 \
+                     --json databaseId,status \
+                     --jq '.[] | select(.status=="completed") | .databaseId' 2>/dev/null || true)
+            if [ -z "${IDS:-}" ]; then
+              IDS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?per_page=20" \
+                       --jq '.workflow_runs[] | select(.status=="completed") | .id' 2>/dev/null || true)
+            fi
+            echo "候选 run: $(echo $IDS | tr '\n' ' ')"
+            for id in $IDS; do
               rm -rf "$WORK/dl"; mkdir -p "$WORK/dl"
               if gh run download "$id" -n llvm-build -D "$WORK/dl" \
                    --repo "$GITHUB_REPOSITORY" 2>/dev/null \
