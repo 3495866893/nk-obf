@@ -18,6 +18,9 @@ on:
       config_file:
         description: 'Ensia TOML（反调试开关）'
         default: 'ci/tuned.toml'
+      cfg_list:
+        description: '一次跑多份配置，格式 name:toml 空格分隔'
+        default: ''
       cfg_only:
         description: '只用这份 TOML（不套预设，IR 反调试才会生效）'
         default: ''
@@ -228,6 +231,20 @@ jobs:
           bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" lucifer 2>&1 | tail -80
           test -f lucifer || { echo "!! lucifer 未生成"; exit 1; }
 
+      - name: build multi (cfg_list)
+        if: ${{ github.event.inputs.cfg_list != '' }}
+        run: |
+          set -uo pipefail
+          NDK_DIR="${{ env.NDK_DIR }}"
+          for pair in ${{ github.event.inputs.cfg_list }}; do
+            NAME="${pair%%:*}"
+            CFG="${pair##*:}"
+            echo "==================== $NAME  <-  $CFG"
+            CFG_ONLY="ci/$CFG" OUT_NAME="$NAME" \
+              bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" "$NAME" 2>&1 | tail -30
+            ls -l "$NAME" 2>/dev/null || echo "!! $NAME 没生成"
+          done
+
       - name: make nk-toolchain bundle
         run: |
           set -eux
@@ -271,7 +288,9 @@ jobs:
         if: always()
         with:
           name: lucifer-obf
-          path: lucifer
+          path: |
+            lucifer
+            lucifer-*
           if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4
