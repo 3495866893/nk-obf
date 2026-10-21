@@ -49,7 +49,9 @@ BASE=(
   "-Wl,--build-id=none" "-Wl,--strip-all"
 )
 [ "$DEFENSE_LVL" != "0" ] && BASE+=("-DDEFENSE_LEVEL=$DEFENSE_LVL" "-DDEFENSE_INTERVAL_MS=2000")
-LIBS=(-L"$RT" -L"$LIBDIR"
+# 注意：不要把 $LIBDIR 放进 -L，否则 -lc 会优先命中静态 libc.a（缺 pthread_atfork）
+#       API 目录里的 libc.so 才是正确的 stub
+LIBS=(-L"$RT" -L"$SYS/usr/lib/aarch64-linux-android/21"
       -Wl,--start-group
       "$LIBDIR/libc++_static.a" "$LIBDIR/libc++abi.a" "$RT/libunwind.a"
       -lc -lm -ldl -Wl,--end-group)
