@@ -96,12 +96,15 @@ jobs:
 
           if [ -n "$got" ] && [ -f "$WORK/llvm-build.tar.zst" ]; then
             echo "== 解压构建树（$got）"
-            mkdir -p "$WORK/llvm-build"
-            if zstd -d -c "$WORK/llvm-build.tar.zst" | tar -xf - -C "$WORK/llvm-build"; then
+            rm -rf "$WORK/llvm-build"
+            # 注意：tarball 里带顶层 llvm-build/，必须解到 $WORK
+            if zstd -d -c "$WORK/llvm-build.tar.zst" | tar -xf - -C "$WORK" \
+               && [ -f "$WORK/llvm-build/include/llvm/Config/llvm-config.h" ]; then
               echo "hit=true" >> "$GITHUB_OUTPUT"
-              echo "构建树已恢复"
+              echo "构建树已恢复（含 include/llvm/Config/llvm-config.h）"
             else
               echo "hit=false" >> "$GITHUB_OUTPUT"
+              echo "解压后缺 llvm-config.h，按未命中处理"
             fi
           else
             echo "hit=false" >> "$GITHUB_OUTPUT"
