@@ -1,0 +1,91 @@
+[global]
+# 空 preset = 不用预设模式，完全按下面每个 pass 的 enabled 来（这样 anti_debugging 才会真的开）
+preset = ""
+seed = "0xDEADBEEF"
+verbose = false
+
+# ===== 字符串 / 常量 =====
+[passes.string_encryption]
+enabled = true
+probability = 100
+anti_dump = true
+force_content = [".*"]
+skip_content = ["^%[0-9]*[a-zA-Z]$"]
+
+[passes.constant_encryption]
+enabled = true
+iterations = 2
+share_count = 6
+feistel = true
+substitute_xor = true
+substitute_xor_prob = 100
+globalize = true
+globalize_prob = 100
+skip_value = ["^0x0$"]
+
+# ===== 指令 / 控制流 =====
+[passes.substitution]
+enabled = true
+probability = 60
+iterations = 1
+
+[passes.bcf]
+enabled = true
+probability = 60
+iterations = 1
+complexity = 6
+entropy_chain = false
+junk_asm = false
+nested = false
+create_func = false
+only_junk_asm = false
+
+[passes.split_blocks]
+enabled = true
+splits = 3
+stack_confusion = false
+
+[passes.indirect_branch]
+enabled = true
+use_stack = true
+enc_jump_target = true
+
+[passes.flattening]
+enabled = true
+
+# ===== 反调试 / 反Hook（Ensia IR 级，纯插件实现，不依赖 defense.c）=====
+[passes.anti_debugging]
+enabled = true
+probability = 100
+
+[passes.anti_hooking]
+enabled = true
+inline_x86 = false
+inline_aarch64 = true
+inline_win = false
+objc_runtime = false
+antirebind = true
+direct_syscall = true
+check_integrity = true
+
+# ===== 关掉（体积/时间考虑）=====
+[passes.vector_obfuscation]
+enabled = false
+
+[passes.chaos_state_machine]
+enabled = false
+
+[passes.mba]
+enabled = false
+
+[passes.function_wrapper]
+enabled = false
+
+[passes.function_call_obfuscate]
+enabled = false
+
+[passes.objc]
+enabled = false
+
+[passes.anti_class_dump]
+enabled = false
