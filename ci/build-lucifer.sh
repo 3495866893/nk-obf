@@ -85,6 +85,18 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
   return 1
 }
 
+# 允许用一份指定 TOML 直接跑（不看 presets）
+if [ -n "${CFG_OVERRIDE:-}" ] && [ -f "${CFG_OVERRIDE:-}" ]; then
+  for plug in "${PLUGINS[@]:-}"; do
+    [ -n "${plug:-}" ] || continue
+    echo "== 使用指定配置: $CFG_OVERRIDE"
+    if try "override" "$CFG_OVERRIDE" "$plug" "$OUT.ovr"; then
+      mv "$OUT.ovr" "$OUT"; exit 0
+    fi
+  done
+  echo "== 指定配置失败，继续走 presets"
+fi
+
 if [ "${PRESETS:-max mid}" != "none" ]; then
   for plug in "${PLUGINS[@]:-}"; do
     [ -n "${plug:-}" ] || continue
