@@ -1,0 +1,63 @@
+[global]
+preset = "low"
+seed = "0xDEADBEEF"
+verbose = false
+
+# 只开"性价比高且不会爆"的 pass，避免在 35KB C++ 上跑几十分钟
+[passes.string_encryption]
+enabled = true
+probability = 100
+anti_dump = true
+
+[passes.substitution]
+enabled = true
+probability = 60
+iterations = 1
+
+[passes.bcf]
+enabled = true
+probability = 60
+iterations = 1
+complexity = 6
+entropy_chain = false
+junk_asm = false
+
+[passes.split_blocks]
+enabled = true
+splits = 3
+stack_confusion = false
+
+[passes.indirect_branch]
+enabled = true
+enc_jump_target = true
+
+[passes.anti_debugging]
+enabled = true
+probability = 100
+
+[passes.constant_encryption]
+enabled = false
+
+[passes.chaos_state_machine]
+enabled = false
+
+[passes.vector_obfuscation]
+enabled = false
+
+[passes.flattening]
+enabled = false
+
+[passes.mba]
+enabled = false
+
+[passes.function_wrapper]
+enabled = false
+
+[passes.function_call_obfuscate]
+enabled = false
+
+[passes.anti_hooking]
+enabled = false
+
+[passes.objc]
+enabled = false
