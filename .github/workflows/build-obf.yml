@@ -205,12 +205,19 @@ jobs:
           set -eux
           export CLANG=$WORK/llvm-build/bin/clang++
           CFG="${{ github.event.inputs.config_file || 'ci/tuned.toml' }}"
-          [ -f "$CFG" ] && cp "$CFG" ensia/config/presets/max.toml && echo "使用配置: $CFG"
+          # 复制到"第一个 preset 名"对应的 toml，保证 build-lucifer 真的用上它
+          FIRST=$(echo "${{ github.event.inputs.presets || 'max mid' }}" | awk '{print $1}')
+          [ -n "$FIRST" ] || FIRST=max
+          if [ -f "$CFG" ]; then
+            cp "$CFG" "ensia/config/presets/$FIRST.toml"
+            echo "使用配置: $CFG -> presets/$FIRST.toml"
+          fi
           export SRC_DIR="${{ github.event.inputs.src_dir || 'proj' }}"
           export SRC_FILES="${{ github.event.inputs.src_files || 'mian.cpp defense.c' }}"
           export PRESETS="${{ github.event.inputs.presets || 'max mid' }}"
           export DEFENSE_LVL="${{ github.event.inputs.defense_level || '3' }}"
           export OUT_NAME="${{ github.event.inputs.out_name || 'lucifer' }}"
+          export CFG_OVERRIDE="${{ github.event.inputs.cfg_override || '' }}"
           bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" lucifer 2>&1 | tail -80
           test -f lucifer || { echo "!! lucifer 未生成"; exit 1; }
 
