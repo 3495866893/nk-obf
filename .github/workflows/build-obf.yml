@@ -60,47 +60,50 @@ jobs:
         run: |
           set -uo pipefail
           got=""
-          echo "== 1) Release asset"
+          echo "== 1) Release 资产"
           if gh release download llvm-build-21.1.8 -p llvm-build.tar.zst -D "$WORK" \
                --repo "$GITHUB_REPOSITORY" --clobber 2>/dev/null \
              && [ -f "$WORK/llvm-build.tar.zst" ]; then
             got=release
           fi
+
           if [ -z "$got" ]; then
-            echo "== 2) recent run artifacts"
-            IDS=$(gh run list --workflow=build-obf.yml --limit 20 \
-                     --json databaseId,status \
-                     --jq '.[] | select(.status=="completed") | .databaseId' 2>/dev/null || true)
-            if [ -z "${IDS:-}" ]; then
-              IDS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?per_page=20" \
-                       --jq '.workflow_runs[] | select(.status=="completed") | .id' 2>/dev/null || true)
-            fi
-            echo "候选 run: $(echo $IDS | tr '\n' ' ')"
-            for id in $IDS; do
+            echo "== 2) artifacts API（最新未过期 llvm-build）"
+            AID=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+                    --jq '[.artifacts[] | select(.name=="llvm-build" and (.expired|not))]
+                          | sort_by(.created_at) | reverse | .[0].id' 2>/dev/null || true)
+            echo "artifact id: ${AID:-none}"
+            if [ -n "${AID:-}" ]; then
               rm -rf "$WORK/dl"; mkdir -p "$WORK/dl"
-              if gh run download "$id" -n llvm-build -D "$WORK/dl" \
-                   --repo "$GITHUB_REPOSITORY" 2>/dev/null \
-                 && [ -f "$WORK/dl/llvm-build.tar.zst" ]; then
-                mv "$WORK/dl/llvm-build.tar.zst" "$WORK/llvm-build.tar.zst"
-                got="run-$id"
-                break
-              fi
-            done
-          fi
-          if [ -n "$got" ]; then
-            # 关键：把已有的 .o/.a 时间戳刷新到"现在"，否则新解压的源码比它们新，
-            # ninja 会认为全部过期 -> 每轮重新编 140 分钟
-            find "$WORK/llvm-build" -type f \( -name '*.o' -o -name '*.a' \) -exec touch {} + 2>/dev/null || true
-            echo "source: $got ($(stat -c%s "$WORK/llvm-build.tar.zst") bytes)"
-            tar -I zstd -xf "$WORK/llvm-build.tar.zst" -C "$WORK" || true
-            rm -f "$WORK/llvm-build.tar.zst"
-            if [ -x "$WORK/llvm-build/bin/clang++" ]; then
-              echo "hit=true" >> $GITHUB_OUTPUT
-              du -sh "$WORK/llvm-build"
-              exit 0
+              for try in 1 2 3; do
+                echo "  download try $try"
+                if gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$AID/zip" \
+                     > "$WORK/dl/llvm-build.zip" 2>/dev/null \
+                   && [ -s "$WORK/dl/llvm-build.zip" ] \
+                   && unzip -o -q "$WORK/dl/llvm-build.zip" -d "$WORK/dl" \
+                   && [ -f "$WORK/dl/llvm-build.tar.zst" ]; then
+                  mv "$WORK/dl/llvm-build.tar.zst" "$WORK/llvm-build.tar.zst"
+                  got="artifact-$AID"
+                  break
+                fi
+                sleep 5
+              done
             fi
           fi
-          echo "hit=false" >> $GITHUB_OUTPUT
+
+          if [ -n "$got" ] && [ -f "$WORK/llvm-build.tar.zst" ]; then
+            echo "== 解压构建树（$got）"
+            mkdir -p "$WORK/llvm-build"
+            if zstd -d -c "$WORK/llvm-build.tar.zst" | tar -xf - -C "$WORK/llvm-build"; then
+              echo "hit=true" >> "$GITHUB_OUTPUT"
+              echo "构建树已恢复"
+            else
+              echo "hit=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            echo "没有可用缓存，本次完整编译"
+          fi
 
       - name: fetch llvm source
         run: |
