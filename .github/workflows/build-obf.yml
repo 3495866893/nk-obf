@@ -18,6 +18,9 @@ on:
       config_file:
         description: 'Ensia TOML（反调试开关）'
         default: 'ci/tuned.toml'
+      cfg_only:
+        description: '只用这份 TOML（不套预设，IR 反调试才会生效）'
+        default: ''
       out_name:
         description: '产物名'
         default: 'lucifer'
@@ -218,6 +221,7 @@ jobs:
           export DEFENSE_LVL="${{ github.event.inputs.defense_level || '3' }}"
           export OUT_NAME="${{ github.event.inputs.out_name || 'lucifer' }}"
           export CFG_OVERRIDE="${{ github.event.inputs.cfg_override || '' }}"
+          export CFG_ONLY="${{ github.event.inputs.cfg_only || '' }}"
           bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" lucifer 2>&1 | tail -80
           test -f lucifer || { echo "!! lucifer 未生成"; exit 1; }
 
