@@ -74,7 +74,10 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
   local extra=()
   unset ENSIA
   if [ -n "$plugin" ] && [ -n "$cfg" ] && [ -f "$cfg" ]; then
-    export ENSIA=1 ENSIA_PRESET="${preset}" ENSIA_CONFIG="$cfg"
+    export ENSIA=1 ENSIA_CONFIG="$cfg"
+    if [ "$preset" != "custom" ]; then
+      export ENSIA_PRESET="${preset}"
+    fi
     extra=("-fpass-plugin=$plugin")
   fi
   timeout 1800 "$CLANG" "${BASE[@]}" "${extra[@]}" "${LIBS[@]}" \
@@ -87,12 +90,25 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
   return 1
 }
 
+# 只用指定 TOML（不设 preset 环境变量，TOML 里的 enabled 才是最终依据）
+if [ -n "${CFG_ONLY:-}" ] && [ -f "${CFG_ONLY:-}" ]; then
+  for plug in "${PLUGINS[@]:-}"; do
+    [ -n "${plug:-}" ] || continue
+    echo "== 只用配置: $CFG_ONLY（IR 级 pass 按 TOML 生效）"
+    if try "custom" "$CFG_ONLY" "$plug" "$OUT.cfg"; then
+      mv "$OUT.cfg" "$OUT"; exit 0
+    fi
+  done
+  echo "!! 指定配置编译失败"
+  exit 1
+fi
+
 # 允许用一份指定 TOML 直接跑（不看 presets）
 if [ -n "${CFG_OVERRIDE:-}" ] && [ -f "${CFG_OVERRIDE:-}" ]; then
   for plug in "${PLUGINS[@]:-}"; do
     [ -n "${plug:-}" ] || continue
     echo "== 使用指定配置: $CFG_OVERRIDE"
-    if try "override" "$CFG_OVERRIDE" "$plug" "$OUT.ovr"; then
+    if try "custom" "$CFG_OVERRIDE" "$plug" "$OUT.ovr"; then
       mv "$OUT.ovr" "$OUT"; exit 0
     fi
   done
