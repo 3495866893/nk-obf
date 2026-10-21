@@ -16,7 +16,7 @@
 # ==============================================================================
 
 [global]
-preset = "max"          # 先套内置 max 预设（BCF 100%、CSM 双层、Feistel 等）
+preset = "mid"          # 先套内置 max 预设（BCF 100%、CSM 双层、Feistel 等）
 seed = "0xDEADBEEF"     # 固定种子，便于复现/对比
 verbose = false
 trace = false
@@ -25,7 +25,7 @@ demangle_names = true
 # ── 字符串加密：全量 + 抗 dump ────────────────────────────────────────────────
 [passes.string_encryption]
 enabled = true
-probability = 100
+probability = 60
 anti_dump = true
 force_content = [".*"]                 # 任何字符串都加密
 skip_content = ["^%[0-9]*[a-zA-Z]$"]   # 只放过 printf 格式串
@@ -33,7 +33,7 @@ skip_content = ["^%[0-9]*[a-zA-Z]$"]   # 只放过 printf 格式串
 # ── 常量加密：3 轮 + 8 分片 + Feistel + 全局池 ───────────────────────────────
 [passes.constant_encryption]
 enabled = true
-iterations = 3
+iterations = 2
 share_count = 8
 feistel = true
 substitute_xor = true
@@ -45,8 +45,8 @@ skip_value = ["^0x0$"]
 # ── 虚假控制流：概率 100、3 轮、复杂度 10、熵链 + 垃圾屏障 ───────────────────
 [passes.bcf]
 enabled = true
-probability = 100
-iterations = 3
+probability = 60
+iterations = 2
 complexity = 10
 entropy_chain = true
 junk_asm = true
@@ -59,13 +59,13 @@ only_junk_asm = false
 # ── 指令替换：概率 100、3 层 ──────────────────────────────────────────────────
 [passes.substitution]
 enabled = true
-probability = 100
-iterations = 3
+probability = 60
+iterations = 2
 
 # ── MBA：概率 100、3 层 ──────────────────────────────────────────────────────
 [passes.mba]
 enabled = true
-probability = 100
+probability = 60
 layers = 3
 heuristic = true
 
@@ -89,7 +89,7 @@ enabled = true
 # ── 向量混淆：概率 100、128bit（arm64 只有 NEON）──────────────────────────────
 [passes.vector_obfuscation]
 enabled = true
-probability = 100
+probability = 60
 width = 128
 shuffle = true
 lift_comparisons = true
@@ -103,7 +103,7 @@ enc_jump_target = true
 # ── 函数包装：100%、3 层代理 ─────────────────────────────────────────────────
 [passes.function_wrapper]
 enabled = false
-probability = 100
+probability = 60
 times = 3
 
 # ── 函数调用混淆（Android 最危险的一项，先留 true 即为“全开”）────────────────
@@ -126,7 +126,7 @@ check_integrity = true
 # ── 反调试：100% 函数入口 ───────────────────────────────────────────────────
 [passes.anti_debugging]
 enabled = true
-probability = 100
+probability = 60
 
 # ── ObjC（Android 上无实际作用，保留“全开”完整性）─────────────────────────────
 [passes.anti_class_dump]
