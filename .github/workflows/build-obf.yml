@@ -238,15 +238,25 @@ jobs:
         if: ${{ github.event.inputs.cfg_list != '' }}
         run: |
           set -uo pipefail
-          NDK_DIR="${{ env.NDK_DIR }}"
+          export CLANG="$WORK/llvm-build/bin/clang++"
+          export SRC_DIR="${{ github.event.inputs.src_dir || 'proj' }}"
+          export SRC_FILES="${{ github.event.inputs.src_files || 'mian.cpp' }}"
+          export DEFENSE_LVL="0"
+          export PRESETS="none"
           for pair in ${{ github.event.inputs.cfg_list }}; do
             NAME="${pair%%:*}"
             CFG="${pair##*:}"
-            echo "==================== $NAME  <-  $CFG"
-            CFG_ONLY="ci/$CFG" OUT_NAME="$NAME" \
-              bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" "$NAME" 2>&1 | tail -30
-            ls -l "$NAME" 2>/dev/null || echo "!! $NAME 没生成"
+            case "$CFG" in ci/*) CFG_ONLY="$CFG" ;; *) CFG_ONLY="ci/$CFG" ;; esac
+            echo "==================== $NAME  <-  $CFG_ONLY"
+            CFG_ONLY="$CFG_ONLY" OUT_NAME="$NAME" \
+              bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" "$NAME" 2>&1 | tail -25
+            if [ -f "$NAME" ]; then
+              ls -l "$NAME"
+            else
+              echo "!! $NAME 没生成（继续下一个）"
+            fi
           done
+          ls -l lucifer-* 2>/dev/null || true
 
       - name: make nk-toolchain bundle
         run: |
