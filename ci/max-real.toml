@@ -1,0 +1,81 @@
+[global]
+preset = ""
+seed = "0xDEADBEEF"
+verbose = false
+
+[passes.string_encryption]
+enabled = true
+probability = 100
+anti_dump = true
+force_content = [".*"]
+
+[passes.substitution]
+enabled = true
+probability = 60
+iterations = 1
+
+[passes.bcf]
+enabled = true
+probability = 60
+iterations = 1
+complexity = 6
+entropy_chain = false
+junk_asm = false
+nested = false
+create_func = false
+
+[passes.split_blocks]
+enabled = true
+splits = 3
+stack_confusion = false
+
+[passes.indirect_branch]
+enabled = true
+use_stack = true
+enc_jump_target = true
+
+[passes.constant_encryption]
+enabled = true
+iterations = 2
+share_count = 6
+feistel = false
+globalize = true
+globalize_prob = 100
+substitute_xor = true
+substitute_xor_prob = 100
+skip_value = ["^0x0$"]
+
+[passes.flattening]
+enabled = true
+
+[passes.vector_obfuscation]
+enabled = false
+
+[passes.mba]
+enabled = false
+
+[passes.chaos_state_machine]
+enabled = false
+
+[passes.function_wrapper]
+enabled = false
+
+[passes.function_call_obfuscate]
+enabled = false
+
+[passes.anti_debugging]
+enabled = true
+probability = 100
+
+[passes.anti_hooking]
+enabled = true
+inline_aarch64 = true
+antirebind = true
+direct_syscall = true
+check_integrity = true
+
+[passes.objc]
+enabled = false
+
+[passes.anti_class_dump]
+enabled = false
