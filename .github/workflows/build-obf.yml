@@ -24,6 +24,9 @@ on:
       cfg_only:
         description: '只用这份 TOML（不套预设，IR 反调试才会生效）'
         default: ''
+      skip_smoke:
+        description: '跳过 smoke test（省 4 分钟，插件稳定时可跳过）'
+        default: 'true'
       out_name:
         description: '产物名'
         default: 'lucifer'
@@ -227,6 +230,7 @@ jobs:
           echo "NDK_DIR=${NDK_DIR%/}" >> $GITHUB_ENV
 
       - name: smoke test
+        if: ${{ github.event.inputs.skip_smoke != 'true' }}
         run: |
           set -eux
           export LD_LIBRARY_PATH=$WORK/llvm-build/lib
