@@ -54,11 +54,32 @@ jobs:
 
       - name: disk & deps
         run: |
-          set -eux
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ninja-build cmake xz-utils curl unzip zlib1g-dev binutils zstd
+          set -euxo pipefail
+          start=$(date +%s)
+          # 只在缺包时才 apt（runner 镜像本来就装好了绝大部分，能省 7 分钟）
+          need=""
+          for c in cmake ninja zstd unzip xz curl ar objcopy strings; do
+            command -v "$c" >/dev/null 2>&1 || need="$need $c"
+          done
+          case "$need" in
+            *cmake*) need="$need";; esac
+          pkgs=""
+          echo "$need" | grep -q ' ninja' && pkgs="$pkgs ninja-build"
+          echo "$need" | grep -q ' cmake' && pkgs="$pkgs cmake"
+          echo "$need" | grep -q ' zstd' && pkgs="$pkgs zstd"
+          echo "$need" | grep -q ' unzip' && pkgs="$pkgs unzip"
+          echo "$need" | grep -q ' xz' && pkgs="$pkgs xz-utils"
+          echo "$need" | grep -qE ' (ar|objcopy|strings)' && pkgs="$pkgs binutils"
+          if [ -n "$pkgs" ]; then
+            echo "安装:$pkgs"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq $pkgs
+          else
+            echo "依赖齐全，跳过 apt"
+          fi
           sudo mkdir -p $WORK && sudo chown $(id -u):$(id -g) $WORK
           df -h /
+          echo "deps 用时 $(( $(date +%s) - start )) 秒"
 
       - name: restore llvm build tree
         id: restore
