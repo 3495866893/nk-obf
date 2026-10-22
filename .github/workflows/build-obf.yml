@@ -180,7 +180,42 @@ jobs:
           set -eux
           bash ci/build-ensia.sh ensia/src $WORK/ensia-build $WORK/llvm-build $WORK/llvm-src 2>&1 | tail -30
 
+      - name: restore ndk (cache)
+        id: ndk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          AID=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+                  --jq '[.artifacts[] | select(.name=="ndk-r29-cache" and (.expired|not))]
+                        | sort_by(.created_at) | reverse | .[0].id' 2>/dev/null || true)
+          echo "ndk cache artifact: ${AID:-none}"
+          got=""
+          if [ -n "${AID:-}" ]; then
+            for try in 1 2 3; do
+              rm -rf "$WORK/ndkdl"; mkdir -p "$WORK/ndkdl"
+              if gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$AID/zip" \
+                   > "$WORK/ndkdl/n.zip" 2>/dev/null && [ -s "$WORK/ndkdl/n.zip" ] \
+                 && unzip -o -q "$WORK/ndkdl/n.zip" -d "$WORK/ndkdl" \
+                 && [ -f "$WORK/ndkdl/ndk.tar.zst" ]; then
+                got=1; break
+              fi
+              sleep 5
+            done
+          fi
+          if [ -n "$got" ]; then
+            mkdir -p "$NDK_DIR"
+            if zstd -d -c "$WORK/ndkdl/ndk.tar.zst" | tar -xf - -C "$(dirname "$NDK_DIR")"; then
+              echo "hit=true" >> "$GITHUB_OUTPUT"
+              echo "NDK 已从缓存恢复"
+              exit 0
+            fi
+          fi
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          echo "没有 NDK 缓存，本次下载"
+
       - name: fetch android ndk r29
+        if: steps.ndk.outputs.hit != 'true'
         run: |
           set -eux
           curl -L --retry 3 -o $WORK/ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
@@ -211,6 +246,19 @@ jobs:
           else
             echo "SMOKE FAILED"
           fi
+
+      - name: cache ndk
+        if: steps.ndk.outputs.hit != 'true'
+        run: |
+          set -eux
+          tar -I 'zstd -1 -T0' -cf "$WORK/ndk.tar.zst" -C "$(dirname "$NDK_DIR")" "$(basename "$NDK_DIR")"
+          ls -lh "$WORK/ndk.tar.zst"
+      - uses: actions/upload-artifact@v4
+        if: steps.ndk.outputs.hit != 'true'
+        with:
+          name: ndk-r29-cache
+          path: /mnt/work/ndk.tar.zst
+          retention-days: 7
 
       - name: build lucifer
         run: |
