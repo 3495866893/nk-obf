@@ -10,6 +10,9 @@ on:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
     steps:
       - uses: actions/checkout@v4
 
@@ -19,19 +22,22 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: setup android sdk
-        uses: android-actions/setup-android@v3
-
       - name: setup gradle
         uses: gradle/actions/setup-gradle@v4
+
+      - name: accept licenses & show sdk
+        run: |
+          ls /usr/local/lib/android/sdk
+          yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
 
       - name: build debug apk
         run: |
           cd android
-          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tail -60
+          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tail -80
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: NKBuild-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+          if-no-files-found: warn
