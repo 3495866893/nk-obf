@@ -50,9 +50,11 @@ fun App(vm: BuildViewModel = viewModel()) {
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
     val st by vm.state.collectAsStateWithLifecycle()
-    // 只有 API31+ 才有 RenderEffect 真模糊；低版本或驱动异常时降级为半透明
-    val blurOk = Build.VERSION.SDK_INT >= 31
-    val haze: HazeState? = if (blurOk) remember { HazeState() } else null
+    // 只有 API31+ 才有真模糊；vivo/OPPO 等机型默认关闭（可手动开）
+    var blurOn by remember { mutableStateOf(prefs.blur) }
+    val haze: HazeState? = remember(blurOn) {
+        if (blurOn && Build.VERSION.SDK_INT >= 31) HazeState() else null
+    }
 
     var showSettings by remember { mutableStateOf(prefs.token.isBlank()) }
     var srcUri by remember { mutableStateOf<Uri?>(null) }
@@ -198,6 +200,23 @@ fun App(vm: BuildViewModel = viewModel()) {
                             color = TextDim, fontSize = 11.sp)
                     }
                     GlassSwitch(st.adb) { vm.setAdb(it) }
+                }
+            }
+
+            // ---- 液态玻璃开关 ----
+            GlassCard(haze) {
+                SectionTitle("", "液态玻璃")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("背景实时模糊（RenderEffect）", color = TextMain, fontSize = 13.sp)
+                        Spacer(Modifier.height(4.dp))
+                        Text("部分机型（vivo/OPPO/一加）会因 GPU 崩，默认已关；崩了就先别开",
+                            color = TextDim, fontSize = 11.sp)
+                    }
+                    GlassSwitch(blurOn) {
+                        blurOn = it
+                        prefs.blur = it
+                    }
                 }
             }
 
