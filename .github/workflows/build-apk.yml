@@ -10,28 +10,33 @@ on:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
     steps:
       - uses: actions/checkout@v4
 
-      - name: setup jdk 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: setup android sdk
-        uses: android-actions/setup-android@v3
-
-      - name: setup gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
 
       - name: build debug apk
         run: |
+          set -o pipefail
           cd android
-          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tail -60
+          gradle assembleDebug --no-daemon --stacktrace > /tmp/build.log 2>&1 || true
+          echo "===== 错误（e: / error: / .kt:）====="
+          grep -nE "^e: |error: |\.kt:[0-9]+" /tmp/build.log | head -60 || true
+          echo "===== 结尾 ====="
+          tail -30 /tmp/build.log
+          test -f app/build/outputs/apk/debug/app-debug.apk
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: NKBuild-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+          if-no-files-found: warn
