@@ -42,6 +42,7 @@ permissions:
 env:
   LLVM_VER: "21.1.8"
   WORK: /mnt/work
+  NDK_DIR: /mnt/work/android-ndk-r29
   NK_VENDOR: "NK-Ollvm[QQ:3495866893][TG:https://t.me/nkhoook][Bilibili:小白鱼游戏] "
 
 jobs:
