@@ -33,15 +33,15 @@ val TextDim = Color(0xFF6C7396)
 /** 真·液态玻璃卡片：hazeEffect 在 API31+ 用 RenderEffect 实时模糊背景 */
 @Composable
 fun GlassCard(
-    haze: HazeState,
+    haze: HazeState?,
     modifier: Modifier = Modifier,
     corner: Int = 22,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    var m = modifier.clip(RoundedCornerShape(corner.dp))
+    if (haze != null) m = m.hazeEffect(state = haze)
     Column(
-        modifier
-            .clip(RoundedCornerShape(corner.dp))
-            .hazeEffect(state = haze)
+        m
             .background(
                 Brush.verticalGradient(
                     listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.06f))
