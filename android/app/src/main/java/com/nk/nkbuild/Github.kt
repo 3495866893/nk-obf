@@ -135,7 +135,7 @@ class Github(private val token: String) {
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "NKBuild-Android")
             .build()
-        http.newCall(b.build()).execute().use { resp ->
+        http.newCall(b).execute().use { resp ->
             if (!resp.isSuccessful) throw RuntimeException("下载产物失败：HTTP ${resp.code}")
             return resp.body?.bytes() ?: ByteArray(0)
         }
