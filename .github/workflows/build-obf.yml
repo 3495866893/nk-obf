@@ -186,6 +186,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
+          NDK_DIR="${NDK_DIR:-$WORK/android-ndk-r29}"
+          echo "NDK_DIR=$NDK_DIR"
           AID=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
                   --jq '[.artifacts[] | select(.name=="ndk-r29-cache" and (.expired|not))]
                         | sort_by(.created_at) | reverse | .[0].id' 2>/dev/null || true)
@@ -251,6 +253,7 @@ jobs:
         if: steps.ndk.outputs.hit != 'true'
         run: |
           set -eux
+          NDK_DIR="${NDK_DIR:-$WORK/android-ndk-r29}"
           tar -I 'zstd -1 -T0' -cf "$WORK/ndk.tar.zst" -C "$(dirname "$NDK_DIR")" "$(basename "$NDK_DIR")"
           ls -lh "$WORK/ndk.tar.zst"
       - uses: actions/upload-artifact@v4
