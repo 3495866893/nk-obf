@@ -30,4 +30,16 @@ class Prefs(ctx: Context) {
     var lastLog: String
         get() = sp.getString("lastLog", "") ?: ""
         set(v) = sp.edit().putString("lastLog", v).apply()
+
+    /** 液态玻璃模糊：部分机型（vivo/OPPO/一加等）的 GPU/Shader 会导致崩，默认给它们关掉 */
+    var blur: Boolean
+        get() = sp.getBoolean("blur", defaultBlur())
+        set(v) = sp.edit().putBoolean("blur", v).apply()
+
+    private fun defaultBlur(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 31) return false
+        val m = (android.os.Build.MANUFACTURER + android.os.Build.BRAND).lowercase()
+        val risky = listOf("vivo", "oppo", "bbk", "realme", "oneplus", "iqoo")
+        return risky.none { m.contains(it) }
+    }
 }
