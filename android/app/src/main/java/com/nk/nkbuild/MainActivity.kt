@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,6 +25,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import android.os.Build
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,7 +37,11 @@ import dev.chrisbanes.haze.hazeSource
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { App() }
+        setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) {
+                App()
+            }
+        }
     }
 }
 
@@ -43,7 +50,9 @@ fun App(vm: BuildViewModel = viewModel()) {
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
     val st by vm.state.collectAsStateWithLifecycle()
-    val haze = remember { HazeState() }
+    // 只有 API31+ 才有 RenderEffect 真模糊；低版本或驱动异常时降级为半透明
+    val blurOk = Build.VERSION.SDK_INT >= 31
+    val haze: HazeState? = if (blurOk) remember { HazeState() } else null
 
     var showSettings by remember { mutableStateOf(prefs.token.isBlank()) }
     var srcUri by remember { mutableStateOf<Uri?>(null) }
@@ -83,7 +92,8 @@ fun App(vm: BuildViewModel = viewModel()) {
             animationSpec = infiniteRepeatable(tween(18000, easing = LinearEasing),
                 RepeatMode.Reverse), label = "t")
         androidx.compose.foundation.Canvas(
-            Modifier.fillMaxSize().hazeSource(state = haze)
+            if (haze != null) Modifier.fillMaxSize().hazeSource(state = haze)
+            else Modifier.fillMaxSize()
         ) {
             drawRect(Brush.radialGradient(
                 colors = listOf(Color(0xCC7C5CFF), Color(0x33241B60), Color.Transparent),
