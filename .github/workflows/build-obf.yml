@@ -24,6 +24,9 @@ on:
       cfg_only:
         description: '只用这份 TOML（不套预设，IR 反调试才会生效）'
         default: ''
+      rebuild_clang:
+        description: '缓存不可用时从头编译 LLVM（约 100 分钟，默认禁止）'
+        default: 'false'
       skip_smoke:
         description: '跳过 smoke test（省 4 分钟，插件稳定时可跳过）'
         default: 'true'
@@ -182,7 +185,7 @@ jobs:
           fi
 
       - name: fetch llvm source
-        if: steps.plugin.outputs.hit != 'true'
+        if: steps.plugin.outputs.hit != 'true' && inputs.rebuild_clang == 'true'
         run: |
           set -eux
           curl -L --retry 3 -o $WORK/llvm.tar.xz \
@@ -191,7 +194,16 @@ jobs:
           tar -xf $WORK/llvm.tar.xz -C $WORK/llvm-src --strip-components=1
           rm -f $WORK/llvm.tar.xz
 
+      - name: guard (cache required)
+        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang != 'true'
+        run: |
+          echo "::error::LLVM 构建树缓存不可用（release 资产与 artifact 都没取到）。"
+          echo "为省时间本任务直接失败，不进入 100 分钟的全量编译。"
+          echo "需要重建缓存时，手动触发并勾选 rebuild_clang=true。"
+          exit 1
+
       - name: configure (CLANG_VENDOR = NK info)
+        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true'
         if: steps.restore.outputs.hit != 'true'
         run: |
           set -eux
@@ -211,6 +223,7 @@ jobs:
             -DCLANG_VENDOR="$NK_VENDOR"
 
       - name: build clang (incremental)
+        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true'
         if: steps.restore.outputs.hit != 'true'
         run: |
           set -eux
@@ -233,6 +246,7 @@ jobs:
           retention-days: 3
 
       - name: upload build tree to release
+        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true'
         if: steps.restore.outputs.hit != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
