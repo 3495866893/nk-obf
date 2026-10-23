@@ -1,0 +1,51 @@
+[global]
+preset = ""
+seed = "0xDEADBEEF"
+verbose = false
+
+# 只开反调试，其他全关 —— 用于定位"到底哪个 pass 导致静默退出"
+[passes.string_encryption]
+enabled = false
+
+[passes.substitution]
+enabled = false
+
+[passes.bcf]
+enabled = false
+
+[passes.split_blocks]
+enabled = false
+
+[passes.indirect_branch]
+enabled = false
+
+[passes.constant_encryption]
+enabled = false
+
+[passes.chaos_state_machine]
+enabled = false
+
+[passes.vector_obfuscation]
+enabled = false
+
+[passes.flattening]
+enabled = false
+
+[passes.mba]
+enabled = false
+
+[passes.function_wrapper]
+enabled = false
+
+[passes.function_call_obfuscate]
+enabled = false
+
+[passes.anti_debugging]
+enabled = true
+probability = 100
+
+[passes.anti_hooking]
+enabled = false
+
+[passes.objc]
+enabled = false
