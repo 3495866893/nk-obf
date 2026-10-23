@@ -33,8 +33,13 @@ static uint64_t g_text_size = 0;
 
 static long nk_sys(long n, long a, long b, long c);   /* fwd decl */
 
-static int nk_dbg_on(void) { return 1; }   /* 诊断期：始终记录 */
+static int nk_dbg_on(void) {
+    static int cached = -1;
+    if (cached < 0) cached = getenv("NK_AD_DEBUG") ? 1 : 0;
+    return cached;
+}
 static void nk_dbg(const char *fmt, ...) {
+    if (!nk_dbg_on()) return;
     char b[256];
     va_list ap;
     va_start(ap, fmt);
