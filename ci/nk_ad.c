@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <sys/ptrace.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
@@ -32,6 +33,20 @@ static uint64_t g_text_size = 0;
 
 static long nk_sys(long n, long a, long b, long c);   /* fwd decl */
 
+static int nk_dbg_on(void) {
+    static int cached = -1;
+    if (cached < 0) cached = getenv("NK_AD_DEBUG") ? 1 : 0;
+    return cached;
+}
+static void nk_dbg(const char *fmt, ...) {
+    if (!nk_dbg_on()) return;
+    char b[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(b, sizeof b, fmt, ap);
+    va_end(ap);
+    if (n > 0) nk_sys(64, 2, (long)b, n);
+}
 static void nk_die_r(const char *why) {
     if (getenv("NK_AD_DEBUG")) {
         // 直连 write(2, ...)，避免调试输出本身被 hook
@@ -190,6 +205,8 @@ static int nk_text_cb(struct dl_phdr_info *info, size_t sz, void *data) {
 }
 
 static void nk_check_full(int early) {
+    nk_dbg("nk_ad[chk] early=%d wd=%d\n", early, (int)g_wd_pid);
+
     if (nk_any_thread_traced()) nk_die_r("nk_ad: thread traced");
 
     char st[4096];
@@ -197,6 +214,7 @@ static void nk_check_full(int early) {
         char *t = strstr(st, "TracerPid:");
         if (t) {
             int pid = (int)strtol(t + 10, NULL, 10);
+            nk_dbg("nk_ad[chk] TracerPid=%d\n", pid);
             if (g_wd_pid > 0) { if (pid != (int)g_wd_pid) nk_die_r("nk_ad: tracer mismatch"); }
             else              { if (pid != 0) nk_die_r("nk_ad: traced (no watchdog)"); }
         }
@@ -207,16 +225,27 @@ static void nk_check_full(int early) {
         if (cur) {
             int n = nk_parse_maps(cur, NK_MAXMAP);
             for (int i = 0; i < n; i++)
-                if (!nk_region_known(cur[i].lo, cur[i].hi)) { free(cur); nk_die_r("nk_ad: new exec region"); }
+                if (!nk_region_known(cur[i].lo, cur[i].hi)) {
+                    nk_dbg("nk_ad[chk] new region %llx-%llx\n",
+                           (unsigned long long)cur[i].lo, (unsigned long long)cur[i].hi);
+                    free(cur);
+                    nk_die_r("nk_ad: new exec region");
+                }
             free(cur);
         }
     }
 
-    if (nk_hooked_libc()) nk_die_r("nk_ad: libc prologue hooked");
+    {
+        int hk = nk_hooked_libc();
+        nk_dbg("nk_ad[chk] hooked=%d\n", hk);
+        if (hk) nk_die_r("nk_ad: libc prologue hooked");
+    }
 
     if (!early && g_text_addr && g_text_size) {
-        if (nk_hash_mem((const unsigned char *)g_text_addr, g_text_size) != g_text_hash)
-            nk_die_r("nk_ad: self text patched");
+        uint64_t h = nk_hash_mem((const unsigned char *)g_text_addr, g_text_size);
+        nk_dbg("nk_ad[chk] text %llx vs %llx\n",
+               (unsigned long long)h, (unsigned long long)g_text_hash);
+        if (h != g_text_hash) nk_die_r("nk_ad: self text patched");
     }
 }
 
@@ -246,6 +275,7 @@ static void nk_watchdog(pid_t target) {
 }
 
 __attribute__((constructor(101))) static void nk_ad_init(void) {
+    nk_dbg("nk_ad[init] enter dbg=%d\n", nk_dbg_on());
     prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
 
     g_nmaps = nk_parse_maps(g_maps, NK_MAXMAP);
