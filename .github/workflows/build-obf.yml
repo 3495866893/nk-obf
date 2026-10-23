@@ -24,6 +24,9 @@ on:
       cfg_only:
         description: '只用这份 TOML（不套预设，IR 反调试才会生效）'
         default: ''
+      anti_debug:
+        description: '是否启用运行时反调试模块（nk_ad 看门狗）'
+        default: 'true'
       rebuild_clang:
         description: '缓存不可用时从头编译 LLVM（约 100 分钟，默认禁止）'
         default: 'false'
@@ -360,6 +363,8 @@ jobs:
           retention-days: 7
 
       - name: build lucifer
+        env:
+          NK_AD: ${{ inputs.anti_debug == 'false' && '0' || '1' }}
         run: |
           set -eux
           export CLANG=$WORK/llvm-build/bin/clang++
