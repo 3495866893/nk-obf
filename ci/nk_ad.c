@@ -121,6 +121,39 @@ static int nk_pending_trap(void) {
     return 0;
 }
 
+
+// ---- 6) libc 序言 inline hook 特征扫描（arm64）---------------------------
+// Frida 的 Interceptor 属于 inline hook：会把目标函数开头改成
+//   b <trampoline>            (0x14xxxxxx)
+//   ldr xN, #8 ; br xN        (0x58xxxxxx 之后 0xD61F0000)
+//   br xN                     (0xD61F0000..)
+// 这里直接看指令编码，不看模块名/字符串，因此“去特征/改名”无效。
+#include <dlfcn.h>
+
+static int nk_looks_hooked(const unsigned char *p) {
+    unsigned w0 = 0, w1 = 0;
+    memcpy(&w0, p, 4);
+    memcpy(&w1, p + 4, 4);
+    if ((w0 & 0xFC000000u) == 0x14000000u) return 1;         // b
+    if ((w0 & 0xFFFFFC1Fu) == 0xD61F0000u) return 1;         // br xN
+    if ((w0 & 0xFFFFFC1Fu) == 0xD63F0000u) return 1;         // blr xN
+    if ((w0 & 0xFF000000u) == 0x58000000u &&
+        (w1 & 0xFFFFFC1Fu) == 0xD61F0000u) return 1;         // ldr xN,#lit ; br xN
+    return 0;
+}
+
+static int nk_hooked_libc(void) {
+    static const char *syms[] = {
+        "open", "read", "write", "close", "strstr", "strcmp", "strtol",
+        "memcpy", "malloc", "pthread_create", "ptrace", "kill", NULL};
+    for (int i = 0; syms[i]; i++) {
+        void *f = dlsym(RTLD_DEFAULT, syms[i]);
+        if (!f) continue;
+        if (nk_looks_hooked((const unsigned char *)f)) return 1;
+    }
+    return 0;
+}
+
 // ---- 统一检查 ------------------------------------------------------------
 static void nk_check_all(int first) {
     if (g_trap_seen) nk_die();
@@ -133,7 +166,13 @@ static void nk_check_all(int first) {
         if (tp != 0) nk_die();               // 没有看门狗时，任何 tracer 都是敌人
     }
 
-    if (nk_anon_exec_segment()) nk_die();
+    static int maps_on = -1;
+    if (maps_on < 0) {
+        const char *e = getenv("NK_AD_MAPS");
+        maps_on = (e && e[0] == '1') ? 1 : 0;
+    }
+    if (maps_on && nk_anon_exec_segment()) nk_die();
+    if (nk_hooked_libc()) nk_die();          // libc 被 inline hook（Frida 典型行为）
     if (nk_pending_trap()) nk_die();
 
     uint64_t h = nk_hash16((const void *)nk_decoy);
