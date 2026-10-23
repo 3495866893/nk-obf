@@ -28,9 +28,16 @@ done
 [ ${#SRCS[@]} -gt 0 ] || { echo "!! 没有源文件 (SRC_DIR=$SRC_DIR SRC_FILES=$SRC_FILES)"; exit 1; }
 
 # ---- 反调试强化模块（NK_AD=0 可关）----
+# 注意：这里必须“不带 -fpass-plugin”单独编译成 .o 再链接。
+# 若直接把 nk_ad.c 丢进 SRCS，它会被混淆 pass 处理，产生
+# "Undefined temporary symbol .L_vXXXX" 的汇编错误（已实测）。
 if [ "${NK_AD:-1}" != "0" ] && [ -f "$PWD/ci/nk_ad.c" ]; then
-  SRCS+=("$PWD/ci/nk_ad.c")
-  echo "反调试强化模块: ci/nk_ad.c"
+  NK_AD_OBJ="$PWD/nk_ad_extra.o"
+  echo "反调试强化模块: 单独编译 ci/nk_ad.c -> nk_ad_extra.o（不经混淆）"
+  "$CLANG" --target=aarch64-linux-android21 --sysroot="$SYS" \
+           "-resource-dir=$TC/lib/clang/21" -O2 -fPIE -fno-ident \
+           -c "$PWD/ci/nk_ad.c" -o "$NK_AD_OBJ" || { echo "!! nk_ad 编译失败"; exit 1; }
+  SRCS+=("$NK_AD_OBJ")
 fi
 echo "源文件: ${SRCS[*]}"
 
