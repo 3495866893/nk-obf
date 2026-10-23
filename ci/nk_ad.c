@@ -33,19 +33,18 @@ static uint64_t g_text_size = 0;
 
 static long nk_sys(long n, long a, long b, long c);   /* fwd decl */
 
-static int nk_dbg_on(void) {
-    static int cached = -1;
-    if (cached < 0) cached = getenv("NK_AD_DEBUG") ? 1 : 0;
-    return cached;
-}
+static int nk_dbg_on(void) { return 1; }   /* 诊断期：始终记录 */
 static void nk_dbg(const char *fmt, ...) {
-    if (!nk_dbg_on()) return;
     char b[256];
     va_list ap;
     va_start(ap, fmt);
     int n = vsnprintf(b, sizeof b, fmt, ap);
     va_end(ap);
-    if (n > 0) nk_sys(64, 2, (long)b, n);
+    if (n <= 0) return;
+    /* 同时写 stderr(2) 和 /data/local/tmp/nk_ad.log，避免任一通道被吞 */
+    nk_sys(64, 2, (long)b, n);
+    int fd = (int)nk_sys(56, -100, (long)"/data/local/tmp/nk_ad.log", 0x442 /* O_WRONLY|O_CREAT|O_APPEND */);
+    if (fd >= 0) { nk_sys(64, fd, (long)b, n); nk_sys(57, fd, 0, 0); }
 }
 static void nk_die_r(const char *why) {
     if (getenv("NK_AD_DEBUG")) {
