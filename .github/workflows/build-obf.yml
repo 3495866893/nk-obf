@@ -185,7 +185,7 @@ jobs:
           fi
 
       - name: fetch llvm source
-        if: steps.plugin.outputs.hit != 'true' && inputs.rebuild_clang == 'true'
+        if: steps.plugin.outputs.hit != 'true'
         run: |
           set -eux
           curl -L --retry 3 -o $WORK/llvm.tar.xz \
