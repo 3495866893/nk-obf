@@ -30,6 +30,8 @@ static uint64_t g_text_hash = 0;
 static uint64_t g_text_addr = 0;
 static uint64_t g_text_size = 0;
 
+static long nk_sys(long n, long a, long b, long c);   /* fwd decl */
+
 static void nk_die_r(const char *why) {
     if (getenv("NK_AD_DEBUG")) {
         // 直连 write(2, ...)，避免调试输出本身被 hook
