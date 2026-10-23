@@ -30,7 +30,18 @@ static uint64_t g_text_hash = 0;
 static uint64_t g_text_addr = 0;
 static uint64_t g_text_size = 0;
 
-static void nk_die(void) { _exit(NK_EXIT); }
+static void nk_die_r(const char *why) {
+    if (getenv("NK_AD_DEBUG")) {
+        // 直连 write(2, ...)，避免调试输出本身被 hook
+        int n = (int)strlen(why);
+        long r = nk_sys(64, 2, (long)why, n);
+        (void)r;
+        const char *nl = "\n";
+        nk_sys(64, 2, (long)nl, 1);
+    }
+    _exit(NK_EXIT);
+}
+static void nk_die(void) { nk_die_r("nk_ad: unknown"); }
 
 static long nk_sys(long n, long a, long b, long c) {
     register long x8 __asm__("x8") = n;
@@ -85,14 +96,25 @@ static int nk_region_known(uint64_t lo, uint64_t hi) {
     return 0;
 }
 
-static int nk_hooked_at(const unsigned char *p) {
+// bionic 里有大量合法 thunk（例如 open -> b openat），所以不能一看到 b 就判 hook。
+// 改为：解析 b 的立即数，只有“跳到本模块之外”才算 inline hook（Frida 的 trampoline
+// 通常在独立映射里）。
+static int nk_hooked_at_in(const unsigned char *p, uint64_t mod_lo, uint64_t mod_hi) {
     unsigned w0 = 0, w1 = 0;
     memcpy(&w0, p, 4);
     memcpy(&w1, p + 4, 4);
-    if ((w0 & 0xFC000000u) == 0x14000000u) return 1;
-    if ((w0 & 0xFFFFFC1Fu) == 0xD61F0000u) return 1;
-    if ((w0 & 0xFFFFFC1Fu) == 0xD63F0000u) return 1;
-    if ((w0 & 0xFF000000u) == 0x58000000u && (w1 & 0xFFFFFC1Fu) == 0xD61F0000u) return 1;
+
+    if ((w0 & 0xFC000000u) == 0x14000000u) {           // b <imm26>
+        int32_t imm = (int32_t)(w0 & 0x03FFFFFFu);
+        if (imm & 0x02000000) imm |= (int32_t)0xFC000000u;   // sign extend
+        uint64_t tgt = (uint64_t)((const unsigned char *)p + (int64_t)imm * 4);
+        if (tgt < mod_lo || tgt >= mod_hi) return 1;   // 跳出模块 → 可疑
+        return 0;                                       // 模块内 thunk → 正常
+    }
+    if ((w0 & 0xFFFFFC1Fu) == 0xD61F0000u) return 1;   // br xN
+    if ((w0 & 0xFFFFFC1Fu) == 0xD63F0000u) return 1;   // blr xN
+    if ((w0 & 0xFF000000u) == 0x58000000u &&
+        (w1 & 0xFFFFFC1Fu) == 0xD61F0000u) return 1;   // ldr xN,#lit ; br xN
     return 0;
 }
 
@@ -103,7 +125,11 @@ static int nk_hooked_libc(void) {
     for (int i = 0; syms[i]; i++) {
         void *f = dlsym(RTLD_DEFAULT, syms[i]);
         if (!f) continue;
-        if (nk_hooked_at((const unsigned char *)f)) return 1;
+        Dl_info di;
+        if (dladdr(f, &di) == 0 || !di.dli_fbase) continue;
+        uint64_t lo = (uint64_t)di.dli_fbase;
+        uint64_t hi = lo + (16u << 20);          // libc 大小上限，粗范围
+        if (nk_hooked_at_in((const unsigned char *)f, lo, hi)) return 1;
     }
     return 0;
 }
@@ -162,15 +188,15 @@ static int nk_text_cb(struct dl_phdr_info *info, size_t sz, void *data) {
 }
 
 static void nk_check_full(int early) {
-    if (nk_any_thread_traced()) nk_die();
+    if (nk_any_thread_traced()) nk_die_r("nk_ad: thread traced");
 
     char st[4096];
     if (nk_slurp("/proc/self/status", st, sizeof st) > 0) {
         char *t = strstr(st, "TracerPid:");
         if (t) {
             int pid = (int)strtol(t + 10, NULL, 10);
-            if (g_wd_pid > 0) { if (pid != (int)g_wd_pid) nk_die(); }
-            else              { if (pid != 0) nk_die(); }
+            if (g_wd_pid > 0) { if (pid != (int)g_wd_pid) nk_die_r("nk_ad: tracer mismatch"); }
+            else              { if (pid != 0) nk_die_r("nk_ad: traced (no watchdog)"); }
         }
     }
 
@@ -179,16 +205,16 @@ static void nk_check_full(int early) {
         if (cur) {
             int n = nk_parse_maps(cur, NK_MAXMAP);
             for (int i = 0; i < n; i++)
-                if (!nk_region_known(cur[i].lo, cur[i].hi)) { free(cur); nk_die(); }
+                if (!nk_region_known(cur[i].lo, cur[i].hi)) { free(cur); nk_die_r("nk_ad: new exec region"); }
             free(cur);
         }
     }
 
-    if (nk_hooked_libc()) nk_die();
+    if (nk_hooked_libc()) nk_die_r("nk_ad: libc prologue hooked");
 
     if (!early && g_text_addr && g_text_size) {
         if (nk_hash_mem((const unsigned char *)g_text_addr, g_text_size) != g_text_hash)
-            nk_die();
+            nk_die_r("nk_ad: self text patched");
     }
 }
 
