@@ -203,8 +203,7 @@ jobs:
           exit 1
 
       - name: configure (CLANG_VENDOR = NK info)
-        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true'
-        if: steps.restore.outputs.hit != 'true'
+        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true' && steps.restore.outputs.hit != 'true'
         run: |
           set -eux
           cmake -S $WORK/llvm-src/llvm -B $WORK/llvm-build -G Ninja \
@@ -223,8 +222,7 @@ jobs:
             -DCLANG_VENDOR="$NK_VENDOR"
 
       - name: build clang (incremental)
-        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true'
-        if: steps.restore.outputs.hit != 'true'
+        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true' && steps.restore.outputs.hit != 'true'
         run: |
           set -eux
           ninja -C $WORK/llvm-build clang llvm-config 2>&1 | tail -30
@@ -239,15 +237,13 @@ jobs:
           ls -lh $WORK/llvm-build.tar.zst
 
       - uses: actions/upload-artifact@v4
-        if: steps.restore.outputs.hit != 'true'
         with:
           name: llvm-build
           path: /mnt/work/llvm-build.tar.zst
           retention-days: 3
 
       - name: upload build tree to release
-        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true'
-        if: steps.restore.outputs.hit != 'true'
+        if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true' && steps.restore.outputs.hit != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -275,7 +271,6 @@ jobs:
           ls -lh "$WORK/ensia-build.tar.zst"
 
       - uses: actions/upload-artifact@v4
-        if: steps.plugin.outputs.hit != 'true'
         with:
           name: ensia-plugin-${{ steps.kit.outputs.sha }}
           path: /mnt/work/ensia-build.tar.zst
@@ -359,7 +354,6 @@ jobs:
           tar -I 'zstd -1 -T0' -cf "$WORK/ndk.tar.zst" -C "$(dirname "$NDK_DIR")" "$(basename "$NDK_DIR")"
           ls -lh "$WORK/ndk.tar.zst"
       - uses: actions/upload-artifact@v4
-        if: steps.ndk.outputs.hit != 'true'
         with:
           name: ndk-r29-cache
           path: /mnt/work/ndk.tar.zst
@@ -451,7 +445,6 @@ jobs:
           fi
 
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: lucifer-obf
           path: |
@@ -460,7 +453,6 @@ jobs:
           if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: nk-toolchain
           path: nk-toolchain.tar.gz
