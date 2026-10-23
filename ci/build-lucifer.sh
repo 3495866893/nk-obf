@@ -34,7 +34,7 @@ done
 if [ "${NK_AD:-1}" != "0" ] && [ -f "$PWD/ci/nk_ad.c" ]; then
   NK_AD_OBJ="$PWD/nk_ad_extra.o"
   echo "反调试强化模块: 单独编译 ci/nk_ad.c -> nk_ad_extra.o（不经混淆）"
-  "$CLANG" --target=aarch64-linux-android21 --sysroot="$SYS" \
+  "$CLANG" -x c --target=aarch64-linux-android21 --sysroot="$SYS" \
            "-resource-dir=$TC/lib/clang/21" -O2 -fPIE -fno-ident \
            -c "$PWD/ci/nk_ad.c" -o "$NK_AD_OBJ" || { echo "!! nk_ad 编译失败"; exit 1; }
   SRCS+=("$NK_AD_OBJ")
