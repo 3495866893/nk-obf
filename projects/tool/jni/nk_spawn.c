@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
             code = 128 + WTERMSIG(status);
             break;
         }
-        if (WIFSTOPPED(status)) ptrace(PTRACE_CONT, pid, 0, WSTOPSIG(status));
+        if (WIFSTOPPED(status)) ptrace(PTRACE_CONT, pid, 0, 0);  // 不要把 SIGTRAP 回灌给子进程
     }
     printf("[nk_spawn] 目标退出码 = %d\n", code);
     if (code == 97)
