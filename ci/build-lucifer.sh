@@ -26,6 +26,12 @@ for f in $SRC_FILES; do
   if [ -f "$SRC_DIR/$f" ]; then SRCS+=("$SRC_DIR/$f"); else echo "警告: 缺 $SRC_DIR/$f"; fi
 done
 [ ${#SRCS[@]} -gt 0 ] || { echo "!! 没有源文件 (SRC_DIR=$SRC_DIR SRC_FILES=$SRC_FILES)"; exit 1; }
+
+# ---- 反调试强化模块（NK_AD=0 可关）----
+if [ "${NK_AD:-1}" != "0" ] && [ -f "$PWD/ci/nk_ad.c" ]; then
+  SRCS+=("$PWD/ci/nk_ad.c")
+  echo "反调试强化模块: ci/nk_ad.c"
+fi
 echo "源文件: ${SRCS[*]}"
 
 PLUGINS=()
