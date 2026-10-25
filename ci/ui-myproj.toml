@@ -10,41 +10,61 @@ anti_dump = true
 force_content = [".*"]
 
 [passes.constant_encryption]
-enabled = false
+enabled = true
+iterations = 2
+share_count = 6
+feistel = false
+globalize = true
+globalize_prob = 100
+substitute_xor = true
+substitute_xor_prob = 100
+skip_value = ["^0x0$"]
 
 [passes.substitution]
-enabled = false
+enabled = true
+probability = 60
+iterations = 1
 
 [passes.bcf]
-enabled = false
+enabled = true
+probability = 60
+iterations = 1
+complexity = 6
+entropy_chain = false
+junk_asm = false
+nested = false
+create_func = false
 
 [passes.split_blocks]
-enabled = false
+enabled = true
+splits = 3
+stack_confusion = false
 
 [passes.indirect_branch]
-enabled = false
+enabled = true
+use_stack = true
+enc_jump_target = true
 
 [passes.flattening]
-enabled = false
+enabled = true
 
 [passes.anti_debugging]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.mba]
-enabled = false
+enabled = true
 
 [passes.chaos_state_machine]
-enabled = false
+enabled = true
 
 [passes.vector_obfuscation]
-enabled = false
+enabled = true
 
 [passes.function_wrapper]
-enabled = false
+enabled = true
 
 [passes.function_call_obfuscate]
-enabled = false
+enabled = true
 
 [passes.anti_hooking]
 enabled = false
