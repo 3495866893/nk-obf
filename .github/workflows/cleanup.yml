@@ -1,0 +1,45 @@
+name: artifacts-cleanup
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"      # 每 6 小时清一次
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: delete artifacts older than 2 days (keep newest llvm-build)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          NOW=$(date -u +%s)
+          echo "== 列出工件"
+          gh api "repos/$REPO/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | [.id,.name,.size_in_bytes,.created_at] | @tsv' > /tmp/a.tsv || true
+          wc -l < /tmp/a.tsv
+
+          # 最新 llvm-build 的 id（必须保留，否则 CI 会重编 clang）
+          KEEP=$(awk -F'\t' '$2=="llvm-build"{print $4"\t"$1}' /tmp/a.tsv | sort -r | head -1 | cut -f2)
+          echo "保留 llvm-build: ${KEEP:-无}"
+
+          CUT=$((NOW - 2*86400))
+          while IFS=$'\t' read -r ID NAME SIZE CREATED; do
+            [ -z "${ID:-}" ] && continue
+            [ "$ID" = "${KEEP:-0}" ] && continue
+            TS=$(date -u -d "$CREATED" +%s 2>/dev/null || echo 0)
+            if [ "$TS" -lt "$CUT" ]; then
+              echo "  删除 $NAME ($ID, $CREATED)"
+              gh api -X DELETE "repos/$REPO/actions/artifacts/$ID" >/dev/null 2>&1 || true
+            fi
+          done < /tmp/a.tsv
+
+          echo "== 剩余"
+          gh api "repos/$REPO/actions/artifacts?per_page=100" \
+            --jq '[.artifacts[].size_in_bytes] | add / 1048576 | floor' || true
