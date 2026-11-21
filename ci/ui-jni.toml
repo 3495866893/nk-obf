@@ -47,25 +47,26 @@ enc_jump_target = true
 
 [passes.flattening]
 enabled = true
+probability = 100
 
 [passes.anti_debugging]
 enabled = true
 probability = 100
 
 [passes.mba]
-enabled = true
+enabled = false
 
 [passes.chaos_state_machine]
-enabled = true
+enabled = false
 
 [passes.vector_obfuscation]
 enabled = false
 
 [passes.function_wrapper]
-enabled = true
+enabled = false
 
 [passes.function_call_obfuscate]
-enabled = true
+enabled = false
 
 [passes.anti_hooking]
 enabled = false
@@ -75,3 +76,4 @@ enabled = false
 
 [passes.objc]
 enabled = false
+
