@@ -52,15 +52,26 @@ done
 echo "头文件路径 (${#INCS[@]}): ${INCS[*]:-无}"
 # ---- /nk-autoincludes ----
 
-# ---- 反调试强化模块（NK_AD=0 可关）----
+# ---- 反调试强化模块 ----
 # 注意：这里必须“不带 -fpass-plugin”单独编译成 .o 再链接。
 # 若直接把 nk_ad.c 丢进 SRCS，它会被混淆 pass 处理，产生
 # "Undefined temporary symbol .L_vXXXX" 的汇编错误（已实测）。
-if [ "${NK_AD:-1}" != "0" ] && [ -f "$PWD/ci/nk_ad.c" ]; then
+#
+# NK_AD=0 时不再“删掉这个 .o”，而是用 -DNK_AD_OFF 编成空实现：
+#   Ensia 的 anti_debugging pass 会在每个函数入口注入 call __nk_ad_check()，
+#   一旦关掉该 pass，实测产物在静态初始化阶段 100% CPU 死循环（0 字节输出）。
+#   所以 pass 永远开着，"关闭反调试"只把实现换成空函数。
+if [ -f "$PWD/ci/nk_ad.c" ]; then
   NK_AD_OBJ="$PWD/nk_ad_extra.o"
-  echo "反调试强化模块: 单独编译 ci/nk_ad.c -> nk_ad_extra.o（不经混淆）"
+  if [ "${NK_AD:-1}" = "0" ]; then
+    NK_AD_DEF="-DNK_AD_OFF=1"
+    echo "反调试强化模块: NK_AD=0 -> 编成空实现（anti_debugging pass 仍开）"
+  else
+    NK_AD_DEF=""
+    echo "反调试强化模块: 单独编译 ci/nk_ad.c -> nk_ad_extra.o（不经混淆）"
+  fi
   "$CLANG" -x c --target=aarch64-linux-android21 --sysroot="$SYS" \
-           "-resource-dir=$TC/lib/clang/21" -O2 -fPIE -fno-ident \
+           "-resource-dir=$TC/lib/clang/21" -O2 -fPIE -fno-ident $NK_AD_DEF \
            -c "$PWD/ci/nk_ad.c" -o "$NK_AD_OBJ" || { echo "!! nk_ad 编译失败"; exit 1; }
   SRCS+=("$NK_AD_OBJ")
 fi
