@@ -121,7 +121,8 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     extra=("-fpass-plugin=$plugin")
   fi
   timeout 1800 "$CLANG" "${BASE[@]}" "${extra[@]}" "${LIBS[@]}" \
-    -o "$out" "${SRCS[@]}" -lEGL -lGLESv2 -lGLESv3 -landroid -llog 2>&1 | tail -30
+    -o "$out" "${SRCS[@]}" -lEGL -lGLESv2 -lGLESv3 -landroid -llog 2>&1 \
+    | tee /tmp/nk_err.txt | tail -30
   if [ -f "$out" ]; then
     brand "$out"
     echo "成功: $out ($(stat -c%s "$out") 字节)"
@@ -144,6 +145,26 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
       grep -oE '@_v[0-9a-f]+' /tmp/nk_ir.ll | sort | uniq -c | sort -rn | head -8 || true
     else
       echo "IR 转储失败"
+    fi
+    echo "== 汇编核对 =="
+    rm -f /tmp/nk_s.s
+    timeout 1800 "$CLANG" "${BASE[@]}" "${extra[@]}" -S -o /tmp/nk_s.s "${SRCS[@]}" >/dev/null 2>&1 || true
+    if [ -f /tmp/nk_s.s ]; then
+      echo ".s 行数: $(wc -l < /tmp/nk_s.s)"
+      syms=$(grep -oE '_?\.?L_v[0-9a-f]{8,}' /tmp/nk_err.txt | sort -u | head -4)
+      echo "报错符号: $(echo $syms | tr '\n' ' ')"
+      for sym in $syms; do
+        base=$(echo "$sym" | sed 's/^\.L//')
+        echo "--- $base ---"
+        echo "  出现次数: $(grep -c "$base" /tmp/nk_s.s || true)"
+        echo "  定义标签: $(grep -cE "^\s*(\.local\s+)?${base}:|^\s*\.type\s+${base},\s*%object" /tmp/nk_s.s || true)"
+        echo "  局部声明: $(grep -cE "^\s*\.local\s+${base}" /tmp/nk_s.s || true)"
+        grep -m3 -n "$base" /tmp/nk_s.s | cut -c1-120 || true
+      done
+      echo "--- .s 中 .L_v 前缀数量 ---"
+      echo ".L_v 标签: $(grep -cE '^\.L_v[0-9a-f]+:' /tmp/nk_s.s || true)   _v 标签: $(grep -cE '^_v[0-9a-f]+:' /tmp/nk_s.s || true)"
+    else
+      echo ".s 生成失败"
     fi
   fi
   return 1
