@@ -27,6 +27,31 @@ for f in $SRC_FILES; do
 done
 [ ${#SRCS[@]} -gt 0 ] || { echo "!! 没有源文件 (SRC_DIR=$SRC_DIR SRC_FILES=$SRC_FILES)"; exit 1; }
 
+# ---- nk-autoincludes: 自动派生 -I 头文件搜索路径 ----
+# 单文件工程（mian.cpp 那种）靠引号包含相对当前文件即可；多目录工程
+# （src/ImGui/、src/Vulkan/ …）必须显式给 -I，否则 #include "imgui.h" 直接
+# fatal error。这里从 SRC_DIR 全树扫一遍含头文件的目录，再补上所给源文件
+# 自身的目录与它的上一级，保证 <xxx.h> 与 "sub/xxx.h" 两种写法都能命中。
+INCS=()
+_nk_add_inc() {
+  local d="$1"
+  [ -d "$d" ] || return 0
+  local a
+  for a in "${INCS[@]:-}"; do [ "$a" = "-I$d" ] && return 0; done
+  INCS+=("-I$d")
+}
+_nk_add_inc "$SRC_DIR"
+while IFS= read -r d; do _nk_add_inc "$d"; done < <(
+  find "$SRC_DIR" -type d -not -path '*/.*' -not -path '*/build/*'        -not -path '*/obj/*' -not -path '*/.git/*' 2>/dev/null | head -80
+)
+for f in "${SRCS[@]}"; do
+  case "$f" in *.o) continue;; esac
+  _nk_add_inc "$(dirname "$f")"
+  _nk_add_inc "$(dirname "$(dirname "$f")")"
+done
+echo "头文件路径 (${#INCS[@]}): ${INCS[*]:-无}"
+# ---- /nk-autoincludes ----
+
 # ---- 反调试强化模块（NK_AD=0 可关）----
 # 注意：这里必须“不带 -fpass-plugin”单独编译成 .o 再链接。
 # 若直接把 nk_ad.c 丢进 SRCS，它会被混淆 pass 处理，产生
@@ -61,6 +86,8 @@ BASE=(
   "-Wl,-z,relro" "-Wl,-z,now" "-Wl,-z,noexecstack"
   "-Wl,--build-id=none" "-Wl,--strip-all"
 )
+BASE+=("${INCS[@]:-}")
+
 [ "$DEFENSE_LVL" != "0" ] && BASE+=("-DDEFENSE_LEVEL=$DEFENSE_LVL" "-DDEFENSE_INTERVAL_MS=2000")
 # 注意：不要把 $LIBDIR 放进 -L，否则 -lc 会优先命中静态 libc.a（缺 pthread_atfork）
 #       API 目录里的 libc.so 才是正确的 stub
