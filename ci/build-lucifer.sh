@@ -127,6 +127,25 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     echo "成功: $out ($(stat -c%s "$out") 字节)"
     return 0
   fi
+  if [ -n "$plugin" ] && [ -f "$cfg" ]; then
+    echo "== IR 诊断（失败后自动转储）=="
+    rm -f /tmp/nk_ir.ll
+    timeout 1800 "$CLANG" "${BASE[@]}" "${extra[@]}" -S -emit-llvm \
+      -o /tmp/nk_ir.ll "${SRCS[@]}" >/dev/null 2>&1 || true
+    if [ -f /tmp/nk_ir.ll ]; then
+      echo "IR 已转储: $(wc -l < /tmp/nk_ir.ll) 行"
+      echo "_v 定义数: $(grep -cE '^@_v[0-9a-f]+ = (internal|private|dso_local)' /tmp/nk_ir.ll || true)"
+      echo "_v 声明数: $(grep -cE '^@_v[0-9a-f]+ = external' /tmp/nk_ir.ll || true)"
+      echo "--- 声明样例 ---"
+      grep -E '^@_v[0-9a-f]+ = external' /tmp/nk_ir.ll | head -8 || true
+      echo "--- 定义样例 ---"
+      grep -E '^@_v[0-9a-f]+ = ' /tmp/nk_ir.ll | head -8 || true
+      echo "--- 引用样例 ---"
+      grep -oE '@_v[0-9a-f]+' /tmp/nk_ir.ll | sort | uniq -c | sort -rn | head -8 || true
+    else
+      echo "IR 转储失败"
+    fi
+  fi
   return 1
 }
 
