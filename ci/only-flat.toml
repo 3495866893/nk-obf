@@ -1,0 +1,53 @@
+[global]
+preset = ""
+seed = "0xDEADBEEF"
+verbose = false
+
+# 单 pass 对照：只有 flattening（控制流平坦化）
+[passes.string_encryption]
+enabled = false
+
+[passes.substitution]
+enabled = false
+
+[passes.bcf]
+enabled = false
+
+[passes.split_blocks]
+enabled = false
+
+[passes.indirect_branch]
+enabled = false
+
+[passes.constant_encryption]
+enabled = false
+
+[passes.flattening]
+enabled = true
+
+[passes.anti_debugging]
+enabled = false
+
+[passes.anti_hooking]
+enabled = false
+
+[passes.vector_obfuscation]
+enabled = false
+
+[passes.mba]
+enabled = false
+
+[passes.chaos_state_machine]
+enabled = false
+
+[passes.function_wrapper]
+enabled = false
+
+[passes.function_call_obfuscate]
+enabled = false
+
+[passes.objc]
+enabled = false
+
+[passes.anti_class_dump]
+enabled = false
