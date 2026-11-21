@@ -128,6 +128,26 @@ class Github(private val token: String) {
         return out
     }
 
+    /** 直接写一个文本文件（contents API，自动带旧 sha 做覆盖）——用来上传本地生成的 TOML */
+    fun putFile(o: String, r: String, br: String, path: String, text: String, msg: String): String {
+        var sha: String? = null
+        try {
+            val j = JSONObject(req("/repos/$o/$r/contents/$path?ref=$br"))
+            val s = j.optString("sha", "")
+            if (s.isNotEmpty()) sha = s
+        } catch (_: Exception) {
+            // 文件不存在 → 新建
+        }
+        val body = JSONObject()
+            .put("message", msg)
+            .put("content", android.util.Base64.encodeToString(
+                text.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP))
+            .put("branch", br)
+        if (sha != null) body.put("sha", sha)
+        val out = JSONObject(req("/repos/$o/$r/contents/$path", "PUT", body.toString()))
+        return out.optJSONObject("commit")?.optString("sha", "") ?: ""
+    }
+
     fun downloadArtifact(o: String, r: String, aid: Long): ByteArray {
         val url = "https://api.github.com/repos/$o/$r/actions/artifacts/$aid/zip"
         val b = Request.Builder().url(url)
