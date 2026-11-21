@@ -2,7 +2,7 @@ name: artifacts-cleanup
 
 on:
   schedule:
-    - cron: "0 */6 * * *"      # 每 6 小时清一次
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -13,33 +13,44 @@ jobs:
   purge:
     runs-on: ubuntu-latest
     steps:
-      - name: delete artifacts older than 2 days (keep newest llvm-build)
+      - name: prune artifacts (never touch llvm-build / ndk cache)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
           REPO="$GITHUB_REPOSITORY"
-          NOW=$(date -u +%s)
-          echo "== 列出工件"
+
+          # 永远保留的名字前缀（构建缓存，删了就要重编 clang / 重下 NDK）
+          KEEP_RE='^(llvm-build|ndk-.+-cache|ensia-plugin-.*)$'
+
           gh api "repos/$REPO/actions/artifacts?per_page=100" \
             --jq '.artifacts[] | [.id,.name,.size_in_bytes,.created_at] | @tsv' > /tmp/a.tsv || true
-          wc -l < /tmp/a.tsv
 
-          # 最新 llvm-build 的 id（必须保留，否则 CI 会重编 clang）
-          KEEP=$(awk -F'\t' '$2=="llvm-build"{print $4"\t"$1}' /tmp/a.tsv | sort -r | head -1 | cut -f2)
-          echo "保留 llvm-build: ${KEEP:-无}"
+          TOTAL=$(awk -F'\t' '{s+=$3} END{print s+0}' /tmp/a.tsv)
+          echo "当前工件合计: $((TOTAL/1048576)) MB / $(wc -l < /tmp/a.tsv) 个"
 
-          CUT=$((NOW - 2*86400))
+          # 总量没到 300 MB 就不动（省得把有用的删光）
+          if [ "$TOTAL" -lt $((300*1024*1024)) ]; then
+            echo "未超过 300 MB，跳过清理"
+            exit 0
+          fi
+
+          NOW=$(date -u +%s)
+          CUT=$((NOW - 86400))          # 只删 1 天前的
+          DEL=0
           while IFS=$'\t' read -r ID NAME SIZE CREATED; do
             [ -z "${ID:-}" ] && continue
-            [ "$ID" = "${KEEP:-0}" ] && continue
-            TS=$(date -u -d "$CREATED" +%s 2>/dev/null || echo 0)
+            if echo "$NAME" | grep -Eq "$KEEP_RE"; then
+              continue                  # 缓存类一律保留
+            fi
+            TS=$(date -u -d "$CREATED" +%s 2>/dev/null || echo "$NOW")
             if [ "$TS" -lt "$CUT" ]; then
-              echo "  删除 $NAME ($ID, $CREATED)"
-              gh api -X DELETE "repos/$REPO/actions/artifacts/$ID" >/dev/null 2>&1 || true
+              gh api -X DELETE "repos/$REPO/actions/artifacts/$ID" >/dev/null 2>&1 \
+                && echo "  删除 $NAME ($ID)"
+              DEL=$((DEL+1))
             fi
           done < /tmp/a.tsv
 
-          echo "== 剩余"
+          echo "共删除 $DEL 个"
           gh api "repos/$REPO/actions/artifacts?per_page=100" \
-            --jq '[.artifacts[].size_in_bytes] | add / 1048576 | floor' || true
+            --jq '[.artifacts[].size_in_bytes] | add // 0 | ./1048576 | floor' || true
