@@ -64,6 +64,43 @@ static void nk_die_r(const char *why) {
 }
 static void nk_die(void) { nk_die_r("nk_ad: unknown"); }
 
+/* 判断某个 pid 的 comm 是否为我们的看门狗线程名（nk-wd）。
+   用 comm 而不是 pid 比较，避免 PTRACE_SEIZE 完成时序不同导致误判。 */
+static int nk_comm_is(pid_t pid, const char *want) {
+    char path[64], b[80];
+    snprintf(path, sizeof path, "/proc/%d/comm", (int)pid);
+    if (nk_slurp(path, b, sizeof b) <= 0) return 0;
+    char *nl = strchr(b, '\n');
+    if (nl) *nl = 0;
+    return strcmp(b, want) == 0;
+}
+
+/* 是否存在同时可写可执行(rwx)的映射：正常 App 极少出现，是内存补丁的强特征 */
+static int nk_has_rwx(void) {
+    char *buf = (char *)malloc(256 * 1024);
+    if (!buf) return 0;
+    int n = nk_slurp("/proc/self/maps", buf, 256 * 1024);
+    int hit = 0;
+    if (n > 0) {
+        char *q = buf;
+        while (q && *q) {
+            char *nl = strchr(q, '\n');
+            if (nl) *nl = 0;
+            unsigned long lo = 0, hi = 0;
+            char perm[8] = {0};
+            if (sscanf(q, "%lx-%lx %7s", &lo, &hi, perm) == 3 &&
+                perm[0] == 'r' && perm[1] == 'w' && perm[2] == 'x') {
+                nk_dbg("nk_ad[rwx] %lx-%lx\n", lo, hi);
+                hit = 1;
+                break;
+            }
+            q = nl ? nl + 1 : NULL;
+        }
+    }
+    free(buf);
+    return hit;
+}
+
 static long nk_sys(long n, long a, long b, long c) {
     register long x8 __asm__("x8") = n;
     register long x0 __asm__("x0") = a;
@@ -173,7 +210,10 @@ static int nk_any_thread_traced(void) {
                     char *t = strstr(st, "TracerPid:");
                     if (t) {
                         int pid = (int)strtol(t + 10, NULL, 10);
-                        if (pid != 0 && pid != (int)g_wd_pid) { nk_close_fd(fd); return 1; }
+                        if (pid != 0 && !nk_comm_is((pid_t)pid, "nk-wd")) {
+                            nk_dbg("nk_ad[task] %s traced by %d\n", name, pid);
+                            nk_close_fd(fd); return 1;
+                        }
                     }
                 }
             }
@@ -218,24 +258,26 @@ static void nk_check_full(int early) {
         char *t = strstr(st, "TracerPid:");
         if (t) {
             int pid = (int)strtol(t + 10, NULL, 10);
-            nk_dbg("nk_ad[chk] TracerPid=%d\n", pid);
-            if (g_wd_pid > 0) { if (pid != (int)g_wd_pid) nk_die_r("nk_ad: tracer mismatch"); }
-            else              { if (pid != 0) nk_die_r("nk_ad: traced (no watchdog)"); }
+            nk_dbg("nk_ad[chk] TracerPid=%d wd=%d\n", pid, (int)g_wd_pid);
+            if (pid != 0 && !nk_comm_is((pid_t)pid, "nk-wd"))
+                nk_die_r("nk_ad: traced by foreign");
         }
     }
 
-    if (!early && g_nmaps > 0) {
-        nk_map_t *cur = (nk_map_t *)malloc(sizeof(nk_map_t) * NK_MAXMAP);
-        if (cur) {
-            int n = nk_parse_maps(cur, NK_MAXMAP);
-            for (int i = 0; i < n; i++)
-                if (!nk_region_known(cur[i].lo, cur[i].hi)) {
-                    nk_dbg("nk_ad[chk] new region %llx-%llx\n",
-                           (unsigned long long)cur[i].lo, (unsigned long long)cur[i].hi);
-                    free(cur);
-                    nk_die_r("nk_ad: new exec region");
-                }
-            free(cur);
+    // 注意：Vulkan / GL 驱动会在启动后 dlopen 出新的 r-x 映射，这是合法行为，
+    // 不能当成 hook。真正强特征是可写可执行(rwx)映射。
+    if (!early) {
+        if (nk_has_rwx()) nk_die_r("nk_ad: rwx exec region");
+        if (g_nmaps > 0 && nk_dbg_on()) {
+            nk_map_t *cur = (nk_map_t *)malloc(sizeof(nk_map_t) * NK_MAXMAP);
+            if (cur) {
+                int n = nk_parse_maps(cur, NK_MAXMAP);
+                int nw = 0;
+                for (int i = 0; i < n; i++)
+                    if (!nk_region_known(cur[i].lo, cur[i].hi)) nw++;
+                nk_dbg("nk_ad[chk] maps +%d (仅日志)\n", nw);
+                free(cur);
+            }
         }
     }
 
@@ -304,13 +346,16 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
         _exit(0);
     }
     if (wd > 0) {
-        usleep(120 * 1000);
         char st[4096];
-        g_wd_pid = -1;
-        if (nk_slurp("/proc/self/status", st, sizeof st) > 0) {
-            char *t = strstr(st, "TracerPid:");
-            if (t && (int)strtol(t + 10, NULL, 10) == (int)wd) g_wd_pid = wd;
+        g_wd_pid = 0;
+        for (int i = 0; i < 40; i++) {
+            usleep(25 * 1000);
+            if (nk_slurp("/proc/self/status", st, sizeof st) > 0) {
+                char *t = strstr(st, "TracerPid:");
+                if (t && (int)strtol(t + 10, NULL, 10) == (int)wd) { g_wd_pid = wd; break; }
+            }
         }
+        nk_dbg("nk_ad[init] watchdog=%d seized=%d\n", (int)wd, (int)g_wd_pid);
     }
 
     pthread_t th;
