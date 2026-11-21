@@ -32,6 +32,7 @@ static uint64_t g_text_addr = 0;
 static uint64_t g_text_size = 0;
 
 static long nk_sys(long n, long a, long b, long c);   /* fwd decl */
+static int  nk_slurp(const char *path, char *buf, int cap); /* fwd decl */
 
 static int nk_dbg_on(void) {
     static int cached = -1;
