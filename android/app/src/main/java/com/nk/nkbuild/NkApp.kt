@@ -20,7 +20,7 @@ class NkApp : Application() {
                 f.writeText(
                     "device=${Build.MANUFACTURER} ${Build.MODEL}\n" +
                     "android=${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n" +
-                    "version=1.1\n\n" + sw.toString()
+                    "version=1.2\n\n" + sw.toString()
                 )
             }
             def?.uncaughtException(t, e)
