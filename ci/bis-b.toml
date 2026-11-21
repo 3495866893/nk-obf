@@ -3,10 +3,8 @@ preset = ""
 seed = "0xDEADBEEF"
 verbose = false
 
+# �?pass 对照：只�?flattening（控制流平坦化）
 [passes.string_encryption]
-enabled = false
-
-[passes.constant_encryption]
 enabled = false
 
 [passes.substitution]
@@ -17,29 +15,29 @@ enabled = false
 
 [passes.split_blocks]
 enabled = true
-splits = 3
-stack_confusion = false
 
 [passes.indirect_branch]
 enabled = true
-use_stack = true
-enc_jump_target = true
+
+[passes.constant_encryption]
+enabled = false
 
 [passes.flattening]
 enabled = true
-probability = 100
 
 [passes.anti_debugging]
-enabled = true
-probability = 100
+enabled = false
+
+[passes.anti_hooking]
+enabled = false
+
+[passes.vector_obfuscation]
+enabled = false
 
 [passes.mba]
 enabled = false
 
 [passes.chaos_state_machine]
-enabled = false
-
-[passes.vector_obfuscation]
 enabled = false
 
 [passes.function_wrapper]
@@ -48,11 +46,8 @@ enabled = false
 [passes.function_call_obfuscate]
 enabled = false
 
-[passes.anti_hooking]
+[passes.objc]
 enabled = false
 
 [passes.anti_class_dump]
-enabled = false
-
-[passes.objc]
 enabled = false
