@@ -1,5 +1,15 @@
-// nk_ad.c v3 —— Ensia 反调试强化模块（arm64 / Android，纯用户态）
+// nk_ad.c v5 —— Ensia 反调试强化模块（arm64 / Android，纯用户态）
 // 原则：fail-open。读不到/权限不足一律放行，只在确定性证据上退出(_exit(97))。
+//
+// v5：新增 NK_AD_OFF 编译开关。Ensia 的 anti_debugging pass 会在**每个函数入口**注入
+//     call __nk_ad_check()，因此这个 pass 必须始终开启（关掉会导致部分全局构造/间接跳转
+//     收尾逻辑缺失，实测产物在静态初始化阶段 100% CPU 死循环）。"关闭反调试"的正确做法是
+//     保留 pass、把本文件的实现编成空函数。
+#ifdef NK_AD_OFF
+__attribute__((visibility("default"))) void __nk_ad_check(void) {
+    /* 空实现：调用点仍然存在，但永远放行 */
+}
+#else
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -362,3 +372,4 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
     pthread_t th;
     if (pthread_create(&th, NULL, nk_thread, NULL) == 0) pthread_detach(th);
 }
+#endif /* NK_AD_OFF */
