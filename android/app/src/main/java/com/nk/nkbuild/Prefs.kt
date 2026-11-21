@@ -31,10 +31,29 @@ class Prefs(ctx: Context) {
         get() = sp.getString("lastLog", "") ?: ""
         set(v) = sp.edit().putString("lastLog", v).apply()
 
+    /** 勾选的 pass（逗号分隔）。空 = 首次启动，用默认 8 个 */
+    var passes: Set<String>
+        get() {
+            val raw = sp.getString("passes", null) ?: return PassCatalog.DEFAULTS
+            if (raw.isBlank()) return PassCatalog.DEFAULTS
+            return raw.split(',').filter { it.isNotBlank() }.toSet()
+        }
+        set(v) = sp.edit().putString("passes", v.joinToString(",")).apply()
+
+    /** Ensia IR 级反调试 + nk_ad 运行时看门狗总开关 */
+    var antiDebug: Boolean
+        get() = sp.getBoolean("antiDebug", true)
+        set(v) = sp.edit().putBoolean("antiDebug", v).apply()
+
     /** 液态玻璃模糊：部分机型（vivo/OPPO/一加等）的 GPU/Shader 会导致崩，默认给它们关掉 */
     var blur: Boolean
         get() = sp.getBoolean("blur", defaultBlur())
         set(v) = sp.edit().putBoolean("blur", v).apply()
+
+    /** 产物自动存公共 Download/NKBuild */
+    var autoExport: Boolean
+        get() = sp.getBoolean("autoExport", true)
+        set(v) = sp.edit().putBoolean("autoExport", v).apply()
 
     private fun defaultBlur(): Boolean {
         if (android.os.Build.VERSION.SDK_INT < 31) return false
