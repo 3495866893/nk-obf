@@ -325,7 +325,7 @@ class BuildViewModel : ViewModel() {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, name)
                     put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
                     put(MediaStore.MediaColumns.RELATIVE_PATH,
-                        Environment.DIRECTORY_DOWNLOAD + "/NKBuild")
+                        Environment.DIRECTORY_DOWNLOADS + "/NKBuild")
                 }
                 val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
                 if (uri == null) return null
@@ -336,7 +336,7 @@ class BuildViewModel : ViewModel() {
             } else {
                 @Suppress("DEPRECATION")
                 val dir = File(Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOWNLOAD), "NKBuild")
+                    Environment.DIRECTORY_DOWNLOADS), "NKBuild")
                 dir.mkdirs()
                 val out = File(dir, name)
                 src.copyTo(out, overwrite = true)
