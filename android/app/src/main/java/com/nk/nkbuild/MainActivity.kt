@@ -12,6 +12,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -178,6 +179,8 @@ private fun Header(st: UiState) {
 
 @Composable
 private fun BuildPage(vm: BuildViewModel, st: UiState, haze: HazeState?, onPick: () -> Unit) {
+    val ctx = LocalContext.current
+    val prefs = remember { Prefs(ctx) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -261,7 +264,7 @@ private fun BuildPage(vm: BuildViewModel, st: UiState, haze: HazeState?, onPick:
                 PrimaryButton(
                     if (st.phase == Phase.RUNNING) "编译中…" else "开始编译",
                     st.phase != Phase.RUNNING
-                ) { vm.start(LocalContext.current, Prefs(LocalContext.current)) }
+                ) { vm.start(ctx, prefs) }
                 if (st.phase == Phase.RUNNING) {
                     Box(Modifier.height(46.dp).clip(RoundedCornerShape(14.dp))
                         .background(Color.White.copy(alpha = 0.10f))
