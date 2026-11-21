@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 产物下载目录（filesDir/out/...） -->
+    <files-path name="out" path="out/" />
+    <!-- 兜底：整个内部 files -->
+    <files-path name="files" path="." />
+    <!-- API28 及以下导出到公共 Download 时用 -->
+    <external-path name="download" path="Download/NKBuild/" />
+    <external-files-path name="ext" path="." />
+</paths>
