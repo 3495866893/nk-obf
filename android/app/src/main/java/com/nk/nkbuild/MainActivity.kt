@@ -2,13 +2,24 @@ package com.nk.nkbuild
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -25,14 +36,24 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import android.os.Build
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
+
+enum class Tab(val label: String, val glyph: String) {
+    BUILD("构建", "⚡"),
+    OBF("混淆", "◈"),
+    OUT("产物", "▣"),
+    SET("设置", "⚙"),
+}
+
+val TABS = listOf(Tab.BUILD, Tab.OBF, Tab.OUT, Tab.SET)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,50 +71,34 @@ fun App(vm: BuildViewModel = viewModel()) {
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
     val st by vm.state.collectAsStateWithLifecycle()
-    // 只有 API31+ 才有真模糊；vivo/OPPO 等机型默认关闭（可手动开）
+
     var blurOn by remember { mutableStateOf(prefs.blur) }
     val haze: HazeState? = remember(blurOn) {
         if (blurOn && Build.VERSION.SDK_INT >= 31) HazeState() else null
     }
+    var tab by remember { mutableStateOf(if (prefs.token.isBlank()) Tab.SET else Tab.BUILD) }
 
-    var showSettings by remember { mutableStateOf(prefs.token.isBlank()) }
-    var srcUri by remember { mutableStateOf<Uri?>(null) }
-    var saveLauncher by remember { mutableStateOf<((Uri) -> Unit)?>(null) }
+    LaunchedEffect(Unit) { vm.restore(prefs) }
 
     val pickTree = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            ctx.contentResolver.takePersistableUriPermission(
-                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            srcUri = uri
+            runCatching {
+                ctx.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
             vm.scan(ctx, uri)
         }
     }
 
-    val createDoc = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/octet-stream")
-    ) { out ->
-        if (out != null) {
-            val path = st.artifactPath
-            if (path != null) {
-                runCatching {
-                    ctx.contentResolver.openOutputStream(out)!!.use { o ->
-                        java.io.File(path).inputStream().use { i -> i.copyTo(o) }
-                    }
-                    vm.log("已保存到所选位置")
-                }.onFailure { vm.log("保存失败：${it.message}") }
-            }
-        }
-    }
-
     Box(Modifier.fillMaxSize().background(Color(0xFF0A0B12))) {
-        // ---- 背景：光斑 + 网格（真正被玻璃模糊的就是它）----
+        // ---- 背景光斑（真正被玻璃模糊的就是它）----
         val t by rememberInfiniteTransition(label = "bg").animateFloat(
             initialValue = 0f, targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(18000, easing = LinearEasing),
-                RepeatMode.Reverse), label = "t")
-        androidx.compose.foundation.Canvas(
+            animationSpec = infiniteRepeatable(
+                tween(18000, easing = LinearEasing), RepeatMode.Reverse), label = "t")
+        Canvas(
             if (haze != null) Modifier.fillMaxSize().hazeSource(state = haze)
             else Modifier.fillMaxSize()
         ) {
@@ -112,259 +117,518 @@ fun App(vm: BuildViewModel = viewModel()) {
         }
 
         Column(
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)
         ) {
-            // ---- 顶栏 ----
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("NKBUILD", color = Color.White, fontWeight = FontWeight.Black,
-                    fontSize = 24.sp, letterSpacing = 2.sp)
-                Spacer(Modifier.width(10.dp))
-                Text("源码 → 云端混淆编译", color = TextDim, fontSize = 12.sp)
-                Spacer(Modifier.weight(1f))
-                Box(
-                    Modifier.clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.08f))
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        "● ${st.statusText}" + if (st.phase == Phase.RUNNING) " ${fmt(st.elapsed)}" else "",
-                        color = when (st.phase) {
-                            Phase.DONE -> Color(0xFF3DDC97)
-                            Phase.ERROR -> Color(0xFFFF6B81)
-                            else -> TextSub
-                        }, fontSize = 12.sp
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                Box(
-                    Modifier.clip(RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.10f))
-                        .clickable { showSettings = true }
-                        .padding(horizontal = 14.dp, vertical = 8.dp)
-                ) { Text("设置", color = TextMain, fontSize = 13.sp) }
-            }
-
-            // ---- ① 源码 ----
-            GlassCard(haze) {
-                SectionTitle("①", "源码")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(
-                        Modifier.weight(1f).height(42.dp).clip(RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = 0.06f))
-                            .padding(horizontal = 12.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        Text(
-                            if (st.files.isEmpty()) "选择项目目录（SAF）"
-                            else "已选 ${st.files.size} 个文件",
-                            color = if (st.files.isEmpty()) TextDim else TextMain, fontSize = 13.sp
-                        )
-                    }
-                    PrimaryButton("选择", true) { pickTree.launch(null) }
-                }
-                if (st.files.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(st.files.take(6).joinToString("\n") { it.rel } +
-                        if (st.files.size > 6) "\n…（共 ${st.files.size} 个）" else "",
-                        color = TextSub, fontSize = 11.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
-                }
-            }
-
-            // ---- ② 混淆强度 ----
-            GlassCard(haze) {
-                SectionTitle("②", "混淆强度")
-                GlassSegmented(listOf("标准", "轻量"),
-                    if (st.strong) 0 else 1) { idx -> vm.setStrong(idx == 0) }
-                Spacer(Modifier.height(6.dp))
-                Text("标准=满血（含反调试另开）｜轻量=只有字符串加密+替换+BCF+分割",
-                    color = TextDim, fontSize = 11.sp)
-                Spacer(Modifier.height(6.dp))
-                Text("源码总量 > 20 MB 自动切轻量", color = TextDim, fontSize = 11.sp)
-            }
-
-            // ---- ③ 反调试 ----
-            GlassCard(haze) {
-                SectionTitle("③", "Ensia 反调试")
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("IR 级反调试（adb）", color = TextMain, fontSize = 13.sp)
-                        Spacer(Modifier.height(4.dp))
-                        Text("ptrace 自附加 · TracerPid 轮询 · 反 Hook\n虚拟机请关掉，否则会静默退出",
-                            color = TextDim, fontSize = 11.sp)
-                    }
-                    GlassSwitch(st.adb) { vm.setAdb(it) }
-                }
-            }
-
-            // ---- 液态玻璃开关 ----
-            GlassCard(haze) {
-                SectionTitle("", "液态玻璃")
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("背景实时模糊（RenderEffect）", color = TextMain, fontSize = 13.sp)
-                        Spacer(Modifier.height(4.dp))
-                        Text("部分机型（vivo/OPPO/一加）会因 GPU 崩，默认已关；崩了就先别开",
-                            color = TextDim, fontSize = 11.sp)
-                    }
-                    GlassSwitch(blurOn) {
-                        blurOn = it
-                        prefs.blur = it
+            Header(st)
+            Box(Modifier.weight(1f)) {
+                when (tab) {
+                    Tab.BUILD -> BuildPage(vm, st, haze) { pickTree.launch(null) }
+                    Tab.OBF -> ObfPage(vm, st, haze)
+                    Tab.OUT -> OutPage(vm, st, haze)
+                    Tab.SET -> SetPage(prefs, blurOn, haze) { on ->
+                        blurOn = on; prefs.blur = on
                     }
                 }
             }
-
-            // ---- 产物 ----
-            GlassCard(haze) {
-                SectionTitle("", "产物")
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("工程名", color = TextDim, fontSize = 12.sp, modifier = Modifier.width(56.dp))
-                    androidx.compose.foundation.text.BasicTextField(
-                        value = st.project, onValueChange = vm::setProject,
-                        singleLine = true, textStyle = androidx.compose.ui.text.TextStyle(
-                            color = TextMain, fontSize = 13.sp),
-                        modifier = Modifier.weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color.White.copy(alpha = 0.06f))
-                            .padding(horizontal = 10.dp, vertical = 10.dp),
-                        cursorBrush = Brush.verticalGradient(listOf(Accent, Accent))
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("产物名", color = TextDim, fontSize = 12.sp, modifier = Modifier.width(56.dp))
-                    androidx.compose.foundation.text.BasicTextField(
-                        value = st.outName, onValueChange = vm::setOutName,
-                        singleLine = true, textStyle = androidx.compose.ui.text.TextStyle(
-                            color = TextMain, fontSize = 13.sp),
-                        modifier = Modifier.weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color.White.copy(alpha = 0.06f))
-                            .padding(horizontal = 10.dp, vertical = 10.dp),
-                        cursorBrush = Brush.verticalGradient(listOf(Accent, Accent))
-                    )
-                }
-            }
-
-            // ---- ④ 日志 ----
-            GlassCard(haze) {
-                SectionTitle("④", "日志")
-                Column(
-                    Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 300.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black.copy(alpha = 0.35f))
-                        .padding(10.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text(
-                        st.logs.ifEmpty { listOf("日志会实时显示：上传 → 触发 → 编译 → 下载") }
-                            .joinToString("\n"),
-                        color = TextSub, fontSize = 11.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                    )
-                }
-            }
-
-            // ---- 底部：进度 + 开始 ----
-            GlassCard(haze) {
-                Row(verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Box(Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(5.dp))
-                        .background(Color.White.copy(alpha = 0.10f))) {
-                        Box(Modifier.fillMaxHeight()
-                            .fillMaxWidth(st.progress.coerceIn(0f, 1f))
-                            .clip(RoundedCornerShape(5.dp))
-                            .background(Brush.horizontalGradient(
-                                listOf(Color(0xFF6A48FF), Accent2, Color(0xFF6A48FF)))))
-                    }
-                    Text("${(st.progress * 100).toInt()}%", color = TextSub, fontSize = 12.sp)
-                    PrimaryButton(if (st.phase == Phase.RUNNING) "编译中…" else "开始编译",
-                        st.phase != Phase.RUNNING) { vm.start(ctx, prefs) }
-                }
-                if (st.phase == Phase.DONE) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("⏱ 总用时 ${fmt(st.elapsed)}", color = Color(0xFF3DDC97), fontSize = 12.sp)
-                    if (st.artifactPath != null) {
-                        Spacer(Modifier.height(6.dp))
-                        PrimaryButton("另存产物", true) {
-                            createDoc.launch(st.artifactPath!!.substringAfterLast('/'))
-                        }
-                    }
-                }
-                if (st.error != null) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(st.error!!, color = Color(0xFFFF6B81), fontSize = 12.sp)
-                }
-            }
-
-            Spacer(Modifier.height(20.dp))
         }
 
-        if (showSettings) {
-            SettingsSheet(
-                prefs = prefs,
-                onClose = {
-                    showSettings = false
-                    vm.log("设置已保存")
-                })
+        LiquidNav(
+            haze = haze,
+            selected = tab,
+            onSelect = { tab = it },
+            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
+                .padding(horizontal = 18.dp, vertical = 12.dp)
+        )
+    }
+}
+
+/* ------------------------------------------------------------------ 顶栏 */
+
+@Composable
+private fun Header(st: UiState) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text("NKBUILD", color = Color.White, fontWeight = FontWeight.Black,
+            fontSize = 22.sp, letterSpacing = 2.sp)
+        Spacer(Modifier.width(8.dp))
+        Text("源码 → 云端混淆", color = TextDim, fontSize = 11.sp)
+        Spacer(Modifier.weight(1f))
+        Box(
+            Modifier.clip(RoundedCornerShape(14.dp))
+                .background(Color.White.copy(alpha = 0.08f))
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+        ) {
+            Text(
+                "● " + st.statusText +
+                    when (st.phase) {
+                        Phase.RUNNING -> " ${fmt(st.elapsed)}"
+                        Phase.DONE -> " ${fmt(st.elapsed)}"
+                        else -> ""
+                    },
+                color = when (st.phase) {
+                    Phase.DONE -> Color(0xFF3DDC97)
+                    Phase.ERROR -> Color(0xFFFF6B81)
+                    else -> TextSub
+                }, fontSize = 11.sp)
         }
     }
 }
 
+/* ------------------------------------------------------------- ① 构建页 */
+
 @Composable
-fun SettingsSheet(prefs: Prefs, onClose: () -> Unit) {
+private fun BuildPage(vm: BuildViewModel, st: UiState, haze: HazeState?, onPick: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        GlassCard(haze) {
+            SectionTitle("①", "源码")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.weight(1f).height(42.dp).clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.06f))
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    val units = st.files.count {
+                        it.rel.substringAfterLast('.', "").lowercase() in
+                            setOf("c", "cc", "cpp", "cxx", "c++")
+                    }
+                    Text(
+                        if (st.files.isEmpty()) "选择项目目录（含 .h/.hpp/资源）"
+                        else "$units 个编译单元 · ${st.files.size} 个文件",
+                        color = if (st.files.isEmpty()) TextDim else TextMain, fontSize = 13.sp)
+                }
+                PrimaryButton("选择", true) { onPick() }
+            }
+            if (st.files.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(st.files.take(6).joinToString("\n") { it.rel } +
+                    if (st.files.size > 6) "\n…（共 ${st.files.size} 个）" else "",
+                    color = TextSub, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("②", "工程 / 产物")
+            Field("工程名", st.project, vm::setProject)
+            Field("产物名", st.outName, vm::setOutName)
+        }
+
+        GlassCard(haze) {
+            SectionTitle("③", "反调试")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("IR 级反调试 + nk_ad 看门狗", color = TextMain, fontSize = 13.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("TracerPid 探测 · 线程全查 · maps 差分 · libc 序言校验\n" +
+                        "模拟器/虚拟机请关掉，否则会静默退出（exit 97）",
+                        color = TextDim, fontSize = 10.sp)
+                }
+                GlassSwitch(st.adb) { vm.setAdb(it) }
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("④", "开始")
+            val sel = st.passes.toMutableSet()
+            if (!st.adb) sel.remove("anti_debugging")
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("${sel.size} 个 pass", color = TextSub, fontSize = 11.sp)
+                Text("·", color = TextDim, fontSize = 11.sp)
+                Text(sel.joinToString(" / ") { PassCatalog.labelOf(it) }
+                    .take(40) + if (sel.size > 3) "…" else "",
+                    color = TextDim, fontSize = 11.sp)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(5.dp))
+                    .background(Color.White.copy(alpha = 0.10f))) {
+                    Box(Modifier.fillMaxHeight()
+                        .fillMaxWidth(st.progress.coerceIn(0f, 1f))
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(Brush.horizontalGradient(
+                            listOf(Color(0xFF6A48FF), Accent2, Color(0xFF6A48FF)))))
+                }
+                Text("${(st.progress * 100).toInt()}%", color = TextSub, fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                PrimaryButton(
+                    if (st.phase == Phase.RUNNING) "编译中…" else "开始编译",
+                    st.phase != Phase.RUNNING
+                ) { vm.start(LocalContext.current, Prefs(LocalContext.current)) }
+                if (st.phase == Phase.RUNNING) {
+                    Box(Modifier.height(46.dp).clip(RoundedCornerShape(14.dp))
+                        .background(Color.White.copy(alpha = 0.10f))
+                        .clickable { vm.cancel() }.padding(horizontal = 16.dp),
+                        contentAlignment = Alignment.Center
+                    ) { Text("取消", color = TextMain, fontSize = 14.sp) }
+                }
+            }
+            if (st.phase == Phase.RUNNING) {
+                Spacer(Modifier.height(8.dp))
+                Text("⏱ 已用 ${fmt(st.elapsed)} · 预计还剩 ${fmt(st.remain)}（总估 ${fmt(st.eta)}）",
+                    color = TextSub, fontSize = 11.sp)
+            }
+            if (st.phase == Phase.DONE) {
+                Spacer(Modifier.height(8.dp))
+                Text("✅ 完成，用时 ${fmt(st.elapsed)}" +
+                    (st.savedName?.let { " · 已存 Download/NKBuild/$it" } ?: ""),
+                    color = Color(0xFF3DDC97), fontSize = 11.sp)
+            }
+            st.error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = Color(0xFFFF6B81), fontSize = 11.sp)
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("⑤", "日志")
+            Column(
+                Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 260.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.35f))
+                    .padding(10.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    st.logs.ifEmpty { listOf("日志：上传 → 触发 → 编译 → 下载 → 存 Download") }
+                        .joinToString("\n"),
+                    color = TextSub, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+            }
+        }
+        Spacer(Modifier.height(96.dp))
+    }
+}
+
+/* ------------------------------------------------------------- ② 混淆页 */
+
+@Composable
+private fun ObfPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
+    var showToml by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        GlassCard(haze) {
+            SectionTitle("◈", "预设")
+            GlassSegmented(listOf("满血", "标准", "轻量"),
+                when {
+                    st.passes == PassCatalog.FULL -> 0
+                    st.passes == PassCatalog.DEFAULTS -> 1
+                    st.passes == PassCatalog.LIGHT -> 2
+                    else -> 1
+                }
+            ) { idx ->
+                vm.applyPreset(
+                    when (idx) {
+                        0 -> PassCatalog.FULL
+                        2 -> PassCatalog.LIGHT
+                        else -> PassCatalog.DEFAULTS
+                    })
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("满血=${PassCatalog.FULL.size} 个 pass（含未验证项，易崩）\n" +
+                "标准=${PassCatalog.DEFAULTS.size} 个（推荐）· 轻量=${PassCatalog.LIGHT.size} 个（快）",
+                color = TextDim, fontSize = 10.sp)
+        }
+
+        GlassCard(haze) {
+            SectionTitle("核心", "必开项")
+            PassCatalog.byGroup(0).forEach { p ->
+                PassRow(p, st.passes.contains(p.key)) { vm.togglePass(p.key) }
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("进阶", "实验项（默认关）")
+            PassCatalog.byGroup(1).forEach { p ->
+                PassRow(p, st.passes.contains(p.key)) { vm.togglePass(p.key) }
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("禁用", "AArch64 不可用 / 已知崩")
+            PassCatalog.byGroup(2).forEach { p ->
+                PassRow(p, false) { }
+            }
+        }
+
+        GlassCard(haze) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.clickable { showToml = !showToml }) {
+                SectionTitle("", "本地生成的 TOML")
+                Spacer(Modifier.weight(1f))
+                Text(if (showToml) "收起" else "展开", color = Accent2, fontSize = 11.sp)
+            }
+            Text("提交到仓库 ci/ui-<工程名>.toml 后随 dispatch 一起生效",
+                color = TextDim, fontSize = 10.sp)
+            if (showToml) {
+                Spacer(Modifier.height(8.dp))
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 420.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black.copy(alpha = 0.40f))
+                        .padding(10.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(vm.tomlText(), color = TextSub, fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace)
+                }
+            }
+        }
+        Spacer(Modifier.height(96.dp))
+    }
+}
+
+@Composable
+private fun PassRow(p: PassDef, on: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = p.selectable) { onClick() }
+            .padding(horizontal = 4.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier.size(22.dp).clip(RoundedCornerShape(7.dp))
+                .background(if (on) Accent else Color.White.copy(alpha = 0.10f))
+                .border(1.dp,
+                    if (on) Color.Transparent else Color.White.copy(alpha = 0.22f),
+                    RoundedCornerShape(7.dp)),
+            contentAlignment = Alignment.Center
+        ) { if (on) Text("✓", color = Color.White, fontSize = 12.sp) }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                p.label + if (!p.selectable) "（不可用）" else "",
+                color = if (p.selectable) TextMain else TextDim,
+                fontSize = 13.sp,
+                fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
+            Spacer(Modifier.height(2.dp))
+            Text(p.desc, color = TextDim, fontSize = 10.sp)
+        }
+        Text(if (on) "ON" else "—",
+            color = if (on) Color(0xFF3DDC97) else TextDim, fontSize = 10.sp)
+    }
+}
+
+/* ------------------------------------------------------------- ③ 产物页 */
+
+@Composable
+private fun OutPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
+    val ctx = LocalContext.current
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        GlassCard(haze) {
+            SectionTitle("▣", "本次产物")
+            if (st.savedName == null && st.artifactPath == null) {
+                Text("还没有产物。去「构建」页跑一轮。", color = TextDim, fontSize = 12.sp)
+            } else {
+                Text(st.savedName ?: st.artifactPath!!.substringAfterLast('/'),
+                    color = TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                val size = st.artifactPath?.let { java.io.File(it).length() } ?: 0L
+                Text("${size / 1024} KB", color = TextDim, fontSize = 11.sp)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PrimaryButton("安装 / 打开", true) { vm.openOrInstall(ctx) }
+                    Box(Modifier.height(46.dp).clip(RoundedCornerShape(14.dp))
+                        .background(Color.White.copy(alpha = 0.10f))
+                        .clickable {
+                            st.artifactPath?.let { p ->
+                                vm.exportToDownloads(ctx, java.io.File(p),
+                                    java.io.File(p).name)
+                            }
+                        }.padding(horizontal = 16.dp),
+                        contentAlignment = Alignment.Center
+                    ) { Text("再存一份", color = TextMain, fontSize = 13.sp) }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("公共目录：Download/NKBuild/", color = TextDim, fontSize = 10.sp)
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("", "运行信息")
+            Text(
+                "状态：${st.statusText}\n" +
+                    "已用：${fmt(st.elapsed)}" +
+                    (if (st.phase == Phase.RUNNING) "（还剩约 ${fmt(st.remain)}）" else "") + "\n" +
+                    "产物路径：${st.artifactPath ?: "—"}",
+                color = TextSub, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            st.runUrl?.let { u ->
+                Spacer(Modifier.height(8.dp))
+                Text("查看运行日志 ↗", color = Accent2, fontSize = 12.sp,
+                    modifier = Modifier.clickable {
+                        runCatching {
+                            ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
+                    })
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("", "日志尾巴")
+            Column(
+                Modifier.fillMaxWidth().heightIn(min = 160.dp, max = 320.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.35f))
+                    .padding(10.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(st.logs.takeLast(60).joinToString("\n").ifEmpty { "—" },
+                    color = TextSub, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+            }
+        }
+        Spacer(Modifier.height(96.dp))
+    }
+}
+
+/* ------------------------------------------------------------- ④ 设置页 */
+
+@Composable
+private fun SetPage(prefs: Prefs, blurOn: Boolean, haze: HazeState?, onBlur: (Boolean) -> Unit) {
     var token by remember { mutableStateOf(prefs.token) }
     var owner by remember { mutableStateOf(prefs.owner) }
     var repo by remember { mutableStateOf(prefs.repo) }
     var branch by remember { mutableStateOf(prefs.branch) }
     var wf by remember { mutableStateOf(prefs.workflow) }
+    var autoExport by remember { mutableStateOf(prefs.autoExport) }
+    var savedTip by remember { mutableStateOf("") }
 
-    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f))
-        .clickable { onClose() }, contentAlignment = Alignment.Center) {
-        Column(
-            Modifier.padding(20.dp).fillMaxWidth()
-                .clip(RoundedCornerShape(22.dp))
-                .background(Color(0xF2141726))
-                .clickable(enabled = false) {}
-                .padding(20.dp)
-        ) {
-            Text("设置", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-            Spacer(Modifier.height(12.dp))
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        GlassCard(haze) {
+            SectionTitle("⚙", "仓库")
             Field("GitHub Token", token) { token = it }
-            Field("用户名/组织", owner) { owner = it }
+            Field("用户名 / 组织", owner) { owner = it }
             Field("仓库", repo) { repo = it }
             Field("分支", branch) { branch = it }
             Field("工作流文件", wf) { wf = it }
-            Text("Token 只存本机 SharedPreferences", color = TextDim, fontSize = 11.sp)
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Token 只存本机 SharedPreferences，不联网外发",
+                color = TextDim, fontSize = 10.sp)
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically) {
                 PrimaryButton("保存", true) {
                     prefs.token = token.trim()
                     prefs.owner = owner.trim()
                     prefs.repo = repo.trim()
                     prefs.branch = branch.trim().ifBlank { "main" }
                     prefs.workflow = wf.trim().ifBlank { "build-obf.yml" }
-                    onClose()
+                    savedTip = "已保存"
                 }
-                Box(Modifier.height(46.dp).clip(RoundedCornerShape(14.dp))
-                    .background(Color.White.copy(alpha = 0.10f))
-                    .clickable { onClose() }.padding(horizontal = 18.dp),
-                    contentAlignment = Alignment.Center
-                ) { Text("取消", color = TextMain, fontSize = 14.sp) }
+                if (savedTip.isNotEmpty()) {
+                    Text(savedTip, color = Color(0xFF3DDC97), fontSize = 12.sp)
+                }
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("", "行为")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("产物自动存 Download/NKBuild", color = TextMain, fontSize = 13.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("API29+ 走 MediaStore，不需要存储权限",
+                        color = TextDim, fontSize = 10.sp)
+                }
+                GlassSwitch(autoExport) { autoExport = it; prefs.autoExport = it }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("液态玻璃模糊（RenderEffect）", color = TextMain, fontSize = 13.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("vivo/OPPO/一加/realme 部分机型 GPU 会崩，默认已关",
+                        color = TextDim, fontSize = 10.sp)
+                }
+                GlassSwitch(blurOn) { onBlur(it) }
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("", "关于")
+            Text("NKBuild 手机版 v1.2（versionCode 3）\n" +
+                "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
+                "构建：GitHub Actions · 产物：AArch64 PIE",
+                color = TextSub, fontSize = 11.sp)
+        }
+        Spacer(Modifier.height(96.dp))
+    }
+}
+
+/* ------------------------------------------------------- 液态玻璃导航条 */
+
+@Composable
+private fun LiquidNav(
+    haze: HazeState?,
+    selected: Tab,
+    onSelect: (Tab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(28.dp)
+    var m = modifier.fillMaxWidth().height(68.dp).clip(shape)
+    if (haze != null) m = m.hazeEffect(state = haze)
+
+    Box(
+        m.background(Brush.verticalGradient(
+            listOf(Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0.09f))))
+            .border(1.dp, Brush.verticalGradient(
+                listOf(Color.White.copy(alpha = 0.40f), Color.White.copy(alpha = 0.10f))), shape)
+            .padding(6.dp)
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val w = maxWidth
+            val idx = TABS.indexOf(selected).coerceAtLeast(0)
+            val off by animateDpAsState(
+                targetValue = w / TABS.size * idx,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow), label = "pill")
+            Box(
+                Modifier.offset(x = off).width(w / TABS.size).fillMaxHeight()
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(Brush.verticalGradient(
+                        listOf(Color.White.copy(alpha = 0.30f),
+                            Color.White.copy(alpha = 0.12f))))
+                    .border(1.dp, Color.White.copy(alpha = 0.38f), RoundedCornerShape(22.dp))
+            )
+            Row(Modifier.fillMaxSize()) {
+                TABS.forEach { t ->
+                    val on = t == selected
+                    Column(
+                        Modifier.weight(1f).fillMaxHeight().clickable { onSelect(t) },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(t.glyph, color = if (on) Color.White else TextSub, fontSize = 15.sp)
+                        Spacer(Modifier.height(1.dp))
+                        Text(t.label, color = if (on) Color.White else TextSub,
+                            fontSize = 10.sp,
+                            fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
+                    }
+                }
             }
         }
     }
 }
 
+/* --------------------------------------------------------------- 小组件 */
+
 @Composable
 private fun Field(label: String, value: String, onChange: (String) -> Unit) {
-    Text(label, color = TextDim, fontSize = 12.sp)
+    Text(label, color = TextDim, fontSize = 11.sp)
     Spacer(Modifier.height(4.dp))
     androidx.compose.foundation.text.BasicTextField(
         value = value, onValueChange = onChange, singleLine = true,
