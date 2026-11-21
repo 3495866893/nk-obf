@@ -120,9 +120,10 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     fi
     extra=("-fpass-plugin=$plugin")
   fi
-  timeout 1800 "$CLANG" "${BASE[@]}" "${extra[@]}" "${LIBS[@]}" \
+  rm -f "$out".s /tmp/nk_err.txt
+  timeout 1800 "$CLANG" "${BASE[@]}" "${extra[@]}" -save-temps=obj "${LIBS[@]}" \
     -o "$out" "${SRCS[@]}" -lEGL -lGLESv2 -lGLESv3 -landroid -llog 2>&1 \
-    | tee /tmp/nk_err.txt | tail -30
+    | tee /tmp/nk_err.txt | tail -40
   if [ -f "$out" ]; then
     brand "$out"
     echo "成功: $out ($(stat -c%s "$out") 字节)"
@@ -146,7 +147,22 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     else
       echo "IR 转储失败"
     fi
-    echo "== 汇编核对 =="
+    echo "== 汇编核对（同一编译的 .s）=="
+    SS=""
+    for cand in "$out".s "$OUT".s "$OUT".cfg.s $(ls -t *.s 2>/dev/null | head -1); do
+      [ -f "$cand" ] && { SS="$cand"; break; }
+    done
+    echo ".s 文件: ${SS:-无}"
+    if [ -n "$SS" ]; then
+      echo ".s 行数: $(wc -l < "$SS")  .L_v 标签: $(grep -cE '^\.L_v[0-9a-f]+:' "$SS" || true)  _v 标签: $(grep -cE '^_v[0-9a-f]+:' "$SS" || true)"
+      echo "报错符号全集: $(grep -oE '\.?L?_v[0-9a-f]{8,}' /tmp/nk_err.txt | sort -u | tr '\n' ' ')"
+      for sym in $(grep -oE '\.?L?_v[0-9a-f]{8,}' /tmp/nk_err.txt | sort -u | head -3); do
+        base=$(echo "$sym" | sed 's/^\.L//')
+        echo "--- $base : 命中 $(grep -c "$base" "$SS" || true) 行 ---"
+        grep -m2 -n "$base" "$SS" | cut -c1-130 || true
+      done
+    fi
+    echo "== 汇编核对(旧) =="
     rm -f /tmp/nk_s.s
     timeout 1800 "$CLANG" "${BASE[@]}" "${extra[@]}" -S -o /tmp/nk_s.s "${SRCS[@]}" >/dev/null 2>&1 || true
     if [ -f /tmp/nk_s.s ]; then
