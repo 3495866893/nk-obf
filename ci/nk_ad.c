@@ -1,15 +1,10 @@
-// nk_ad.c v5 —— Ensia 反调试强化模块（arm64 / Android，纯用户态）
+// nk_ad.c v6 —— Ensia 反调试强化模块（arm64 / Android，纯用户态）
 // 原则：fail-open。读不到/权限不足一律放行，只在确定性证据上退出(_exit(97))。
 //
-// v5：新增 NK_AD_OFF 编译开关。Ensia 的 anti_debugging pass 会在**每个函数入口**注入
-//     call __nk_ad_check()，因此这个 pass 必须始终开启（关掉会导致部分全局构造/间接跳转
-//     收尾逻辑缺失，实测产物在静态初始化阶段 100% CPU 死循环）。"关闭反调试"的正确做法是
-//     保留 pass、把本文件的实现编成空函数。
-#ifdef NK_AD_OFF
-__attribute__((visibility("default"))) void __nk_ad_check(void) {
-    /* 空实现：调用点仍然存在，但永远放行 */
-}
-#else
+// v6：NK_AD_OFF 只做「两处提前返回」(nk_die_r / __nk_ad_check)，文件其余部分
+//     （构造函数、看门狗线程、各探测函数）照常编译链接。
+//     教训：v5 把整个实现换成空函数后，产物在启动阶段 100% CPU 空转（0 字节输出）；
+//     保持代码布局不变、只在运行时短路，才是可靠的「关闭反调试」。
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +58,10 @@ static void nk_dbg(const char *fmt, ...) {
     if (fd >= 0) { nk_sys(64, fd, (long)b, n); nk_sys(57, fd, 0, 0); }
 }
 static void nk_die_r(const char *why) {
+#ifdef NK_AD_OFF
+    (void)why;
+    return;   /* 关闭反调试：任何判定都不生效 */
+#endif
     if (getenv("NK_AD_DEBUG")) {
         // 直连 write(2, ...)，避免调试输出本身被 hook
         int n = (int)strlen(why);
@@ -74,7 +73,6 @@ static void nk_die_r(const char *why) {
     _exit(NK_EXIT);
 }
 static void nk_die(void) { nk_die_r("nk_ad: unknown"); }
-
 /* 判断某个 pid 的 comm 是否为我们的看门狗线程名（nk-wd）。
    用 comm 而不是 pid 比较，避免 PTRACE_SEIZE 完成时序不同导致误判。 */
 static int nk_comm_is(pid_t pid, const char *want) {
@@ -307,6 +305,9 @@ static void nk_check_full(int early) {
 }
 
 __attribute__((visibility("default"))) void __nk_ad_check(void) {
+#ifdef NK_AD_OFF
+    return;   /* 关闭反调试：入口检查直接放行 */
+#endif
     if (!g_inited) return;
     if ((++g_calls & 31u) != 0) return;
     nk_check_full(0);
@@ -372,4 +373,3 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
     pthread_t th;
     if (pthread_create(&th, NULL, nk_thread, NULL) == 0) pthread_detach(th);
 }
-#endif /* NK_AD_OFF */
