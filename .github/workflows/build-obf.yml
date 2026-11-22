@@ -255,11 +255,11 @@ jobs:
           tar -I 'zstd -1 -T0' -cf $WORK/llvm-build.tar.zst -C $WORK llvm-build
           ls -lh $WORK/llvm-build.tar.zst
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: llvm-build
-          path: /mnt/work/llvm-build.tar.zst
-          retention-days: 3
+      # 注意：llvm-build 不再上传 artifact —— 私有仓库 Actions 存储只有 500 MB，
+      # 一份 build tree 就 231 MB、每次重建都堆一份，直接把配额撑爆导致后续
+      # "Artifact storage quota has been hit" 让整个 job 失败。
+      # 缓存改走 Release 资产（release llvm-build-21.1.8 / llvm-build.tar.zst），
+      # Release 资产不占 Actions 存储配额。
 
       - name: upload build tree to release
         if: steps.restore.outputs.hit != 'true' && inputs.rebuild_clang == 'true' && steps.restore.outputs.hit != 'true'
@@ -292,6 +292,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ensia-plugin-${{ steps.kit.outputs.sha }}
+          retention-days: 3
           path: /mnt/work/ensia-build.tar.zst
           retention-days: 30
 
@@ -365,18 +366,9 @@ jobs:
             echo "SMOKE FAILED"
           fi
 
-      - name: cache ndk
-        if: steps.ndk.outputs.hit != 'true'
-        run: |
-          set -eux
-          NDK_DIR="${NDK_DIR:-$WORK/android-ndk-r29}"
-          tar -I 'zstd -1 -T0' -cf "$WORK/ndk.tar.zst" -C "$(dirname "$NDK_DIR")" "$(basename "$NDK_DIR")"
-          ls -lh "$WORK/ndk.tar.zst"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ndk-r29-cache
-          path: /mnt/work/ndk.tar.zst
-          retention-days: 7
+      # NDK 也不再打包成 artifact（786 MB，一份就超配额）。
+      # 缓存 miss 时由上面的 "fetch android ndk r29" 从 dl.google.com 现下，
+      # 代价约 1 分钟，换来配额永远不会被撑爆。
 
       - name: build lucifer
         timeout-minutes: 120
@@ -502,9 +494,11 @@ jobs:
             lucifer
             lucifer-*
           if-no-files-found: warn
+          retention-days: 3
 
       - uses: actions/upload-artifact@v4
         with:
           name: nk-toolchain
           path: nk-toolchain.tar.gz
           if-no-files-found: warn
+          retention-days: 3
