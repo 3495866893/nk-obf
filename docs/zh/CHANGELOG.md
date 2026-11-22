@@ -8,10 +8,10 @@
 
 ## 阶段 0 · 起点：一个能把源码丢上去、拿回混淆二进制的工具
 
-第一天的需求：桌面 GUI —— 选项目目录、上传到 GitHub、触发 Actions、拿回被 **Ensia**（后来的 NK）混淆的 aarch64 二进制，混淆与反调试可勾选。
+第一天的需求：桌面 GUI —— 选项目目录、上传到 GitHub、触发 Actions、拿回被**旧代号插件**（后来的 NK）混淆的 aarch64 二进制，混淆与反调试可勾选。
 
 - 落地 `tools/NKBuild.py`：customtkinter 四卡片界面（源码 / 工程与产物 / 反混淆开关 / 开始与日志），`Github` 类负责 blob → tree → commit → dispatch → 轮询 run → 下 artifact。
-- 混淆侧：`kit.tar.gz` 里的 LLVM 21 Pass 插件（当时叫 `libEnsia.so`），用 `-fpass-plugin` 挂到 NDK r29 的 clang 上，配置走 `ci/*.toml`。
+- 混淆侧：`kit.tar.gz` 里的 LLVM 21 Pass 插件（当时叫 `lib<旧代号>.so`），用 `-fpass-plugin` 挂到 NDK r29 的 clang 上，配置走 `ci/*.toml`。
 - 第一版就从 17.6 分钟压到 1.8 分钟：apt 依赖改成按需检查（7.5 分钟 → 0.02 分钟）、smoke test 默认跳过（4 分钟 → 0）、插件与 clang 走缓存。
 
 ## 阶段 1 · 反调试让程序「一启动就静默退出」
@@ -41,7 +41,7 @@
 ## 阶段 4 · Frida 与 Actions 配额
 
 - 想装 frida-server 做真机检测验证：拿到的是 `win_arm64` 轮子（本机 AMD64 跑不了），frida-server 又必须 root 才能起；设备当时换成了一台未 root 的 vivo。
-- 顺手发现 Actions 存储爆了：139 个 artifact / 5.8 GB（`llvm-build` 每次 225 MB × 17 份），清到 225 MB，并把清理 workflow 改成「保留 `llvm-build`、`ndk-*-cache`、`ensia-plugin-*`，总量 >300 MB 才删」。
+- 顺手发现 Actions 存储爆了：139 个 artifact / 5.8 GB（`llvm-build` 每次 225 MB × 17 份），清到 225 MB，并把清理 workflow 改成「保留 `llvm-build`、`ndk-*-cache`、`<旧名>-plugin-*`，总量 >300 MB 才删」。
 
 ## 阶段 5 · 工作区被误删，全量恢复
 
@@ -120,7 +120,7 @@
 
 - **全量改名**：早期代号 → `NK`。kit 目录 `nk/`（95 个文件）、产物 `libNk.so`、脚本 `ci/build-nk.sh`、环境变量 `NK` / `NK_CONFIG`，仓库 `nk-obf`。
 - 文档：`docs/zh/` 与 `docs/en/` 各 8 篇（index / FEATURES / USAGE / ARCHITECTURE / COMPATIBILITY / CHANGELOG / RELEASES / CREDITS）+ 本文件 + 双语 `README.md` / `README.en.md` + 保姆级部署教程 `DEPLOY.md`。
-- 两个子智能体逐篇校对，再用脚本机械复核：围栏成对、标题无跳级、相对链接全部可解析、旧名命中 0、无乱码、无 TODO。
+- 两个子智能体逐篇校对，再用脚本机械复核：围栏成对、标题无跳级、相对链接全部可解析、旧名命中 0、无乱码、无遗留待办标记。
 - **授权修正**：`src/`、`ci/`、`kit.tar.gz` 源自 **OLLVM-Next（AGPL-3.0）**，原来挂 MIT 是错的；改成「插件部分 AGPL-3.0 + 双端 GUI 与文档 MIT」，`CREDITS` 两边补授权节。
 - 发布 `v1.0`：`NKBuild-mobile-1.0-kami.apk` + `NKBuild-1.0-win64.exe`，手机上显示 `v1.0（versionCode 20）`，关于页大字号 `NK / OLLVM-NEXT / 新一代混淆`。
 - 公开前自查：仓库内**没有任何真实 PAT**（只有文档里的 `ghp_xxxx…` 占位），删掉私人工程目录，示例签名口令与 XL 测试密钥在 `CREDITS` 里注明「仅供示例，自行更换」。
