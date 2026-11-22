@@ -480,6 +480,62 @@ private fun OutPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
         }
 
         GlassCard(haze) {
+            SectionTitle("⟲", "任务历史")
+            val prefs = remember { Prefs(ctx) }
+            if (st.jobs.isEmpty()) {
+                Text(
+                    "还没有任务。每次「开始编译」派发成功后会自动记一条，" +
+                        "产物下载被中断了，点一下这里就能补下。",
+                    color = TextDim, fontSize = 12.sp
+                )
+            } else {
+                st.jobs.forEach { j ->
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { vm.redownload(ctx, prefs, j) }
+                            .padding(vertical = 7.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "${j.proj} · ${j.out}",
+                                color = TextMain, fontSize = 13.sp, fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "run ${j.runId} · ${timeText(j.startMs)}" +
+                                    if (j.done) " · 已下载 ${j.file}" else " · 未下载",
+                                color = TextDim, fontSize = 10.sp
+                            )
+                        }
+                        Box(
+                            Modifier.clip(RoundedCornerShape(10.dp))
+                                .background(Color(0x22D2557F))
+                                .clickable { vm.redownload(ctx, prefs, j) }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(if (j.done) "重下" else "下载", color = Accent, fontSize = 11.sp)
+                        }
+                        Box(
+                            Modifier.padding(start = 6.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0x14000000))
+                                .clickable { vm.removeJob(prefs, j.runId) }
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Text("✕", color = TextDim, fontSize = 11.sp)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "点一行 = 按 run id 重新下载产物；GitHub 只保留 90 天，过期会提示。",
+                    color = TextDim, fontSize = 10.sp
+                )
+            }
+        }
+
+        GlassCard(haze) {
             SectionTitle("", "运行信息")
             Text(
                 "状态：${st.statusText}\n" +
@@ -832,4 +888,11 @@ private fun RuleLine(k: String, v: String) {
         Text(k, color = Accent2, fontSize = 11.sp, modifier = Modifier.width(112.dp))
         Text(v, color = TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
     }
+}
+
+/** 任务历史里的时间显示 */
+private fun timeText(ms: Long): String {
+    if (ms <= 0L) return "—"
+    return java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+        .format(java.util.Date(ms))
 }
