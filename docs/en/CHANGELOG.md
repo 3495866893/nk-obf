@@ -2,7 +2,7 @@
 
 Chronological record of NK, from "the plugin cannot link" to "two GUIs plus a public release". Each entry states **symptom → root cause → fix → verification numbers**.
 
-Naming: the plugin was originally `Ensia` (repo `ensia-plugin`); it was renamed wholesale on 2026-11-23 to `NK` (repo `nk-obf`), `libEnsia.so → libNk.so`.
+Naming: before the v1.0 release the project carried an earlier codename; on 2026-11-23 it was renamed wholesale to `NK` (repo `nk-obf`, plugin `libNk.so`). The old-to-new mapping is listed in Stage G. Stage F version numbers 1.1–1.8.1 are development iterations; the only public version number is **v1.0**.
 
 ---
 
@@ -141,7 +141,7 @@ It is deliberately **excluded from obfuscation** (compiled separately with `clan
 
 ## Stage G · Rename and release (2026-11-23)
 
-- Renamed `Ensia → NK` everywhere: kit directory `ensia/ → nk/` (95 files), `libEnsia → libNk`, `ENSIA → NK`, `build-ensia.sh → build-nk.sh`, repo `ensia-plugin → nk-obf` (still private).
+- Full rename on 2026-11-23: earlier codename, repository name, shared-library name, script names and environment-variable prefixes all become `NK` / `nk-obf` — kit directory `nk/` (95 files), artifact `libNk.so`, build script `ci/build-nk.sh`, environment `NK` / `NK_CONFIG`, repository `nk-obf` (still private).
 - Sources flattened into `src/` (79 files / 2.5 MB), 7 documents, MIT license.
 - Repo cleanup: removed `proj/`, `projects/myproj/` (37.4 MiB, `font.h` alone is 20 MB) and `projects/路西法/`; **410 files / 63.3 MiB → 294 files / 24.9 MiB**.
 - Published **Release `v1.0`**: `NKBuild-mobile-1.0-kami.apk` (9.98 MB) and `NKBuild-1.0-win64.exe` (13.35 MB); plus `nk-builds` (every build's `lucifer` and `nk-toolchain.tar.gz`) and `llvm-build-21.1.8`.
