@@ -90,7 +90,8 @@ fi
 BASE=(
   "--target=aarch64-linux-android21" "--sysroot=$SYS"
   "-resource-dir=$TC/lib/clang/21"
-  "-O2" "-fPIE" "-fstack-protector-strong" "-D_FORTIFY_SOURCE=2"
+  "-O2" "-fPIE" "-fstack-protector-strong" "-D_FORTIFY_SOURCE=2
+  -DVK_USE_PLATFORM_ANDROID_KHR"
   "-fvisibility=hidden" "-ffunction-sections" "-fdata-sections" "-fno-ident"
   "-nostdlib++" "--ld-path=$LLD"
   "-Wl,--gc-sections" "-Wl,--exclude-libs,ALL"
