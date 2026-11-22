@@ -592,6 +592,16 @@ class BuildViewModel : ViewModel() {
     /* ---------------------------------------------------------- 授权（XL 云验证） */
 
     /** 启动时用上次保存的卡密自动验一次 */
+    /** 设置页「刷新登录」：重登账号（卡密不参与，避免二次绑定） */
+    fun refreshLogin(ctx: Context, prefs: Prefs) {
+        if (prefs.acctUser.isBlank() || prefs.acctPass.isBlank()) {
+            toast("还没登录账号，先在首页登录", false)
+            _s.value = _s.value.copy(acctOk = false, acctNeedCharge = false)
+            return
+        }
+        acctDo(ctx, prefs, prefs.acctUser, prefs.acctPass, false)
+    }
+
     /** 启动时静默复用上次的账号（有密码才试） */
     fun acctAuto(ctx: Context, prefs: Prefs) {
         val u = prefs.acctUser
@@ -606,7 +616,7 @@ class BuildViewModel : ViewModel() {
                         acctText = "已登录",
                     )
                     log("账号自动登录：" + r.user)
-                } else if (r.msg.contains("未激活")) {
+                } else if (r.msg.contains("未激活") || r.code == 179) {
                     _s.value = _s.value.copy(
                         acctOk = false, acctNeedCharge = true, acctUser = u,
                         acctText = "待充值",
@@ -620,6 +630,9 @@ class BuildViewModel : ViewModel() {
     }
 
     fun licAuto(ctx: Context, prefs: Prefs) {
+        // 卡密是一次性绑定物：已经用账号体系的人绝不能再拿它 kmlogon 一次，
+        // 否则服务器回「卡密已使用」，用户会以为授权坏了
+        if (prefs.acctUser.isNotBlank()) return
         val km = prefs.kami
         if (km.isBlank()) {
             _s.value = _s.value.copy(licOk = false, licText = "未登录")
@@ -710,20 +723,27 @@ class BuildViewModel : ViewModel() {
                     acctUser = if (r.ok) r.user else _s.value.acctUser,
                 )
                 log((if (reg) "注册" else "登录") + (if (r.ok) "成功" else "失败") + "：" + r.msg)
-                if (r.ok) {
-                    prefs.acctUser = r.user
-                    prefs.acctPass = pass
-                    if (r.activated) {
-                        _s.value = _s.value.copy(acctOk = true, acctNeedCharge = false)
-                        toast("登录成功 · 欢迎回来", true)
-                        log("账号已激活，进入主界面")
-                    } else {
-                        _s.value = _s.value.copy(acctOk = false, acctNeedCharge = true)
-                        toast("账号未激活，先用卡密充值", false)
-                        log("账号未激活：转到卡密充值页")
-                    }
+                prefs.acctUser = r.user.ifBlank { user.trim() }
+                prefs.acctPass = pass
+                val needCharge = (!r.ok && r.code == 179) || (r.ok && !r.activated)
+                if (r.ok && r.activated) {
+                    _s.value = _s.value.copy(
+                        acctOk = true, acctNeedCharge = false, acctUser = prefs.acctUser,
+                    )
+                    toast("登录成功 · 欢迎回来", true)
+                    log("账号已激活，进入主界面")
+                } else if (needCharge) {
+                    // 179 = 账号未激活，直接进第二屏卡密充值（不能停在登录页）
+                    _s.value = _s.value.copy(
+                        acctOk = false, acctNeedCharge = true,
+                        acctUser = prefs.acctUser, licText = "",
+                    )
+                    toast("账号未激活，去卡密充值", false)
+                    log("账号未激活（code " + r.code + "）：转到卡密充值页")
                 } else {
+                    _s.value = _s.value.copy(acctUser = prefs.acctUser)
                     toast(r.msg, false)
+                    log("账号登录失败：" + r.msg)
                 }
             }
         }
@@ -761,9 +781,23 @@ class BuildViewModel : ViewModel() {
                 if (r.ok) {
                     prefs.kami = k
                     prefs.licVip = r.vip
-                    _s.value = _s.value.copy(acctOk = true, acctNeedCharge = false)
-                    toast("充值成功 · 已开通", true)
-                    log("卡密加时成功：" + r.msg)
+                    // 有账号的回查一次 userlogon，200 才算真的开通
+                    var activated = true
+                    if (prefs.acctUser.isNotBlank() && prefs.acctPass.isNotBlank()) {
+                        val a = XlVerify.account(ctx, false, prefs.acctUser, prefs.acctPass)
+                        activated = a.ok && a.activated
+                        if (!activated) log("充值后账号仍未激活：" + a.msg)
+                    }
+                    _s.value = _s.value.copy(
+                        acctOk = activated, acctNeedCharge = !activated, licOk = activated,
+                    )
+                    if (activated) {
+                        toast("充值成功 · 已开通", true)
+                        log("卡密加时成功：" + r.msg)
+                    } else {
+                        toast("已绑卡密，但账号还没激活", false)
+                        log("已绑卡密，但账号未激活，可再试一次或换个卡密")
+                    }
                 } else {
                     toast("充值失败：" + r.msg, false)
                     log("卡密加时失败：" + r.msg)
