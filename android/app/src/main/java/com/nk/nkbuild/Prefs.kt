@@ -139,6 +139,32 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("lic_vip", 0L)
         set(v) = sp.edit().putLong("lic_vip", v).apply()
 
+    /* ---- 账号（v1.7）：登录成功后本地记住，方便下次自动登录 ---- */
+
+    var acctUser: String
+        get() = sp.getString("acct_user", "") ?: ""
+        set(v) = sp.edit().putString("acct_user", v).apply()
+
+    var acctPass: String
+        get() = sp.getString("acct_pass", "") ?: ""
+        set(v) = sp.edit().putString("acct_pass", v).apply()
+
+    var noticeText: String
+        get() = sp.getString("notice", "") ?: ""
+        set(v) = sp.edit().putString("notice", v).apply()
+
+    var cloudVer: String
+        get() = sp.getString("cloud_ver", "") ?: ""
+        set(v) = sp.edit().putString("cloud_ver", v).apply()
+
+    var cloudInfo: String
+        get() = sp.getString("cloud_info", "") ?: ""
+        set(v) = sp.edit().putString("cloud_info", v).apply()
+
+    var cloudUrl: String
+        get() = sp.getString("cloud_url", "") ?: ""
+        set(v) = sp.edit().putString("cloud_url", v).apply()
+
     /** 皮肤背景：每切一页换一张图（默认开） */
     var skin: Boolean
         get() = sp.getBoolean("skin", true)
