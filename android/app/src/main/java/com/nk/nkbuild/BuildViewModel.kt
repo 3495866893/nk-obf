@@ -46,6 +46,15 @@ data class UiState(
     val savedName: String? = null,
     val runUrl: String? = null,
     val error: String? = null,
+    // 授权（XL 云验证）
+    val licOk: Boolean = false,
+    val licText: String = "未登录",
+    val licBusy: Boolean = false,
+    // 检查更新
+    val updText: String = "",
+    val updBusy: Boolean = false,
+    val updUri: String? = null,
+    val updVer: String = "",
 ) {
     /** 还差多少秒（粗略；跑完或没开始就是 0） */
     val remain: Long get() = if (phase == Phase.RUNNING && eta > elapsed) eta - elapsed else 0L
@@ -565,6 +574,143 @@ class BuildViewModel : ViewModel() {
             }
         }
         return saved
+    }
+
+    /* ---------------------------------------------------------- 授权（XL 云验证） */
+
+    /** 启动时用上次保存的卡密自动验一次 */
+    fun licAuto(ctx: Context, prefs: Prefs) {
+        val km = prefs.kami
+        if (km.isBlank()) {
+            _s.value = _s.value.copy(licOk = false, licText = "未登录")
+            return
+        }
+        licLogin(ctx, prefs, km, quiet = true)
+    }
+
+    fun licLogin(ctx: Context, prefs: Prefs, km: String, quiet: Boolean = false) {
+        if (_s.value.licBusy) return
+        if (km.isBlank()) {
+            _s.value = _s.value.copy(licText = "卡密不能为空")
+            return
+        }
+        _s.value = _s.value.copy(licBusy = true, licText = "验证中…")
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = XlVerify.login(ctx, km)
+            withContext(Dispatchers.Main) {
+                if (r.ok) {
+                    prefs.kami = km.trim()
+                    prefs.licVip = r.vip
+                    _s.value = _s.value.copy(licBusy = false, licOk = true, licText = r.msg)
+                    if (!quiet) log("授权：" + r.msg)
+                } else {
+                    _s.value = _s.value.copy(licBusy = false, licOk = false, licText = r.msg)
+                    log("授权失败：" + r.msg)
+                }
+            }
+        }
+    }
+
+    fun licUnbind(ctx: Context, prefs: Prefs) {
+        val km = prefs.kami.ifBlank { "" }
+        if (km.isBlank()) {
+            _s.value = _s.value.copy(licText = "还没登录过")
+            return
+        }
+        _s.value = _s.value.copy(licBusy = true, licText = "解绑中…")
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = XlVerify.unbind(ctx, km)
+            withContext(Dispatchers.Main) {
+                if (r.ok) {
+                    prefs.kami = ""
+                    _s.value = _s.value.copy(licBusy = false, licOk = false, licText = "已解绑")
+                    log("授权已解绑")
+                } else {
+                    _s.value = _s.value.copy(licBusy = false, licText = r.msg)
+                    log("解绑失败：" + r.msg)
+                }
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------- 检查更新 */
+
+    fun checkUpdate(ctx: Context, prefs: Prefs) {
+        if (_s.value.updBusy) return
+        _s.value = _s.value.copy(updBusy = true, updText = "查询最新构建…")
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val gh = Github(prefs.token)
+                val runs = gh.runs(prefs.owner, prefs.repo, "build-apk.yml", 8)
+                var target = 0L
+                for (i in 0 until runs.length()) {
+                    val j = runs.getJSONObject(i)
+                    if (j.optString("conclusion") == "success") {
+                        target = j.getLong("id")
+                        break
+                    }
+                }
+                if (target <= 0L) throw RuntimeException("最近没有成功的构建")
+                val arts = gh.artifacts(prefs.owner, prefs.repo, target)
+                val apk = arts.firstOrNull { it.second == "NKBuild-apk" }
+                    ?: throw RuntimeException("这条 run 没留 APK 产物")
+                val zipBytes = gh.downloadArtifact(prefs.owner, prefs.repo, apk.first)
+                val out = File(ctx.filesDir, "update.apk")
+                var wrote = false
+                ZipInputStream(zipBytes.inputStream()).use { zin ->
+                    var e = zin.nextEntry
+                    while (e != null) {
+                        if (!e.isDirectory && e.name.endsWith(".apk", true)) {
+                            out.outputStream().use { o -> zin.copyTo(o) }
+                            wrote = true
+                            break
+                        }
+                        e = zin.nextEntry
+                    }
+                }
+                if (!wrote) throw RuntimeException("压缩包里没有 apk")
+
+                val pm = ctx.packageManager
+                @Suppress("DEPRECATION")
+                val info = pm.getPackageArchiveInfo(out.absolutePath, 0)
+                    ?: throw RuntimeException("读不出新包的版本")
+                val newCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode
+                else info.versionCode.toLong()
+                @Suppress("DEPRECATION")
+                val curPkg = pm.getPackageInfo(ctx.packageName, 0)
+                val curCode = if (Build.VERSION.SDK_INT >= 28) curPkg.longVersionCode
+                else curPkg.versionCode.toLong()
+                val newName = info.versionName ?: "?"
+                withContext(Dispatchers.Main) {
+                    if (newCode <= curCode) {
+                        _s.value = _s.value.copy(updBusy = false,
+                            updText = "已是最新（v$newName）", updUri = null, updVer = newName)
+                        log("检查更新：已是最新 v$newName")
+                        File(ctx.filesDir, "update.apk").delete()
+                    } else {
+                        val uri = FileProvider.getUriForFile(
+                            ctx, "${'$'}{ctx.packageName}.fileprovider", out)
+                        _s.value = _s.value.copy(updBusy = false,
+                            updText = "发现新版本 v$newName", updUri = uri.toString(), updVer = newName)
+                        log("检查更新：发现新版本 v$newName（run $target），点「安装」更新")
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _s.value = _s.value.copy(updBusy = false, updText = "检查失败：${'$'}{e.message}")
+                }
+            }
+        }
+    }
+
+    fun installUpdate(ctx: Context) {
+        val u = _s.value.updUri ?: return
+        val i = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(Uri.parse(u), "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { ctx.startActivity(i) }
+            .onFailure { log("拉起安装失败：" + it.message) }
     }
 
     fun cancel() {
