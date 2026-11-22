@@ -325,7 +325,8 @@ static void nk_soft(const char *tag) {
  * 之前 xposed-dir-in-rooted 走 nk_soft，root 设备（KernelSU/Magisk + LSPosed）
  * 每次深检都命中 → 1.5s 一次 → 4~6 秒自己把自己杀了。 */
 static void nk_soft_tool(const char *tag) {
-    g_tool_score++;
+    /* v11.3 P2：饱和计数，避免长时间运行无界增长（只影响日志观感） */
+    if (g_tool_score < 255) g_tool_score++;
     nk_dbg("nk_ad[tool] soft %s (tool=%d, 仅日志)\n", tag, g_tool_score);
 }
 
@@ -1146,6 +1147,22 @@ static void nk_emu_scan(int early) {
     }
 }
 
+/* v11.3 P1：TracerPid 直读统一收敛在这里，并让 NK_AD_ALLOW_DEBUG 覆盖它。
+ * 之前 nk_check_full 里那份内联检查没看环境变量，
+ * 导致 Android Studio（JDWP，am start -D）附加时即使设了 NK_AD_ALLOW_DEBUG=1 也会 exit 97。 */
+static int nk_tracer_pid_foreign(void)
+{
+    if (getenv("NK_AD_ALLOW_DEBUG")) return 0;
+    char st[4096];
+    if (nk_slurp("/proc/self/status", st, sizeof st) <= 0) return 0;
+    char *t = strstr(st, "TracerPid:");
+    if (!t) return 0;
+    int pid = (int)strtol(t + 10, NULL, 10);
+    nk_dbg("nk_ad[chk] TracerPid=%d wd=%d\n", pid, (int)g_wd_pid);
+    if (pid == 0) return 0;
+    return !nk_comm_is((pid_t)pid, "nk-wd");
+}
+
 static void nk_check_full(int early) {
     nk_dbg("nk_ad[chk] early=%d wd=%d\n", early, (int)g_wd_pid);
 
@@ -1154,16 +1171,7 @@ static void nk_check_full(int early) {
 
     if (nk_any_thread_traced()) nk_die_r("nk_ad: thread traced");
 
-    char st[4096];
-    if (nk_slurp("/proc/self/status", st, sizeof st) > 0) {
-        char *t = strstr(st, "TracerPid:");
-        if (t) {
-            int pid = (int)strtol(t + 10, NULL, 10);
-            nk_dbg("nk_ad[chk] TracerPid=%d wd=%d\n", pid, (int)g_wd_pid);
-            if (pid != 0 && !nk_comm_is((pid_t)pid, "nk-wd"))
-                nk_die_r("nk_ad: traced by foreign");
-        }
-    }
+    if (nk_tracer_pid_foreign()) nk_die_r("nk_ad: traced by foreign");
 
     // 注意：Vulkan / GL 驱动会在启动后 dlopen 出新的 r-x 映射，这是合法行为，
     // 不能当成 hook。真正强特征是可写可执行(rwx)映射。
