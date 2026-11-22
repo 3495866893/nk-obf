@@ -1,0 +1,450 @@
+# OLLVM-Next (Nk)
+
+<img align="right" src="./logo.svg" height="200" />
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20149843.svg)](https://doi.org/10.5281/zenodo.20149843)
+[![Discord Server](https://img.shields.io/discord/1459399539403522074.svg?label=Discord&logo=discord&color=blue)](https://discord.gg/D5e2czMTT9)
+[![Zulip Chat](https://img.shields.io/badge/chat-on%20Zulip-5e7ce2?logo=zulip&logoColor=white)](https://apich.zulipchat.com/)
+[![Scc Count Badge Code](https://sloc.xyz/github/Apich-Organization/dtact/?category=code)](https://github.com/Apich-Organization/dtact/)
+
+**⚠️ ETHICAL USE WARNING:** This is a high-strength industrial compiler obfuscation tool. Please read our [Ethics & Disclaimer Notice](./ETHICS.md) before use.
+
+OLLVM-Next (Nk) is a modern, high-resilience LLVM-based compiler obfuscation framework. Continuing the lineage of the [Hikari](https://github.com/HikariObfuscator/Hikari/), [Hikari-LLVM15](https://github.com/NeHyci/Hikari-LLVM15/), and [Hikari-LLVM19](https://github.com/PPKunOfficial/Hikari-LLVM19/) projects, Nk completely redesigns the core transformation engine for modern LLVM toolchains (**LLVM 21+**, including LLVM 21, 22, and 23+).
+
+Nk supports cross-platform code protection across **Linux, Windows (MSVC, clang-cl, MinGW), macOS, iOS, and Android**, with first-class architecture support for **x86_64, AArch64 (ARM64), and i386**.
+
+---
+
+## Support Tiers
+
+| Tier | Operating Systems | Architectures | Support Status |
+| --- | --- | --- | --- |
+| **Tier 0** | Linux, Windows | x86_64, AArch64 | Full support & Release blocker |
+| **Tier 1** | macOS, FreeBSD | x86_64, AArch64 | Full support & Non-release blocker |
+| **Tier 2** | OpenBSD, iOS, Android, and others | RISC-V, i386, and others | Partial support & Issue response only |
+
+---
+
+## **Core Philosophy: Eliminating Single Points of Failure (SPOF)**
+
+Traditional **VM-based obfuscators (Virtualizers)** encapsulate target logic within a custom interpreter loop. While difficult to inspect by hand, they introduce a catastrophic **Single Point of Failure (SPOF)**: once an analyst devirtualizes the bytecode opcode dispatch table or extracts the central interpreter handler loop, all protected routines collapse at once.
+
+**Nk completely rejects single-point interpreter designs.** Instead, it enforces **Non-Linear SMT / Symbolic Solver State-Space Explosion** and **Dynamic Taint Analysis (DTA) Neutralization** through an interleaved composition of distributed passes.
+
+---
+
+## **Comprehensive Pass Suite (15 Passes)**
+
+| Pass ID | CLI Flag | Env Var | Description |
+| :--- | :--- | :--- | :--- |
+| **ANTIHOOK** | `-enable-antihook` | `ANTIHOOK=1` | Dual-defense integrity architecture: Entry Prologue Guard (0xE9, 0xEB, 0xCC, 0x68, 0xFF 0x25, 0x48 0xB8) + Scattered In-Flight CFG Auditing, embedded code self-check with data-flow entanglement (`T_env` / `T_exp`), direct syscall bypass, and 3-tier anti-taint engine. |
+| **ACDOBF** | `-enable-acdobf` | `ACDOBF=1` | Objective-C & Swift metadata scrambling, Fisher-Yates method list shuffling, randomized selector hashing, and dummy selector injection. |
+| **FCO** | `-enable-fco` | `FCO=1` | Function Call Obfuscation: replaces direct calls with runtime `dlopen`/`dlsym` (POSIX) or `GetProcAddress` (Windows), completely eliminating external symbol imports from binary headers. |
+| **ADB** | `-enable-adb` | `ADB=1` | Zero-dependency debugger detection: direct raw syscall `/proc/self/status` TracerPid continuous auditing (immune to `catch syscall ptrace`), kernel anti-attachment via `prctl(PR_SET_DUMPABLE, 0)`, hardware debug registers (`DR0-DR7`), in-flight scattered checks (local `EFLAGS.TF` & local RDTSC jitter), and immediate violent termination (`SYS_exit_group(137)` / inline hardware traps). |
+| **STRCRY** | `-enable-strcry` | `STRCRY=1` | Dual-layer Vernam OTP + Rijndael GF(2^8) Galois Field cipher with unordered dynamic inlined decryption stubs and **Anti-Dump memory zeroization** at function return/resume. |
+| **CONSTENC**| `-enable-constenc`| `CONSTENC=1`| Two-phase constant encryption: Scheme A (Bivariate MBA k-share), Scheme B (4-round Feistel non-linear mixing), and Scheme C (Dynamic AntiDebug token `%adb.tok` entanglement with DominatorTree validation). |
+| **SUBOBF** | `-enable-subobf` | `SUBOBF=1` | Instruction Substitution: replaces basic arithmetic and bitwise operations with complex algebraic and rotate-identity trees. |
+| **MBAOBF** | `-enable-mbaobf` | `MBAOBF=1` | Mixed Boolean-Arithmetic: transforms expressions into multivariate non-linear boolean-arithmetic over ring Z/(2^n)Z with 42 built-in identities, Point-to-Point (BPP) dataflow tracking, context-dependent non-zero polynomial noise ($P(x, y) \cdot (\text{ctx} \oplus K)$), and **stateful contextual barriers**. |
+| **SPLITOBF**| `-enable-splitobf`| `SPLITOBF=1`| Basic Block Splitting: slices blocks across instruction chains, enforced by **mandatory opaque predicate chaining** (`((seed * (seed + 1)) & 1) == 0`) with bogus loops to prevent `simplifycfg` collapse, and injects inline-ASM stack pointer confusion. |
+| **BCFOBF** | `-enable-bcfobf` | `BCFOBF=1` | Bogus Control Flow: injects non-patchable hardware opaque predicates (CPUID SSE bit, RDTSC parity, CNTPCT_EL0, polymorphic barriers), dead-code loops, and entropy chains. |
+| **CSMOBF** | `-enable-csmobf` | `CSMOBF=1` | Chaos State Machine: transforms CFGs into a chaotic dynamical system governed by the quadratic logistic map in **full Q32 fixed-point arithmetic** ($2^{32}$ state space) with multi-step cellular automata attractor basins (`diffuseState`), modular inverse decoding (`modInverse32`), dynamic data-flow feedback (DFB), and optional 2-level nested dispatch. |
+| **CFFOBF** | `-enable-cffobf` | `CFFOBF=1` | Control Flow Flattening: fallback flattening with **Branchless Algebraic State Transitions** (`mask = 0 - zext(cond)`, `diff = true ^ false`, `next = false ^ (mask & diff)`), eliminating volatile single points of failure. |
+| **VOBF** | `-enable-vobf` | `VOBF=1` | Vector Obfuscation: lifts scalar arithmetic and comparisons into 128/256/512-bit SIMD vector space with pseudo-random lane noise, `shufflevector` bijective permutations, and Vector Taint Diffusion. |
+| **INDIBRAN**| `-enable-indibran`| `INDIBRAN=1`| Indirect Branching: encrypts basic block jump targets via Knuth multiplicative golden-ratio hashing, runtime Newton-Raphson modular inverse decode, and encrypted jump table arrays. |
+| **FUNCWRA** | `-enable-funcwra` | `FUNCWRA=1` | Function Wrapper: wraps function entry points with polymorphic proxy trampolines (`IdentityNoise`, `ArgShuffle`, `RetMask`), XOR-scrambled function pointers, and enforced `noinline optnone`. |
+
+---
+
+## **The 12-Stage Non-Linear Cascading Pipeline**
+
+Nk schedules passes to maximize cascading complexity. Each pass treats the obfuscated output of previous passes as input, creating an exponential barrier to symbolic deobfuscation:
+
+```
+ 1. AntiHooking & AntiClassDump     -> Dual-defense AntiHook (Entry Prologue Guard + Scattered In-Flight Auditing + Embedded Integrity Self-Check with Data-Flow Entanglement), direct syscalls, dynamic execution tokens (T_env), ObjC metadata scrambling
+ 2. FunctionWrapper                 -> Generates polymorphic proxy trampolines around entry points (argument XOR shuffling, frame depth mutation, return masking)
+ 3. FunctionCallObfuscate (FCO)     -> Eliminates direct imports via dlopen/dlsym runtime resolution inside callers and proxies
+ 4. AntiDebugging                   -> Injects direct syscall /proc/self/status TracerPid parser, prctl anti-attach, hardware debug registers (DR0-7), distributed in-flight TF/RDTSC probes, arithmetic data-flow entanglement, violent exit handler
+ 5. StringEncryption                -> Encrypts global strings with GF(2^8) stubs & injects volatile exit zeroizers
+ 6. ConstantEncryption (Phase 1)    -> Encrypts original programmer literals before CFG transformations
+ 7. Per-Function Transformation Loop:
+    ├── 7a. Substitution (Sub)      -> Arithmetic expansions (x + y -> algebraic identities)
+    ├── 7b. MBA Obfuscation         -> Multivariate non-linear boolean-arithmetic + polymorphic hardware barriers
+    ├── 7c. Split Basic Blocks      -> Slices basic blocks, cutting MBA expressions across blocks + stack confusion
+    ├── 7d. Bogus Control Flow (BCF)-> Injects opaque hardware predicates & clones split blocks into loops
+    ├── 7e. Chaos State Machine (CSM)-> Replaces CFG topology with logistic-map quadratic chaotic dispatch
+    ├── 7f. Classic Flattening (CFF)-> Fallback CFF with branchless algebraic masking for functions skipped by CSM
+    └── 7g. Vector Obfuscation (Vec)-> Lifts remaining scalar logic & dispatch state into SIMD vector space
+ 8. ConstantEncryption (Phase 2)    -> Encrypts state constants & jump keys generated by BCF/CSM/CFF
+ 9. IndirectBranch                  -> Encrypts jump targets via Knuth multiplicative hashing into jump tables
+10. Cleanup Markers                 -> Erases temporary compiler sentinel declarations (nk_*) before symbol scrambling
+11. FeatureElimination              -> Strips DWARF metadata, anonymizes TU path to "a", drops llvm.ident, clears COMDATs, internalizes ODR linkages, scrambles private/internal symbols (_f<hex>, _v<hex>, _a<hex>)
+12. LTO Evasion                     -> Stamps functions with Attribute::OptimizeNone and Attribute::NoInline
+```
+
+---
+
+
+## **Usage & Integration**
+
+### 1. Clang C / C++ Integration
+
+```bash
+# 1. Automatic configuration discovery (loads ./nk.toml if present in current directory):
+clang -fpass-plugin=/path/to/libNk.so -O2 main.c -o main
+
+# 2. Explicit configuration via environment variable:
+NK_CONFIG=/path/to/nk.toml \
+clang -fpass-plugin=/path/to/libNk.so -O2 main.c -o main
+
+# 3. Quick preset selection via environment variable:
+NK_PRESET=mid \
+clang -fpass-plugin=/path/to/libNk.so -O2 main.c -o main
+
+# 4. Frontend plugin invocation with -mllvm option parsing:
+clang -Xclang -load -Xclang /path/to/libNk.so \
+  -mllvm -nk-config=nk.toml \
+  -O2 main.c -o main
+```
+
+### 2. Rust (`cargo` / `rustc`) Integration
+
+```bash
+# Build binary crate with Nk Rust plugin (auto-discovers ./nk.toml):
+NK_CONFIG=nk.toml RUSTC_BOOTSTRAP=1 \
+RUSTFLAGS="-Z llvm-plugins=/path/to/libNk_rust.so -C passes=nk" \
+cargo build --release
+```
+
+### 3. Presets Overview
+
+| Preset | Flag / Env | Included Passes & Characteristics | Recommended Use Case |
+| :--- | :--- | :--- | :--- |
+| **`low`** | `-enable-lowobf`<br>`NK_PRESET=low` | Sub + MBA + Split + BCF + StrEnc + ConstEnc. Minimal code bloat, fast compile. | Debugging, rapid testing, performance-critical modules. |
+| **`mid`** (Recommended) | `-enable-medobf`<br>`NK_PRESET=mid` | Sub + MBA + Split + BCF + ConstEnc + StrEnc + Flatten + Vec + IndirBranch. Balanced production protection. | **Production releases, commercial SDKs, game protection.** |
+| **`high`** | `-enable-highobf`<br>`NK_PRESET=high` | All passes active at high intensity. CSM preferred over Flatten, Feistel tier active, AntiHook, AntiDebug, FCO, FunctionWrapper. | Core financial assets, licensing engines, critical algorithms. |
+| **`max`** | `-enable-maxobf`<br>`NK_PRESET=max` | All passes at maximum intensity: BCF prob=100 loop=3, CSM nested 2-level dispatch, Vec 512-bit, ConstEnc kshare=6 + Feistel, FW 3 rounds, violent exit. | Red-team deliverables, stress-testing toolchains. |
+
+### 4. Structured TOML Configuration (`nk.toml`)
+
+Search order: `-mllvm -nk-config=<path>` > `NK_CONFIG=<path>` > `./nk.toml`.
+
+```toml
+# ==============================================================================
+# nk.toml — Nk / OLLVM-Next Comprehensive Configuration Template
+# ==============================================================================
+# Search order:
+#   1. Clang argument:    -mllvm -nk-config=/path/to/nk.toml
+#   2. Environment var:   NK_CONFIG=/path/to/nk.toml
+#   3. Current directory: ./nk.toml
+# ==============================================================================
+
+[global]
+# Base preset profile: "low" | "mid" (recommended) | "high" | "max" | "csm_vec" | "csm_only" | "vec_only"
+preset = "mid"
+
+# Deterministic PRNG seed (hex or integer string, optional).
+# When omitted or 0, a cryptographically secure random seed is generated per compile.
+# seed = "0xDEADBEEF"
+
+# Emit detailed pass transformation metrics to stderr during compilation
+verbose = false
+
+# Enable pass execution trace logging
+trace = false
+
+# Demangle C++ / Rust function names in log outputs
+demangle_names = true
+
+# ==============================================================================
+# PASS CONFIGURATIONS ([passes.<pass_name>])
+# Supports canonical names (e.g. string_encryption) and short aliases (e.g. str_enc)
+# ==============================================================================
+
+# ── Bogus Control Flow (BCF) ──────────────────────────────────────────────────
+[passes.bcf]
+enabled = true
+probability = 60          # Percentage probability each basic block is selected (0–100)
+iterations = 1           # Number of BCF expansion passes per basic block (1–5)
+complexity = 4           # Opaque predicate algebraic complexity level (1–10)
+entropy_chain = true     # Chain hardware predicates (CPUID, RDTSC/CNTPCT) with runtime state
+junk_asm = true          # Inject polymorphic hardware inline-ASM barriers
+junk_asm_min = 2         # Minimum number of polymorphic barrier instructions per dead block
+junk_asm_max = 6         # Maximum number of polymorphic barrier instructions per dead block
+nested = false           # Nest opaque predicate conditions inside cloned branches
+create_func = false      # Extract dead branches into standalone cold functions
+only_junk_asm = false    # Only inject polymorphic barriers without altering CFG branches
+
+# ── Instruction Substitution ──────────────────────────────────────────────────
+[passes.substitution]
+enabled = true
+probability = 60         # Probability each arithmetic/bitwise op is expanded (0–100)
+iterations = 1          # Number of recursive substitution expansions (1–3)
+
+# ── Mixed Boolean-Arithmetic (MBA) ───────────────────────────────────────────
+[passes.mba]
+enabled = true
+probability = 50         # Probability of applying MBA identities (0–100)
+layers = 2               # Recursive non-linear polynomial layers (1–3)
+heuristic = true         # Zero-noise identity verification against bit-vector solvers
+
+# ── Basic Block Splitting ────────────────────────────────────────────────────
+[passes.split_blocks]
+enabled = true
+splits = 3               # Number of slice points per eligible basic block (1–10)
+stack_confusion = true   # Inject push/pop (x86) or str/ldr (ARM64) stack-frame desynchronization
+
+# ── String Encryption ────────────────────────────────────────────────────────
+[passes.string_encryption]
+enabled = true
+probability = 100        # Probability of encrypting discovered global string literals (0–100)
+anti_dump = true          # Strip memory dump markers / wipe decrypted strings from memory
+# Always encrypt matching strings (regex patterns)
+force_content = [
+    ".*secret.*",
+    ".*token.*",
+    ".*key.*",
+    ".*password.*"
+]
+# Skip encrypting benign or format strings (regex patterns)
+skip_content = [
+    "^%[0-9]*[a-zA-Z]$",
+    "^PASS$",
+    "^FAIL$"
+]
+
+# ── Constant Encryption ──────────────────────────────────────────────────────
+[passes.constant_encryption]
+enabled = true
+iterations = 1           # Encryption rounds (1–3)
+share_count = 3          # Bivariate MBA additive split shares (2–8)
+feistel = true           # Apply 4-round non-linear Feistel cipher network
+substitute_xor = true    # Obfuscate XOR recombination logic with algebraic MBA
+substitute_xor_prob = 40 # Probability of substituting recombination XORs (0–100)
+globalize = false        # Hoist constant share pools to encrypted global memory
+globalize_prob = 50      # Probability of globalizing share sets (0–100)
+# Force-encrypt specific critical constant literals (case-insensitive hex regex)
+force_value = [
+    "^0x9E3779B9$",      # Knuth golden ratio
+    "^0x5F3759DF$",      # Fast inverse square root
+    "^0xDEADBEEF$"
+]
+# Skip trivial constants (e.g. 0 and 1)
+skip_value = [
+    "^0x0$",
+    "^0x1$"
+]
+
+# ── Chaos State Machine (CSM) ────────────────────────────────────────────────
+[passes.chaos_state_machine]
+enabled = true
+warmup = 128             # Iterations to discard from Q16 logistic map transient phase
+nested_dispatch = false  # Enable hierarchical 2-level nested dispatch clusters
+max_blocks = 5000        # Maximum CFG block limit before falling back to Classic CFF
+
+# ── Classic Control Flow Flattening (CFF) ────────────────────────────────────
+[passes.flattening]
+enabled = false          # Fallback flattening (auto-active if CSM is disabled)
+
+# ── Vector Obfuscation (SIMD Lifting) ────────────────────────────────────────
+[passes.vector_obfuscation]
+enabled = true
+probability = 40         # Percentage of scalar instructions lifted to SIMD vectors (0–100)
+width = 128              # Vector register width in bits: 128 (SSE/NEON), 256 (AVX2), 512 (AVX-512)
+shuffle = true           # Apply pseudo-random bijective shufflevector permutations
+lift_comparisons = true  # Lift scalar ICmp comparisons into SIMD mask vectors
+
+# ── Indirect Branching ───────────────────────────────────────────────────────
+[passes.indirect_branch]
+enabled = true
+use_stack = true         # Allocate branch jump tables dynamically on the stack frame
+enc_jump_target = true   # Encrypt jump targets using Knuth multiplicative modular inverse
+
+# ── Function Wrapper ─────────────────────────────────────────────────────────
+[passes.function_wrapper]
+enabled = false
+probability = 50         # Fraction of functions wrapped in proxy trampolines (0–100)
+times = 1                # Wrapper recursion depth (1–3)
+
+# ── Function Call Obfuscation (FCO) ──────────────────────────────────────────
+[passes.function_call_obfuscate]
+enabled = false
+flag = 0                 # Obfuscation filter mask
+symbol_config_path = ""  # Path to external symbol import whitelist/blacklist file
+
+# ── Anti-Hooking & Anti-Taint Engine ────────────────────────────────────────
+[passes.anti_hooking]
+enabled = true
+inline_x86 = true        # Probe x86_64 prologues for E9 (JMP) / 48 B8 (MOV RAX) patches
+inline_aarch64 = true    # Probe AArch64 prologues for 0x14000001 (B .+4) inline hooks
+inline_win = true        # Windows API inline hook detection
+objc_runtime = false     # Inspect Objective-C method dispatch tables
+antirebind = true        # Counter dynamic linker symbol rebinding (fishhook / dyld)
+direct_syscall = true    # Execute direct kernel syscalls (svc #0 / syscall) bypassing libc
+check_integrity = true   # Verify code segment cryptographic hashes
+precompiled_ir_path = "" # Path to external precompiled LLVM IR module for anti-hooking
+
+# ── Anti-Debugging ───────────────────────────────────────────────────────────
+[passes.anti_debugging]
+enabled = true
+probability = 80         # Percentage of function entries receiving anti-debug probes (0–100)
+precompiled_ir_path = "" # Path to external precompiled LLVM IR module for anti-debugging
+
+# ── Anti-Class Dump (ObjC / Swift) ───────────────────────────────────────────
+[passes.anti_class_dump]
+enabled = false          # Objective-C / Swift Mach-O metadata scrambling (macOS / iOS only)
+use_initialize = true    # Defer class initialization to runtime +initialize
+rename_methodimp = true  # Scramble method implementation names
+scramble_methods = true  # Permute selector order using Fisher-Yates shuffle
+dummy_selectors = false  # Inject phantom selector entries into class metadata
+dummy_count = 8          # Number of phantom dummy selectors to inject
+encrypt_strings = true   # Dynamically decrypt selector and class names at runtime
+anti_hook = true         # Detect Frida/Substrate hooks on class_replaceMethod and sel_registerName
+opaque_barriers = true   # Insert opaque memory barriers on runtime pointers
+
+# ==============================================================================
+# GRANULAR POLICY OVERRIDES ([[policy]])
+# Rules are evaluated in order; the first matching rule takes precedence.
+# Matches against source module path and function symbol name using ECMAScript regex.
+# ==============================================================================
+
+# Core Cryptographic Primitives: Maximum Hardening
+[[policy]]
+module_regex = ".*(crypto|cipher|signature).*"
+function_regex = ".*(encrypt|decrypt|sign|verify|hash).*"
+preset = "high"
+passes.chaos_state_machine.enabled = true
+passes.chaos_state_machine.nested_dispatch = true
+passes.constant_encryption.feistel = true
+passes.constant_encryption.share_count = 4
+passes.mba.layers = 3
+passes.vector_obfuscation.width = 256
+passes.anti_debugging.probability = 100
+passes.anti_hooking.direct_syscall = true
+
+# License Verification & Integrity Checks: Violent Exit on Tamper
+[[policy]]
+module_regex = ".*(licensing|auth|integrity).*"
+function_regex = ".*(validate|check|license).*"
+preset = "high"
+passes.anti_debugging.enabled = true
+passes.anti_debugging.probability = 100
+passes.anti_hooking.enabled = true
+passes.anti_hooking.direct_syscall = true
+passes.string_encryption.probability = 100
+
+# Performance-Critical Loops / Hotspots: Minimal Overhead
+[[policy]]
+module_regex = ".*"
+function_regex = "^(main|fast_path_.*|inner_loop_.*)$"
+passes.bcf.enabled = false
+passes.chaos_state_machine.enabled = false
+passes.flattening.enabled = false
+passes.indirect_branch.enabled = false
+passes.function_wrapper.enabled = false
+```
+
+---
+
+## **Building From Source**
+
+### Prerequisites
+- CMake 3.20+
+- Ninja or Make
+- LLVM & Clang (version 21, 22, or 23)
+- Rust toolchain (optional, for `libNk_rust.so` and `web`)
+
+### Build Steps (Linux / macOS)
+
+```bash
+git clone https://github.com/Apich-Organization/nk.git
+cd nk
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+Outputs:
+- `build/obfuscation/libNk.so` (Clang plugin)
+- `build/obfuscation/libNk_rust.so` (Rustc plugin)
+
+### Build Steps (Windows with MSVC / clang-cl)
+
+```cmd
+mkdir build && cd build
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="C:/path/to/llvm/lib/cmake/llvm"
+ninja Nk
+```
+
+To run the automated verification suite:
+```bash
+bash test/run_obf_tests.sh
+```
+
+---
+
+## Official Crackme Competition
+
+A CTF-style crackme using this obfuscator is available in the ./ctf folder. You can compile it yourself, as the source code is fully open-source, or you can simply download the test binary from our releases page.
+
+Since we do not provide the crack/solution, anyone who successfully solves this challenge with clear, documented steps will win a reward and earn a permanent spot on our security team homepage! If you successfully solve this Crackme, please submit your solution to [security@apich.org](mailto:security@apich.org) for verification and rewards.
+
+---
+
+## Challenge Guide: Nk Secure Cryptographic Enclave
+
+* **Target Binary**: `./challenge`
+* **Total Score**: 1000 pts
+* **Runtime Environment**: Linux x86_64
+
+### Mission Objectives & Score Distribution
+
+This challenge consists of 4 tightly coupled cryptographic verification stages. Reverse engineer the program logic to recover the key input for each stage sequentially, and finally decrypt the flag in memory:
+
+| Stage | Objective | Input Format Specification | Score |
+| --- | --- | --- | --- |
+| **Stage 1** | Activation Key | `XXXX-XXXX-XXXX-XXXX` (16 uppercase/lowercase/numeric characters) | **150 pts** |
+| **Stage 2** | Calibration Coordinates | Four 32-bit unsigned integers (space-separated, e.g., `a b c d`) | **200 pts** |
+| **Stage 3** | Feistel Passphrase | 16-byte ASCII string | **200 pts** |
+| **Stage 4** | Sealing Token | 8-character hexadecimal string | **150 pts** |
+| **Final** | Core Enclave Unlocked Flag | Complete `nk{...}` string | **300 pts** |
+| **Total** |  |  | **1000 pts** |
+
+### Verification & Submission Workflow
+
+1. **Execute the Program**:
+```bash
+./challenge
+
+```
+
+2. **Success Criteria**:
+* The 4 stages utilize non-linear state-coupled vectors. An incorrect input in any stage will cause an avalanche shift in the subsequent keystream and memory zeroization.
+* Upon successful completion of all inputs, the program outputs:
+```text
+[+] Enclave Unlocked! Verification Complete.
+[+] Flag: nk{...}
+
+```
+
+3. **Scoring Rules**:
+* The competition platform supports independent scoring based on the raw keys recovered for Stage 1 through Stage 4.
+* Successfully submitting the decrypted `nk{...}` output grants the completion score.
+
+---
+
+## **Licensing & Attribution**
+
+This project is licensed under the **AGPL-3.0**. It includes code and concepts continuing the lineage of Hikari and LLVM. See [LEGAL.md](./LEGAL.md) for full details on project history and original authors.
+
+---
+
+## **Sponsorship & Funding Policy**
+
+We welcome sponsorships supporting open-source compiler security research. Please review our [Sponsorship Policy](./sponsor.md) for details on fund allocation, contribution options via Open Collective, and corporate tiers.
+- **Open Collective:** [https://opencollective.com/apich-organization](https://opencollective.com/apich-organization)
+
+---
+
+## **Code of Conduct & Security**
+
+Please consult [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) and [SECURITY.md](./SECURITY.md) for vulnerability reporting guidelines and ethical standards.

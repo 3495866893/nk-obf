@@ -1,0 +1,183 @@
+cmake_minimum_required(VERSION 3.28)
+project(Nk LANGUAGES C CXX)
+
+if(NOT DEFINED LLVM_FOUND)
+  find_package(LLVM REQUIRED CONFIG)
+  list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+  include(AddLLVM)
+  include_directories(${LLVM_INCLUDE_DIRS})
+  add_definitions(${LLVM_DEFINITIONS})
+endif()
+
+# Include LLVM CMake functions (such as llvm_map_components_to_libnames)
+if(COMMAND LLVMMapComponentsToLibnames)
+  # already available
+elseif(EXISTS "${LLVM_CMAKE_DIR}/LLVM-Config.cmake")
+  include("${LLVM_CMAKE_DIR}/LLVM-Config.cmake")
+endif()
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Position Independent Code
+set(CMAKE_POSITION_INDEPENDENT_CODE ON FORCE)
+# LTO enabled
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE FORCE)
+# Flags
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG" CACHE STRING "Flags used by the CXX compiler for release builds." FORCE)
+set(CMAKE_CXX_FLAGS_DEBUG "-O0 -DDEBUG -g" CACHE STRING "Flags used by the CXX compiler for debug builds." FORCE)
+
+set(NK_SOURCES
+        CryptoUtils.cpp
+        Utils.cpp
+        ObfConfig.cpp
+        FunctionCallObfuscate.cpp
+        BogusControlFlow.cpp
+        SubstituteImpl.cpp
+        Substitution.cpp
+        Flattening.cpp
+        SplitBasicBlocks.cpp
+        AntiClassDump.cpp
+        AntiDebugging.cpp
+        AntiHooking.cpp
+        StringEncryption.cpp
+        IndirectBranch.cpp
+        FunctionWrapper.cpp
+        ConstantEncryption.cpp
+        Obfuscation.cpp
+        MBAObfuscation.cpp        # Mixed Boolean-Arithmetic substitution
+        ChaosStateMachine.cpp     # Logistic-map-driven control-flow flattening
+        VectorObfuscation.cpp     # Scalar-to-SIMD vector lifting
+        RustCompat.cpp            # LLVM 21+ ABI bridge for rustc plugin
+        )
+
+add_library(Nk SHARED ${NK_SOURCES})
+
+target_include_directories(Nk PRIVATE
+        ${CMAKE_SOURCE_DIR}/obfuscation
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+
+add_dependencies(Nk intrinsics_gen LLVMLinker)
+
+if(WIN32)
+  if(COMMAND llvm_map_components_to_libnames)
+    llvm_map_components_to_libnames(llvm_libs Core Support Passes TransformUtils Analysis TargetParser Linker)
+  endif()
+  if(llvm_libs)
+    target_link_libraries(Nk PRIVATE ${llvm_libs})
+  endif()
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # For MinGW on Windows, linking winpthread as static is required
+    if(WIN32)
+    set_target_properties(Nk PROPERTIES
+        LINK_FLAGS
+        "-static -static-libgcc -Wl,-Bstatic,--whole-archive -lwinpthread -lstdc++ -Wl,--no-whole-archive -Wl,-Bdynamic"
+    )
+    endif()
+endif()
+
+# Embed git commit hash so the runtime banner is informative
+execute_process(
+        COMMAND git log -1 --format=%H
+        WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
+        OUTPUT_VARIABLE NK_GIT_COMMIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+target_compile_definitions(Nk PRIVATE
+        "-DGIT_COMMIT_HASH=\"${NK_GIT_COMMIT_HASH}\""
+        # Expose LLVM major version to source (belt-and-suspenders alongside
+        # the LLVM_VERSION_MAJOR macro that LLVM itself injects).
+        "-DOLLVM_NEXT=1"
+)
+
+# Suppress warnings that are harmless but noisy with LLVM headers
+target_compile_options(Nk PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:
+            -Wno-unused-parameter
+            -Wno-deprecated-declarations
+        >
+)
+
+# Optional target for Rustc plugin with dynamic LLVM version probing
+execute_process(
+    COMMAND rustc --print sysroot
+    OUTPUT_VARIABLE RUSTC_SYSROOT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(RUSTC_SYSROOT AND EXISTS "${RUSTC_SYSROOT}/lib")
+    # Dynamically probe rustc's bundled LLVM major version
+    execute_process(
+        COMMAND rustc -vV
+        OUTPUT_VARIABLE RUSTC_VINFO
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    set(RUST_LLVM_MAJOR "22")
+    if(RUSTC_VINFO MATCHES "LLVM version:[ \t]*([0-9]+)")
+        set(RUST_LLVM_MAJOR "${CMAKE_MATCH_1}")
+    endif()
+
+    # Allow user override: -DNK_RUST_LLVM_VERSION=22 or 23
+    if(DEFINED NK_RUST_LLVM_VERSION)
+        set(RUST_LLVM_MAJOR "${NK_RUST_LLVM_VERSION}")
+    endif()
+
+    message(STATUS "[Nk] Probed Rust bundled LLVM major version: ${RUST_LLVM_MAJOR}")
+
+    # Determine compatibility include path based on detected LLVM version
+    set(RUST_COMPAT_DIR "")
+    if(RUST_LLVM_MAJOR EQUAL 23)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/compat/llvm23")
+            set(RUST_COMPAT_DIR "${CMAKE_SOURCE_DIR}/compat/llvm23")
+        endif()
+    elseif(RUST_LLVM_MAJOR EQUAL 22)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/compat/llvm22")
+            set(RUST_COMPAT_DIR "${CMAKE_SOURCE_DIR}/compat/llvm22")
+        endif()
+    endif()
+
+    file(GLOB RUST_LLVM_LIB "${RUSTC_SYSROOT}/lib/libLLVM*rust*.so*")
+    # If no rust-specific LLVM lib found and version is 23, check workspace LLVM 23
+    if(NOT RUST_LLVM_LIB AND RUST_LLVM_MAJOR EQUAL 23)
+        file(GLOB RUST_LLVM_LIB "${CMAKE_SOURCE_DIR}/LLVM-23*/lib/libLLVM.so*")
+    endif()
+
+    if(RUST_LLVM_LIB)
+        add_library(NkRust SHARED ${NK_SOURCES})
+        set_target_properties(NkRust PROPERTIES OUTPUT_NAME "Nk_rust")
+        if(RUST_COMPAT_DIR)
+            message(STATUS "[Nk] Using LLVM ${RUST_LLVM_MAJOR} compat dir: ${RUST_COMPAT_DIR}")
+            target_include_directories(NkRust BEFORE PRIVATE ${RUST_COMPAT_DIR})
+        else()
+            message(STATUS "[Nk] Using base LLVM headers directly for Rust plugin")
+        endif()
+        target_include_directories(NkRust PRIVATE
+            ${CMAKE_SOURCE_DIR}/obfuscation
+            ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        add_dependencies(NkRust intrinsics_gen LLVMLinker)
+        target_link_directories(NkRust PRIVATE "${RUSTC_SYSROOT}/lib")
+        target_link_libraries(NkRust PRIVATE ${RUST_LLVM_LIB})
+        set_target_properties(NkRust PROPERTIES
+            BUILD_RPATH "${RUSTC_SYSROOT}/lib"
+            INSTALL_RPATH "${RUSTC_SYSROOT}/lib"
+        )
+        target_compile_definitions(NkRust PRIVATE
+            "-DGIT_COMMIT_HASH=\"${NK_GIT_COMMIT_HASH}\""
+            "-DOLLVM_NEXT=1"
+            "-DNK_RUST_PLUGIN=1"
+            "-DNK_TARGET_LLVM_VERSION=${RUST_LLVM_MAJOR}"
+        )
+        target_compile_options(NkRust PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:
+                -Wno-unused-parameter
+                -Wno-deprecated-declarations
+            >
+        )
+    endif()
+endif()

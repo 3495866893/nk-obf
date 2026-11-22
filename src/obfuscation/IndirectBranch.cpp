@@ -1,0 +1,464 @@
+/*
+ *  OLLVM-Next (Nk): The next generation LLVM based Obfuscator
+ *  Copyright (C) 2026  Xinyu Yang(<Xinyu.Yang@apich.org>)
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU Affero General Public License as published
+ *  by the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU Affero General Public License for more details.
+ *
+ *  You should have received a copy of the GNU Affero General Public License
+ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "include/IndirectBranch.h"
+#include "include/CryptoUtils.h"
+#include "include/ObfConfig.h"
+#include "include/Utils.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/NoFolder.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <unordered_set>
+
+using namespace llvm;
+
+// Opaque-pointer-safe helper: returns the universal ptr type.
+static inline Type *getOpaquePtrTy(LLVMContext &Ctx) {
+  return PointerType::getUnqual(Ctx);
+}
+
+static cl::opt<bool>
+    UseStack("indibran-use-stack", cl::init(true), cl::NotHidden,
+             cl::desc("[IndirectBranch]Stack-based indirect jumps"));
+static thread_local bool UseStackTemp = true;
+static cl::alias UseStackAlias1("indibran_use_stack",
+                                cl::desc("Alias for -indibran-use-stack"),
+                                cl::aliasopt(UseStack));
+static cl::alias UseStackAlias2("indibr_use_stack",
+                                cl::desc("Alias for -indibran-use-stack"),
+                                cl::aliasopt(UseStack));
+static cl::alias UseStackAlias3("indibr-use-stack",
+                                cl::desc("Alias for -indibran-use-stack"),
+                                cl::aliasopt(UseStack));
+
+static cl::opt<bool>
+    EncryptJumpTarget("indibran-enc-jump-target", cl::init(true), cl::NotHidden,
+                      cl::desc("[IndirectBranch]Encrypt jump target"));
+static thread_local bool EncryptJumpTargetTemp = true;
+static cl::alias
+    EncryptJumpTargetAlias1("indibran_enc_jump_target",
+                            cl::desc("Alias for -indibran-enc-jump-target"),
+                            cl::aliasopt(EncryptJumpTarget));
+static cl::alias
+    EncryptJumpTargetAlias2("indibr_enc_jump_target",
+                            cl::desc("Alias for -indibran-enc-jump-target"),
+                            cl::aliasopt(EncryptJumpTarget));
+static cl::alias
+    EncryptJumpTargetAlias3("indibr-enc-jump-target",
+                            cl::desc("Alias for -indibran-enc-jump-target"),
+                            cl::aliasopt(EncryptJumpTarget));
+
+// Per-function Knuth-hash encryption parameters
+struct KnuthEncKey {
+  uint64_t delta; // additive delta before multiply
+  uint64_t mult;  // multiplicative key (odd number, Knuth style)
+  uint64_t xorK;  // final XOR mask
+};
+
+namespace {
+struct IndirectBranch : public FunctionPass {
+  static char ID;
+  bool flag;
+  bool initialized;
+  std::unordered_map<BasicBlock *, unsigned long long> indexmap;
+  std::unordered_map<Function *, ConstantInt *> encmap;
+  std::unordered_map<Function *, KnuthEncKey> knuthKeys;
+  std::unordered_map<Function *, bool>
+      perFuncUseStack; // per-function option cache
+  std::unordered_map<Function *, bool>
+      perFuncEncryptJump; // per-function option cache
+  std::unordered_set<Function *> to_obf_funcs;
+  SmallVector<GlobalValue *, 1024> usedGlobals;
+  IndirectBranch() : FunctionPass(ID) {
+    this->flag = true;
+    this->initialized = false;
+  }
+  IndirectBranch(bool flag) : FunctionPass(ID) {
+    this->flag = flag;
+    this->initialized = false;
+  }
+  StringRef getPassName() const override { return "IndirectBranch"; }
+
+  bool doFinalization(Module &M) override {
+    if (!usedGlobals.empty()) {
+      appendToCompilerUsed(M, usedGlobals);
+      usedGlobals.clear();
+    }
+    return false;
+  }
+
+  bool initialize(Module &M) {
+    SmallVector<Constant *, 32> BBs;
+    unsigned long long i = 0;
+    for (Function &F : M) {
+      if (F.getName().starts_with("__nk_") || F.isDeclaration())
+        continue;
+      auto ec = GObfConfig.resolve(M.getSourceFileName(), F.getName());
+      bool shouldObf = ec.indir_branch.enabled.value_or(flag);
+      if (!toObfuscate(shouldObf, &F, "indibr"))
+        continue;
+      else
+        to_obf_funcs.insert(&F);
+
+      bool useStackLocal = UseStack;
+      if (!toObfuscateBoolOption(&F, "indibran_use_stack", &useStackLocal))
+        useStackLocal = ec.indir_branch.use_stack.value_or((bool)UseStack);
+      perFuncUseStack[&F] = useStackLocal;
+
+      bool encJumpLocal = EncryptJumpTarget;
+      if (!toObfuscateBoolOption(&F, "indibran_enc_jump_target", &encJumpLocal))
+        encJumpLocal =
+            ec.indir_branch.enc_jump_target.value_or((bool)EncryptJumpTarget);
+      perFuncEncryptJump[&F] = encJumpLocal;
+
+      if (encJumpLocal)
+        encmap[&F] = ConstantInt::get(
+            Type::getInt32Ty(M.getContext()),
+            cryptoutils->get_range(UINT8_MAX, UINT16_MAX * 2) * 4);
+
+      KnuthEncKey kk;
+      kk.delta = cryptoutils->get_uint64_t();
+      kk.mult = (cryptoutils->get_uint64_t() | 1ULL); // ensure odd
+      kk.xorK = cryptoutils->get_uint64_t();
+      knuthKeys[&F] = kk;
+      for (BasicBlock &BB : F) {
+        if (BB.isEntryBlock())
+          continue;
+        if (BB.getName().starts_with("sw.bst."))
+          continue;
+        indexmap[&BB] = i++;
+        BBs.emplace_back(encJumpLocal ? ConstantExpr::getGetElementPtr(
+                                            Type::getInt8Ty(M.getContext()),
+                                            ConstantExpr::getBitCast(
+                                                BlockAddress::get(&BB),
+                                                getOpaquePtrTy(M.getContext())),
+                                            encmap[&F])
+                                      : BlockAddress::get(&BB));
+      }
+    }
+    if (to_obf_funcs.size() && !BBs.empty()) {
+      ArrayType *AT =
+          ArrayType::get(getOpaquePtrTy(M.getContext()), BBs.size());
+      Constant *BlockAddressArray =
+          ConstantArray::get(AT, ArrayRef<Constant *>(BBs));
+      GlobalVariable *Table = new GlobalVariable(
+          M, AT, false, GlobalValue::LinkageTypes::InternalLinkage,
+          BlockAddressArray, "IndirectBranchingGlobalTable");
+      usedGlobals.push_back(Table);
+    }
+    this->initialized = true;
+    return true;
+  }
+
+  bool runOnFunction(Function &Func) override {
+    if (Func.getName().starts_with("__nk_") || Func.isDeclaration())
+      return false;
+    Module *M = Func.getParent();
+    if (!this->initialized)
+      initialize(*M);
+    if (std::find(to_obf_funcs.begin(), to_obf_funcs.end(), &Func) ==
+        to_obf_funcs.end())
+      return false;
+    if (ObfVerbose)
+      errs() << "Running IndirectBranch On " << Func.getName() << "\n";
+
+    bool UseStackTempLocal =
+        perFuncUseStack.count(&Func) ? perFuncUseStack[&Func] : (bool)UseStack;
+    bool EncryptJumpTargetTempLocal = perFuncEncryptJump.count(&Func)
+                                          ? perFuncEncryptJump[&Func]
+                                          : (bool)EncryptJumpTarget;
+
+    SmallVector<BranchInst *, 32> BIs;
+    for (Instruction &Inst : instructions(Func))
+      if (BranchInst *BI = dyn_cast<BranchInst>(&Inst)) {
+        if (BI->getParent()->getName().starts_with("sw.bst."))
+          continue;
+        BIs.emplace_back(BI);
+      }
+
+    if (BIs.empty())
+      return false;
+
+    Type *Int8Ty = Type::getInt8Ty(M->getContext());
+    Type *Int32Ty = Type::getInt32Ty(M->getContext());
+    Type *Int8PtrTy = getOpaquePtrTy(M->getContext());
+    Value *zero = ConstantInt::get(Int32Ty, 0);
+
+    // Setup entry block allocations once per function to prevent stack leaks
+    IRBuilder<NoFolder> IRBEntry(&Func.getEntryBlock().front());
+    AllocaInst *LoadFromAI = nullptr;
+    AllocaInst *slotAI = nullptr;
+    if (UseStackTempLocal) {
+      LoadFromAI = IRBEntry.CreateAlloca(Int8PtrTy, nullptr, "indibr.tbl.ptr");
+      slotAI = IRBEntry.CreateAlloca(Int32Ty, nullptr, "indibr.slot.ai");
+    }
+
+    GlobalVariable *funcEnckeyGV = nullptr;
+    ConstantInt *funcEncEncKey = nullptr;
+    if (EncryptJumpTargetTempLocal && encmap.count(&Func)) {
+      funcEncEncKey = cast<ConstantInt>(
+          ConstantInt::get(Int32Ty, cryptoutils->get_uint32_t()));
+      funcEnckeyGV = new GlobalVariable(
+          *M, Int32Ty, false, GlobalValue::LinkageTypes::InternalLinkage,
+          ConstantInt::get(Int32Ty, funcEncEncKey->getValue() ^
+                                        encmap[&Func]->getValue()),
+          "IndirectBranchingAddressEncryptKey");
+      usedGlobals.push_back(funcEnckeyGV);
+    }
+
+    for (BranchInst *BI : BIs) {
+      IRBuilder<NoFolder> IRBBIStorage(BI);
+      IRBuilder<NoFolder> *IRBBI = &IRBBIStorage;
+      SmallVector<BasicBlock *, 4> BBs;
+      unsigned slotFalse = 0, slotTrue = 1;
+      GlobalVariable *LoadFrom = nullptr;
+      if (BI->isConditional()) {
+        BasicBlock *falseBB = BI->getSuccessor(1);
+        BasicBlock *trueBB = BI->getSuccessor(0);
+        if (falseBB->isEntryBlock() || trueBB->isEntryBlock())
+          continue;
+
+        // Random 4-slot shuffling with decoy targets for maximum
+        // reverse-engineering difficulty
+        slotFalse = cryptoutils->get_range(4);
+        slotTrue = (slotFalse + 1 + cryptoutils->get_range(3)) % 4;
+
+        SmallVector<BasicBlock *, 4> tableBBs(4);
+        for (unsigned k = 0; k < 4; k++) {
+          if (k == slotFalse)
+            tableBBs[k] = falseBB;
+          else if (k == slotTrue)
+            tableBBs[k] = trueBB;
+          else
+            tableBBs[k] = (k % 2 == 0) ? falseBB : trueBB;
+        }
+
+        BBs.push_back(falseBB);
+        if (trueBB != falseBB)
+          BBs.push_back(trueBB);
+
+        ArrayType *AT = ArrayType::get(Int8PtrTy, 4);
+        SmallVector<Constant *, 4> BlockAddresses;
+        for (unsigned k = 0; k < 4; k++)
+          BlockAddresses.emplace_back(
+              EncryptJumpTargetTempLocal
+                  ? ConstantExpr::getGetElementPtr(
+                        Int8Ty,
+                        ConstantExpr::getBitCast(BlockAddress::get(tableBBs[k]),
+                                                 Int8PtrTy),
+                        encmap[&Func])
+                  : BlockAddress::get(tableBBs[k]));
+
+        Constant *BlockAddressArray =
+            ConstantArray::get(AT, ArrayRef<Constant *>(BlockAddresses));
+        LoadFrom = new GlobalVariable(
+            *M, AT, false, GlobalValue::LinkageTypes::InternalLinkage,
+            BlockAddressArray, "NkConditionalLocalIndirectBranchingTable");
+      } else {
+        if (!BI->getSuccessor(0)->isEntryBlock())
+          BBs.emplace_back(BI->getSuccessor(0));
+        if (BBs.empty())
+          continue;
+        if (indexmap.find(BI->getSuccessor(0)) == indexmap.end()) {
+          ArrayType *AT = ArrayType::get(Int8PtrTy, BBs.size());
+          SmallVector<Constant *, 2> BlockAddresses;
+          for (BasicBlock *BB : BBs)
+            BlockAddresses.emplace_back(
+                EncryptJumpTargetTempLocal
+                    ? ConstantExpr::getGetElementPtr(
+                          Int8Ty,
+                          ConstantExpr::getBitCast(BlockAddress::get(BB),
+                                                   Int8PtrTy),
+                          encmap[&Func])
+                    : BlockAddress::get(BB));
+          Constant *BlockAddressArray =
+              ConstantArray::get(AT, ArrayRef<Constant *>(BlockAddresses));
+          LoadFrom = new GlobalVariable(
+              *M, AT, false, GlobalValue::LinkageTypes::InternalLinkage,
+              BlockAddressArray, "NkConditionalLocalIndirectBranchingTable");
+        } else {
+          LoadFrom = M->getGlobalVariable("IndirectBranchingGlobalTable", true);
+        }
+      }
+      if (!LoadFrom)
+        continue;
+
+      if (UseStackTempLocal) {
+        IRBBI->CreateStore(LoadFrom, LoadFromAI);
+      }
+
+      Value *indexVal = nullptr;
+      if (BI->isConditional()) {
+        Value *condition = BI->getCondition();
+        Value *condZext = IRBBI->CreateZExt(condition, Int32Ty, "indibr.cond");
+        int32_t diff = (int32_t)slotTrue - (int32_t)slotFalse;
+        Value *term = IRBBI->CreateMul(
+            condZext, ConstantInt::get(Int32Ty, diff), "indibr.diff");
+        Value *slotVal = IRBBI->CreateAdd(ConstantInt::get(Int32Ty, slotFalse),
+                                          term, "indibr.slot");
+        slotVal = insertOpaqueBarrier(*IRBBI, slotVal);
+        if (knuthKeys.count(&Func)) {
+          const KnuthEncKey &kk = knuthKeys[&Func];
+          Value *mulV = IRBBI->CreateMul(
+              slotVal, ConstantInt::get(Int32Ty, (uint32_t)kk.mult));
+          Value *addV = IRBBI->CreateAdd(
+              mulV, ConstantInt::get(Int32Ty, (uint32_t)kk.delta));
+          slotVal = IRBBI->CreateXor(
+              addV, ConstantInt::get(Int32Ty, (uint32_t)kk.xorK));
+          slotVal = insertOpaqueBarrier(*IRBBI, slotVal);
+        }
+        if (UseStackTempLocal) {
+          IRBBI->CreateStore(slotVal, slotAI);
+          indexVal = IRBBI->CreateLoad(Int32Ty, slotAI);
+        } else {
+          indexVal = slotVal;
+        }
+      } else {
+        uint32_t targetIdx = indexmap[BI->getSuccessor(0)];
+        if (knuthKeys.count(&Func)) {
+          const KnuthEncKey &kk = knuthKeys[&Func];
+          targetIdx = ((targetIdx * (uint32_t)kk.mult) + (uint32_t)kk.delta) ^
+                      (uint32_t)kk.xorK;
+        }
+        ConstantInt *IndexEncKey =
+            EncryptJumpTargetTempLocal
+                ? cast<ConstantInt>(
+                      ConstantInt::get(Int32Ty, cryptoutils->get_uint32_t()))
+                : nullptr;
+        if (EncryptJumpTargetTempLocal) {
+          GlobalVariable *indexgv = new GlobalVariable(
+              *M, Int32Ty, false, GlobalValue::LinkageTypes::InternalLinkage,
+              ConstantInt::get(IndexEncKey->getType(),
+                               IndexEncKey->getValue() ^ targetIdx),
+              "IndirectBranchingIndex");
+          Value *ld = nullptr;
+          if (UseStackTempLocal) {
+            IRBBI->CreateStore(
+                ConstantInt::get(Int32Ty, IndexEncKey->getValue() ^ targetIdx),
+                slotAI);
+            ld = IRBBI->CreateLoad(Int32Ty, slotAI);
+          } else {
+            ld = IRBBI->CreateLoad(indexgv->getValueType(), indexgv);
+          }
+          indexVal = IRBBI->CreateXor(ld, IndexEncKey);
+        } else {
+          Value *rawVal = ConstantInt::get(Int32Ty, targetIdx);
+          if (UseStackTempLocal) {
+            IRBBI->CreateStore(rawVal, slotAI);
+            indexVal = IRBBI->CreateLoad(Int32Ty, slotAI);
+          } else {
+            indexVal = rawVal;
+          }
+        }
+      }
+
+      Value *LI = nullptr, *enckeyLoad = nullptr, *gepptr = nullptr;
+
+      Value *effectiveIndex = indexVal;
+      if (knuthKeys.count(&Func)) {
+        const KnuthEncKey &kk = knuthKeys[&Func];
+        uint64_t inv = kk.mult;
+        for (int step = 0; step < 5; step++)
+          inv *= 2ULL - kk.mult * inv;
+        uint64_t multInv = inv;
+
+        Type *I32Ty = Type::getInt32Ty(M->getContext());
+        Value *unxored = IRBBI->CreateXor(
+            effectiveIndex, ConstantInt::get(I32Ty, (uint32_t)kk.xorK),
+            "indibr.unxor");
+        Value *undelta = IRBBI->CreateSub(
+            unxored, ConstantInt::get(I32Ty, (uint32_t)kk.delta),
+            "indibr.undelta");
+        effectiveIndex = IRBBI->CreateMul(
+            undelta, ConstantInt::get(I32Ty, (uint32_t)multInv),
+            "indibr.decidx");
+        effectiveIndex = insertOpaqueBarrier(*IRBBI, effectiveIndex);
+      }
+
+      Value *actualTablePtr = LoadFrom;
+      if (UseStackTempLocal) {
+        actualTablePtr = IRBBI->CreateLoad(Int8PtrTy, LoadFromAI);
+      }
+      Value *GEP = IRBBI->CreateGEP(LoadFrom->getValueType(), actualTablePtr,
+                                    {zero, effectiveIndex});
+      if (!EncryptJumpTargetTempLocal) {
+        LoadInst *ld =
+            IRBBI->CreateLoad(Int8PtrTy, GEP, "IndirectBranchingTargetAddress");
+        ld->setVolatile(true);
+        LI = ld;
+      } else {
+        LoadInst *ld = IRBBI->CreateLoad(Int8PtrTy, GEP);
+        ld->setVolatile(true);
+        gepptr = ld;
+      }
+      if (EncryptJumpTargetTempLocal) {
+        LoadInst *ldEnc =
+            IRBBI->CreateLoad(funcEnckeyGV->getValueType(), funcEnckeyGV);
+        ldEnc->setVolatile(true);
+        enckeyLoad = IRBBI->CreateXor(ldEnc, funcEncEncKey);
+        enckeyLoad = insertOpaqueBarrier(*IRBBI, enckeyLoad);
+        LI =
+            IRBBI->CreateGEP(Int8Ty, gepptr, IRBBI->CreateSub(zero, enckeyLoad),
+                             "IndirectBranchingTargetAddress");
+      }
+
+      Value *finalTarget = insertOpaqueBarrier(*IRBBI, LI);
+      IndirectBrInst *indirBr = IndirectBrInst::Create(finalTarget, BBs.size());
+      for (BasicBlock *BB : BBs)
+        indirBr->addDestination(BB);
+      ReplaceInstWithInst(BI, indirBr);
+    }
+
+    shuffleBasicBlocks(Func);
+    return true;
+  }
+  void shuffleBasicBlocks(Function &F) {
+    SmallVector<BasicBlock *, 32> blocks;
+    for (BasicBlock &block : F)
+      if (!block.isEntryBlock())
+        blocks.emplace_back(&block);
+
+    if (blocks.size() < 2)
+      return;
+
+    for (size_t i = blocks.size() - 1; i > 0; i--)
+      std::swap(blocks[i], blocks[cryptoutils->get_range(i + 1)]);
+
+    BasicBlock *prev = &F.getEntryBlock();
+    for (BasicBlock *block : blocks) {
+      block->moveAfter(prev);
+      prev = block;
+    }
+  }
+};
+} // anonymous namespace
+
+char IndirectBranch::ID = 0;
+INITIALIZE_PASS(IndirectBranch, "indibranobf", "IndirectBranching", false,
+                false)
+
+FunctionPass *llvm::createIndirectBranchPass(bool flag) {
+  return new IndirectBranch(flag);
+}

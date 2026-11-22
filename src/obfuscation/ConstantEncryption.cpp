@@ -1,0 +1,928 @@
+/*
+ *  OLLVM-Next (Nk): The next generation LLVM based Obfuscator
+ *  Copyright (C) 2026  Xinyu Yang(<Xinyu.Yang@apich.org>)
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU Affero General Public License as published
+ *  by the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU Affero General Public License for more details.
+ *
+ *  You should have received a copy of the GNU Affero General Public License
+ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "include/ConstantEncryption.h"
+#include "include/CryptoUtils.h"
+#include "include/ObfConfig.h"
+#include "include/SubstituteImpl.h"
+#include "include/Utils.h"
+#include "include/compat/CallSite.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <regex>
+#include <unordered_set>
+
+using namespace llvm;
+
+static cl::opt<bool>
+    SubstituteXor("constenc_subxor",
+                  cl::desc("Substitute xor operator of ConstantEncryption"),
+                  cl::value_desc("Substitute xor operator"), cl::init(false),
+                  cl::Optional);
+static thread_local bool SubstituteXorTemp = false;
+
+static cl::opt<uint32_t> SubstituteXorProb(
+    "constenc_subxor_prob",
+    cl::desc(
+        "Choose the probability [%] each xor operator will be Substituted"),
+    cl::value_desc("probability rate"), cl::init(40), cl::Optional);
+static thread_local uint32_t SubstituteXorProbTemp = 40;
+
+static cl::opt<bool>
+    ConstToGV("constenc_togv",
+              cl::desc("Replace ConstantInt with GlobalVariable"),
+              cl::value_desc("ConstantInt to GlobalVariable"), cl::init(false),
+              cl::Optional);
+static thread_local bool ConstToGVTemp = false;
+
+static cl::opt<uint32_t>
+    ConstToGVProb("constenc_togv_prob",
+                  cl::desc("Choose the probability [%] each ConstantInt will "
+                           "replaced with GlobalVariable"),
+                  cl::value_desc("probability rate"), cl::init(50),
+                  cl::Optional);
+static thread_local uint32_t ConstToGVProbTemp = 50;
+
+static cl::opt<uint32_t> ObfTimes(
+    "constenc_times",
+    cl::desc(
+        "Choose how many time the ConstantEncryption pass loop on a function"),
+    cl::value_desc("Number of Times"), cl::init(1), cl::Optional);
+static thread_local uint32_t ObfTimesTemp = 1;
+
+static cl::opt<uint32_t> KShareCount(
+    "constenc_kshare",
+    cl::desc("[ConstantEncryption] Number of XOR shares for ensemble "
+             "secret-sharing (2=classic XOR, 3-5 recommended, max 8)"),
+    cl::value_desc("k"), cl::init(3), cl::Optional);
+static thread_local uint32_t KShareCountTemp = 3;
+
+static cl::opt<bool> FeistelTier(
+    "constenc_feistel",
+    cl::desc("[ConstantEncryption] Apply 4-round Feistel cipher before "
+             "share-splitting (adds nonlinear layer defeating XOR analysis)"),
+    cl::init(true), cl::Optional);
+static thread_local bool FeistelTierTemp = true;
+
+static cl::alias SubXorAlias("constenc-subxor",
+                             cl::desc("Alias for -constenc_subxor"),
+                             cl::aliasopt(SubstituteXor));
+static cl::alias SubXorProbAlias("constenc-subxor-prob",
+                                 cl::desc("Alias for -constenc_subxor_prob"),
+                                 cl::aliasopt(SubstituteXorProb));
+static cl::alias ConstToGVAlias1("constenc-togv",
+                                 cl::desc("Alias for -constenc_togv"),
+                                 cl::aliasopt(ConstToGV));
+static cl::alias ConstToGVAlias2("constenc_globalize",
+                                 cl::desc("Alias for -constenc_togv"),
+                                 cl::aliasopt(ConstToGV));
+static cl::alias ConstToGVAlias3("constenc-globalize",
+                                 cl::desc("Alias for -constenc_togv"),
+                                 cl::aliasopt(ConstToGV));
+static cl::alias ConstToGVProbAlias1("constenc-togv-prob",
+                                     cl::desc("Alias for -constenc_togv_prob"),
+                                     cl::aliasopt(ConstToGVProb));
+static cl::alias ConstToGVProbAlias2("constenc_globalize_prob",
+                                     cl::desc("Alias for -constenc_togv_prob"),
+                                     cl::aliasopt(ConstToGVProb));
+static cl::alias ConstToGVProbAlias3("constenc-globalize-prob",
+                                     cl::desc("Alias for -constenc_togv_prob"),
+                                     cl::aliasopt(ConstToGVProb));
+static cl::alias ConstTimesAlias1("constenc-times",
+                                  cl::desc("Alias for -constenc_times"),
+                                  cl::aliasopt(ObfTimes));
+static cl::alias ConstTimesAlias2("constenc_iterations",
+                                  cl::desc("Alias for -constenc_times"),
+                                  cl::aliasopt(ObfTimes));
+static cl::alias ConstTimesAlias3("constenc-iterations",
+                                  cl::desc("Alias for -constenc_times"),
+                                  cl::aliasopt(ObfTimes));
+static cl::alias KShareCountAlias1("constenc-kshare",
+                                   cl::desc("Alias for -constenc_kshare"),
+                                   cl::aliasopt(KShareCount));
+static cl::alias KShareCountAlias2("constenc_share_count",
+                                   cl::desc("Alias for -constenc_kshare"),
+                                   cl::aliasopt(KShareCount));
+static cl::alias KShareCountAlias3("constenc-share-count",
+                                   cl::desc("Alias for -constenc_kshare"),
+                                   cl::aliasopt(KShareCount));
+static cl::alias FeistelTierAlias("constenc-feistel",
+                                  cl::desc("Alias for -constenc_feistel"),
+                                  cl::aliasopt(FeistelTier));
+
+namespace llvm {
+struct ConstantEncryption : public ModulePass {
+  static char ID;
+  bool flag;
+  bool isPrePhase;
+  bool dispatchonce;
+  std::unordered_set<GlobalVariable *> handled_gvs;
+  SmallVector<GlobalValue *, 1024> usedGlobals;
+  std::unordered_map<Function *, Value *> funcTokens;
+
+  ConstantEncryption(bool flag, bool isPrePhase = false)
+      : ModulePass(ID), flag(flag), isPrePhase(isPrePhase) {}
+  ConstantEncryption() : ModulePass(ID), flag(true), isPrePhase(false) {}
+
+  static bool isTrivialConstant(const ConstantInt *CI) {
+    if (CI->getBitWidth() <= 64) {
+      int64_t v = CI->getSExtValue();
+      if (v >= -1 && v <= 8)
+        return true;
+      uint64_t uv = CI->getZExtValue();
+      if (uv == 0xFF || uv == 0xFFFF || uv == 0xFFFFFFFF)
+        return true;
+    }
+    return false;
+  }
+
+  bool shouldEncryptConstant(Instruction *I) {
+    if (I->hasMetadata("constenc.done") || I->hasMetadata("nk.synthetic"))
+      return false;
+    StringRef name = I->getName();
+    if (name.starts_with("constenc."))
+      return false;
+    if (isPrePhase) {
+      if (isSynthetic(I))
+        return false;
+    } else {
+      // Phase 2: strictly target CFF / CSM / BCF skeleton constants
+      if (!name.starts_with("csm.") && !name.starts_with("fla.") &&
+          !name.starts_with("bcf."))
+        return false;
+    }
+    if (I->getFunction() && I->getFunction()->getName().starts_with("__nk_"))
+      return false;
+    if (I->getType()->isVectorTy())
+      return false;
+    for (unsigned i = 0; i < I->getNumOperands(); i++) {
+      if (I->getOperand(i)->getType()->isVectorTy())
+        return false;
+    }
+    if (isa<SwitchInst>(I) || isa<IntrinsicInst>(I) ||
+        isa<GetElementPtrInst>(I) || isa<PHINode>(I) || isa<AllocaInst>(I) ||
+        I->isAtomic())
+      return false;
+    if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
+      CallSite CS(I);
+      if (CS.getCalledFunction() &&
+          CS.getCalledFunction()->getName().starts_with("nk_")) {
+        return false;
+      }
+    }
+    if (dispatchonce)
+      if (AllocaInst *AI = dyn_cast<AllocaInst>(I)) {
+        if (AI->getAllocatedType()->isIntegerTy())
+          for (User *U : AI->users())
+            if (LoadInst *LI = dyn_cast<LoadInst>(U))
+              for (User *LU : LI->users())
+                if (isa<CallInst>(LU) || isa<InvokeInst>(LU)) {
+                  CallSite CS(LU);
+                  Value *calledFunction = CS.getCalledFunction();
+                  if (!calledFunction)
+                    calledFunction = CS.getCalledValue()->stripPointerCasts();
+                  if (!calledFunction ||
+                      (!isa<ConstantExpr>(calledFunction) &&
+                       !isa<Function>(calledFunction)) ||
+                      CS.getIntrinsicID() != Intrinsic::not_intrinsic)
+                    continue;
+                  if (calledFunction->getName() == "_dispatch_once" ||
+                      calledFunction->getName() == "dispatch_once")
+                    return false;
+                }
+      }
+    return true;
+  }
+  bool runOnModule(Module &M) override {
+    dispatchonce = M.getFunction("dispatch_once");
+    for (Function &F : M) {
+      if (F.getName().starts_with("__nk_"))
+        continue;
+      auto ec =
+          GObfConfig.resolve(F.getParent()->getSourceFileName(), F.getName());
+      bool shouldObf = ec.const_enc.enabled.value_or(flag);
+      if (toObfuscate(shouldObf, &F, "constenc") && !F.isPresplitCoroutine()) {
+        if (ObfVerbose)
+          errs() << "Running ConstantEncryption On " << F.getName() << "\n";
+        FixFunctionConstantExpr(&F);
+        std::vector<std::string> skipVal, forceVal;
+        {
+          if (!toObfuscateUint32Option(&F, "constenc_times", &ObfTimesTemp))
+            ObfTimesTemp = ec.const_enc.iterations.value_or((uint32_t)ObfTimes);
+          if (!toObfuscateBoolOption(&F, "constenc_togv", &ConstToGVTemp))
+            ConstToGVTemp = ec.const_enc.globalize.value_or((bool)ConstToGV);
+          if (!toObfuscateBoolOption(&F, "constenc_subxor", &SubstituteXorTemp))
+            SubstituteXorTemp =
+                ec.const_enc.substitute_xor.value_or((bool)SubstituteXor);
+          if (!toObfuscateUint32Option(&F, "constenc_subxor_prob",
+                                       &SubstituteXorProbTemp))
+            SubstituteXorProbTemp = ec.const_enc.substitute_xor_prob.value_or(
+                (uint32_t)SubstituteXorProb);
+          if (!toObfuscateUint32Option(&F, "constenc_kshare", &KShareCountTemp))
+            KShareCountTemp =
+                ec.const_enc.share_count.value_or((uint32_t)KShareCount);
+          if (KShareCountTemp < 2)
+            KShareCountTemp = 2;
+          if (KShareCountTemp > 8)
+            KShareCountTemp = 8;
+          if (ObfuscationMaxMode)
+            KShareCountTemp = 4;
+          if (!toObfuscateBoolOption(&F, "constenc_feistel", &FeistelTierTemp))
+            FeistelTierTemp = ec.const_enc.feistel.value_or((bool)FeistelTier);
+          if (ObfuscationMaxMode)
+            FeistelTierTemp = true;
+          if (!toObfuscateUint32Option(&F, "constenc_togv_prob",
+                                       &ConstToGVProbTemp))
+            ConstToGVProbTemp =
+                ec.const_enc.globalize_prob.value_or((uint32_t)ConstToGVProb);
+          skipVal = ec.const_enc.skip_value;
+          forceVal = ec.const_enc.force_value;
+        }
+        if (SubstituteXorProbTemp > 100) {
+          errs() << "-constenc_subxor_prob=x must be 0 < x <= 100";
+          return false;
+        }
+        if (ConstToGVProbTemp > 100) {
+          errs() << "-constenc_togv_prob=x must be 0 < x <= 100";
+          return false;
+        }
+        EncryptConstants(F, skipVal, forceVal);
+        if (ConstToGVTemp) {
+          Constant2GlobalVariable(F);
+        }
+      }
+    }
+    if (!usedGlobals.empty()) {
+      appendToCompilerUsed(M, usedGlobals);
+      usedGlobals.clear();
+    }
+    return true;
+  }
+
+  bool isDispatchOnceToken(GlobalVariable *GV) {
+    if (!dispatchonce)
+      return false;
+    for (User *U : GV->users()) {
+      if (isa<CallInst>(U) || isa<InvokeInst>(U)) {
+        CallSite CS(U);
+        Value *calledFunction = CS.getCalledFunction();
+        if (!calledFunction)
+          calledFunction = CS.getCalledValue()->stripPointerCasts();
+        if (!calledFunction ||
+            (!isa<ConstantExpr>(calledFunction) &&
+             !isa<Function>(calledFunction)) ||
+            CS.getIntrinsicID() != Intrinsic::not_intrinsic)
+          continue;
+        if (calledFunction->getName() == "_dispatch_once" ||
+            calledFunction->getName() == "dispatch_once") {
+          Value *onceToken = U->getOperand(0);
+          if (dyn_cast_or_null<GlobalVariable>(
+                  onceToken->stripPointerCasts()) == GV)
+            return true;
+        }
+      }
+      if (StoreInst *SI = dyn_cast<StoreInst>(U))
+        for (User *SU : SI->getPointerOperand()->users())
+          if (LoadInst *LI = dyn_cast<LoadInst>(SU))
+            for (User *LU : LI->users())
+              if (isa<CallInst>(LU) || isa<InvokeInst>(LU)) {
+                CallSite CS(LU);
+                Value *calledFunction = CS.getCalledFunction();
+                if (!calledFunction)
+                  calledFunction = CS.getCalledValue()->stripPointerCasts();
+                if (!calledFunction ||
+                    (!isa<ConstantExpr>(calledFunction) &&
+                     !isa<Function>(calledFunction)) ||
+                    CS.getIntrinsicID() != Intrinsic::not_intrinsic)
+                  continue;
+                if (calledFunction->getName() == "_dispatch_once" ||
+                    calledFunction->getName() == "dispatch_once")
+                  return true;
+              }
+    }
+    return false;
+  }
+
+  bool isAtomicLoaded(GlobalVariable *GV) {
+    for (User *U : GV->users()) {
+      if (LoadInst *LI = dyn_cast<LoadInst>(U)) {
+        if (LI->isAtomic())
+          return true;
+      }
+    }
+    return false;
+  }
+
+  // Returns the hex string "0x<UPPER_HEX>" for a ConstantInt (used for
+  // skip_value / force_value pattern matching).
+  static std::string ciHex(const ConstantInt *CI) {
+    llvm::SmallString<32> buf;
+    CI->getValue().toString(buf, 16, /*Signed=*/false);
+    return "0x" + buf.str().upper(); // StringRef::upper() returns std::string
+  }
+
+  // Checks ci's value against skip/force patterns (case-insensitive hex match).
+  // Returns: -1 = skip, +1 = force, 0 = normal probability.
+  static int valueGate(const ConstantInt *CI,
+                       const std::vector<std::string> &skipPats,
+                       const std::vector<std::string> &forcePats) {
+    if (skipPats.empty() && forcePats.empty())
+      return 0;
+    std::string hex = ciHex(CI);
+    for (const auto &pat : skipPats) {
+      try {
+        if (std::regex_search(hex, std::regex(pat, std::regex::ECMAScript |
+                                                       std::regex::icase |
+                                                       std::regex::optimize)))
+          return -1;
+      } catch (const std::regex_error &) {
+      }
+    }
+    for (const auto &pat : forcePats) {
+      try {
+        if (std::regex_search(hex, std::regex(pat, std::regex::ECMAScript |
+                                                       std::regex::icase |
+                                                       std::regex::optimize)))
+          return +1;
+      } catch (const std::regex_error &) {
+      }
+    }
+    return 0;
+  }
+
+  void EncryptConstants(Function &F,
+                        const std::vector<std::string> &skipVal = {},
+                        const std::vector<std::string> &forceVal = {}) {
+    SmallVector<std::pair<Instruction *, unsigned>, 64> targets;
+    SmallSetVector<GlobalVariable *, 32> gvTargets;
+
+    for (Instruction &I : instructions(F)) {
+      if (!shouldEncryptConstant(&I))
+        continue;
+      CallInst *CI = dyn_cast<CallInst>(&I);
+      for (unsigned i = 0; i < I.getNumOperands(); i++) {
+        if (CI && CI->isBundleOperand(i))
+          continue;
+        Value *Op = I.getOperand(i);
+        if (isa<ConstantInt>(Op))
+          targets.push_back({&I, i});
+        if (isPrePhase) {
+          if (GlobalVariable *G = dyn_cast<GlobalVariable>(Op)) {
+            StringRef gName = G->getName();
+            if (gName.starts_with("bcf.") || gName.starts_with("bcf_") ||
+                gName.starts_with("LHSGV") || gName.starts_with("RHSGV") ||
+                gName.starts_with("IndirectBranching") ||
+                gName.starts_with("__ah_") || gName.starts_with("nk_") ||
+                gName.starts_with("barrier.") || gName.contains("reg2mem"))
+              continue;
+            if (G->hasInitializer() &&
+                (G->hasPrivateLinkage() || G->hasInternalLinkage()) &&
+                isa<ConstantInt>(G->getInitializer()) &&
+                handled_gvs.find(G) == handled_gvs.end())
+              gvTargets.insert(G);
+          }
+        }
+      }
+    }
+
+    uint32_t eligible = targets.size() + gvTargets.size();
+    if (eligible == 0)
+      return;
+    if (ObfVerbose || ObfTrace) {
+      errs() << "[OLLVM-Next] ConstantEncryption [" << F.getName()
+             << "]: Found " << targets.size() << " inst targets and "
+             << gvTargets.size() << " GV targets.\n";
+    }
+
+    // Filter targets by valueGate and trivial constant whitelist
+    SmallVector<std::pair<Instruction *, unsigned>, 64> filteredTargets;
+    for (auto &T : targets) {
+      const ConstantInt *CI = cast<ConstantInt>(T.first->getOperand(T.second));
+      int gate = valueGate(CI, skipVal, forceVal);
+      if (gate < 0)
+        continue;
+      if (gate == 0 && isTrivialConstant(CI))
+        continue;
+      filteredTargets.push_back(T);
+    }
+
+    uint32_t maxTargets = ObfuscationMaxMode ? 60 : 30;
+    if (filteredTargets.size() > maxTargets) {
+      for (size_t i = 0; i < filteredTargets.size(); i++) {
+        size_t j = i + cryptoutils->get_range(filteredTargets.size() - i);
+        std::swap(filteredTargets[i], filteredTargets[j]);
+      }
+      filteredTargets.resize(maxTargets);
+    }
+
+    for (auto &T : filteredTargets) {
+      HandleConstantIntOperand(T.first, T.second);
+    }
+
+    uint32_t gvCount = 0;
+    uint32_t maxGVTargets = ObfuscationMaxMode ? 60 : 30;
+    for (GlobalVariable *G : gvTargets) {
+      if (gvCount >= maxGVTargets)
+        break;
+      const ConstantInt *CI = cast<ConstantInt>(G->getInitializer());
+      int gate = valueGate(CI, skipVal, forceVal);
+      if (gate < 0)
+        continue;
+      if (gate == 0 && isTrivialConstant(CI))
+        continue;
+      HandleConstantIntInitializerGV(G);
+      gvCount++;
+    }
+  }
+
+  void Constant2GlobalVariable(Function &F) {
+    Module &M = *F.getParent();
+    for (Instruction &I : instructions(F)) {
+      if (!shouldEncryptConstant(&I))
+        continue;
+      CallInst *CI = dyn_cast<CallInst>(&I);
+      InvokeInst *II = dyn_cast<InvokeInst>(&I);
+      for (unsigned int i = 0; i < I.getNumOperands(); i++) {
+        if (CI && CI->isBundleOperand(i))
+          continue;
+        if (II && II->isBundleOperand(i))
+          continue;
+        if (ConstantInt *CI = dyn_cast<ConstantInt>(I.getOperand(i))) {
+          if (!(cryptoutils->get_range(100) <= ConstToGVProbTemp))
+            continue;
+          GlobalVariable *GV = new GlobalVariable(
+              *F.getParent(), CI->getType(), false,
+              GlobalValue::LinkageTypes::InternalLinkage,
+              ConstantInt::get(CI->getType(), CI->getValue()), "CToGV", nullptr,
+              GlobalValue::NotThreadLocal);
+          usedGlobals.push_back(GV);
+          I.setOperand(i, new LoadInst(GV->getValueType(), GV, "", &I));
+        }
+      }
+    }
+  }
+
+  void HandleConstantIntInitializerGV(GlobalVariable *GVPtr) {
+    if (!GVPtr || handled_gvs.find(GVPtr) != handled_gvs.end())
+      return;
+    if (!(flag || AreUsersInOneFunction(GVPtr)) || isDispatchOnceToken(GVPtr) ||
+        isAtomicLoaded(GVPtr))
+      return;
+    for (User *U : GVPtr->users()) {
+      if (!isa<LoadInst>(U) && !isa<StoreInst>(U))
+        return;
+    }
+    handled_gvs.insert(GVPtr);
+    ConstantInt *Old = dyn_cast<ConstantInt>(GVPtr->getInitializer());
+    if (!Old)
+      return;
+    auto keyandnew = PairConstantInt(Old);
+    ConstantInt *XORKey = keyandnew.first;
+    ConstantInt *newGVInit = keyandnew.second;
+    if (!XORKey || !newGVInit)
+      return;
+    GVPtr->setInitializer(newGVInit);
+    bool isSigned = XORKey->getValue().isSignBitSet() ||
+                    newGVInit->getValue().isSignBitSet() ||
+                    Old->getValue().isSignBitSet();
+    for (User *U : GVPtr->users()) {
+      BinaryOperator *XORInst = nullptr;
+      if (LoadInst *LI = dyn_cast<LoadInst>(U)) {
+        LI->setVolatile(true);
+        if (LI->getType() != XORKey->getType()) {
+          Instruction *IntegerCast =
+              BitCastInst::CreateIntegerCast(LI, XORKey->getType(), isSigned);
+          IntegerCast->insertAfter(LI);
+          XORInst =
+              BinaryOperator::Create(Instruction::Xor, IntegerCast, XORKey);
+          XORInst->insertAfter(IntegerCast);
+          IRBuilder<NoFolder> IRB(XORInst);
+          Value *barKey = insertOpaqueBarrier(IRB, XORKey);
+          XORInst->setOperand(1, barKey);
+          Instruction *IntegerCast2 =
+              BitCastInst::CreateIntegerCast(XORInst, LI->getType(), isSigned);
+          IntegerCast2->insertAfter(XORInst);
+          LI->replaceUsesWithIf(IntegerCast2, [IntegerCast](Use &U) {
+            return U.getUser() != IntegerCast;
+          });
+        } else {
+          XORInst = BinaryOperator::Create(Instruction::Xor, LI, XORKey);
+          XORInst->insertAfter(LI);
+          IRBuilder<NoFolder> IRB(XORInst);
+          Value *barKey = insertOpaqueBarrier(IRB, XORKey);
+          XORInst->setOperand(1, barKey);
+          LI->replaceUsesWithIf(
+              XORInst, [XORInst](Use &U) { return U.getUser() != XORInst; });
+        }
+      } else if (StoreInst *SI = dyn_cast<StoreInst>(U)) {
+        XORInst = BinaryOperator::Create(Instruction::Xor, SI->getOperand(0),
+                                         XORKey, "", SI);
+        SI->replaceUsesOfWith(SI->getValueOperand(), XORInst);
+      }
+      if (XORInst && SubstituteXorTemp &&
+          cryptoutils->get_range(100) <= SubstituteXorProbTemp)
+        SubstituteImpl::substituteXor(XORInst);
+    }
+  }
+
+  // ── Feistel cipher for integer constants ─────────────────────────────────
+  //
+  // 4-round balanced Feistel on the integer value split into two equal halves.
+  //
+  // Round function F_r(x) = ((x & mask) * K_r[0] ^ K_r[1]) & mask
+  //   where K_r[0] is odd (invertible mod 2^half), K_r[1] is arbitrary.
+  //
+  // Forward round: (L, R) → (L', R') = (R,  L ^ F_r(R))
+  // Inverse round: (L', R') → (L, R) = (R' ^ F_r(L'),  L')
+  //   Proof: L' = R, R' = L ^ F_r(R) = L ^ F_r(L')
+  //          → L = R' ^ F_r(L'), R = L'  ✓
+  //
+  // Properties:
+  //   • 4 rounds exceed the Luby–Rackoff PRP threshold
+  //   • Nonlinear (multiplication defeats affine/XOR analysis)
+  //   • IR decryption: ~8×(mul+xor+and) + 2×(shift+or) ≈ 26 IR instructions
+  //
+  // Round keys K_r[0..1] are generated at compile time and stored in
+  // FeistelState, which is passed from feistelEncrypt to emitFeistelDecryptIR
+  // so that the IR emitter uses the same keys used for encryption.
+
+  GlobalVariable *getOrCreateKeyTable(Module &M) {
+    if (GlobalVariable *GV = M.getGlobalVariable("__nk_const_sbox", true))
+      return GV;
+    LLVMContext &Ctx = M.getContext();
+    Type *I32Ty = Type::getInt32Ty(Ctx);
+    ArrayType *ArrTy = ArrayType::get(I32Ty, 256);
+    GlobalVariable *KeyTable = new GlobalVariable(
+        M, ArrTy, /*isConstant=*/false, GlobalValue::InternalLinkage,
+        ConstantAggregateZero::get(ArrTy), "__nk_const_sbox");
+    usedGlobals.push_back(KeyTable);
+
+    // Create constructor function __nk_init_const_sbox
+    FunctionType *FT = FunctionType::get(Type::getVoidTy(Ctx), false);
+    Function *InitFn = Function::Create(FT, GlobalValue::InternalLinkage,
+                                        "__nk_init_const_sbox", &M);
+    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", InitFn);
+    IRBuilder<> IRB(BB);
+
+    for (unsigned i = 0; i < 256; i++) {
+      uint32_t val =
+          (uint32_t)((i * 0x9e3779b9ULL) ^ 0x85ebca6bULL) + 0x1337c0deU;
+      Value *ptr = IRB.CreateConstGEP2_32(ArrTy, KeyTable, 0, i);
+      IRB.CreateStore(ConstantInt::get(I32Ty, val), ptr);
+    }
+    IRB.CreateRetVoid();
+    appendToGlobalCtors(M, InitFn, 65535);
+    return KeyTable;
+  }
+
+  struct FeistelState {
+    APInt K[4][2]; // K[round][0=mulKey, 1=xorKey], both masked to half-width
+    unsigned half; // half bit-width of the constant (bits/2)
+    APInt mask;    // low half bits mask
+    unsigned slot; // key table slot
+    uint32_t dynKey;
+  };
+
+  // Compile-time: encrypt C using 4-round Feistel, filling fst with round keys.
+  // Returns nullptr if the constant is too narrow (bits < 16).
+  ConstantInt *feistelEncrypt(ConstantInt *C, FeistelState &fst) {
+    unsigned bits = C->getBitWidth();
+    if (bits < 16)
+      return nullptr; // need at least 8-bit halves
+    fst.half = bits / 2;
+    fst.mask = APInt::getLowBitsSet(bits, fst.half);
+    fst.slot = cryptoutils->get_range(256);
+    fst.dynKey =
+        (uint32_t)((fst.slot * 0x9e3779b9ULL) ^ 0x85ebca6bULL) + 0x1337c0deU;
+
+    APInt val = C->getValue();
+    APInt L = val.lshr(fst.half) & fst.mask;
+    APInt R = val & fst.mask;
+
+    for (int r = 0; r < 4; r++) {
+      APInt k0(bits, cryptoutils->get_uint64_t() | 1ULL, false, true);
+      APInt k1(bits, cryptoutils->get_uint64_t(), false, true);
+      for (unsigned w = 64; w < bits; w += 64) {
+        k0 |= APInt(bits, cryptoutils->get_uint64_t(), false, true).shl(w);
+        k1 |= APInt(bits, cryptoutils->get_uint64_t(), false, true).shl(w);
+      }
+      k0 = (k0 | APInt(bits, 1)) & fst.mask;
+      k1 = k1 & fst.mask;
+      fst.K[r][0] = k0;
+      fst.K[r][1] = k1;
+
+      APInt F = ((R * k0) ^ k1) & fst.mask;
+      APInt newR = (L ^ F) & fst.mask;
+      L = R;
+      R = newR;
+    }
+    // Mask round 0 K1 with dynamic key
+    fst.K[0][1] ^= (APInt(bits, fst.dynKey, false, true) & fst.mask);
+
+    APInt enc = (L.shl(fst.half) | R);
+    return cast<ConstantInt>(ConstantInt::get(C->getType(), enc));
+  }
+
+  // IR-time: emit the 4-round inverse Feistel that recovers the original
+  // constant. encVal is the IR Value carrying the encrypted constant (output of
+  // k-share XOR or simple XOR decryption).  All instructions are inserted just
+  // before I.
+  Value *emitFeistelDecryptIR(Instruction *I, Value *encVal, IntegerType *T,
+                              const FeistelState &fst) {
+    ConstantInt *halfC = cast<ConstantInt>(ConstantInt::get(T, fst.half));
+    ConstantInt *maskC = cast<ConstantInt>(ConstantInt::get(T, fst.mask));
+    Module &M = *I->getModule();
+    GlobalVariable *KT = getOrCreateKeyTable(M);
+    Type *I32Ty = Type::getInt32Ty(M.getContext());
+
+    // Extract halves: L = upper half, R = lower half
+    Value *L = BinaryOperator::Create(
+        Instruction::And,
+        BinaryOperator::Create(Instruction::LShr, encVal, halfC,
+                               "constenc.feistel.lshr", I),
+        maskC, "constenc.feistel.L", I);
+    Value *R = BinaryOperator::Create(Instruction::And, encVal, maskC,
+                                      "constenc.feistel.R", I);
+
+    // Apply 4 inverse rounds in reverse order (r = 3, 2, 1, 0)
+    for (int r = 3; r >= 0; r--) {
+      ConstantInt *K0 = cast<ConstantInt>(ConstantInt::get(T, fst.K[r][0]));
+      Value *K1Val = cast<ConstantInt>(ConstantInt::get(T, fst.K[r][1]));
+      if (r == 0) {
+        // Unmask K1 using dynamic table load
+        IRBuilder<NoFolder> IRBDyn(I);
+        Value *gepKey = IRBDyn.CreateConstGEP2_32(
+            KT->getValueType(), KT, 0, fst.slot, "constenc.feistel.gep");
+        LoadInst *ldKey =
+            IRBDyn.CreateLoad(I32Ty, gepKey, "constenc.feistel.ld");
+        ldKey->setVolatile(true);
+        Value *dynKeyIR = ldKey;
+        if (T->getBitWidth() != 32)
+          dynKeyIR =
+              IRBDyn.CreateZExtOrTrunc(ldKey, T, "constenc.feistel.cast");
+        Value *dynKeyMasked = IRBDyn.CreateAnd(dynKeyIR, maskC);
+        K1Val = BinaryOperator::Create(Instruction::Xor, K1Val, dynKeyMasked,
+                                       "constenc.feistel.k1dyn", I);
+      }
+      // F_r(L) = ((L * K0) ^ K1) & mask
+      Value *mul = BinaryOperator::Create(Instruction::Mul, L, K0,
+                                          "constenc.feistel.mul", I);
+      Value *xorK = BinaryOperator::Create(Instruction::Xor, mul, K1Val,
+                                           "constenc.feistel.xor", I);
+      Value *F = BinaryOperator::Create(Instruction::And, xorK, maskC,
+                                        "constenc.feistel.F", I);
+      // Inverse: newL = R ^ F(L),  newR = L
+      Value *newL = BinaryOperator::Create(
+          Instruction::And,
+          BinaryOperator::Create(Instruction::Xor, R, F,
+                                 "constenc.feistel.rxor", I),
+          maskC, "constenc.feistel.newL", I);
+      IRBuilder<NoFolder> IRBFeistel(I);
+      newL = insertOpaqueBarrier(IRBFeistel, newL);
+      Value *newR = L;
+      L = newL;
+      R = newR;
+    }
+
+    // Recombine: (L << half) | R
+    Value *Lsh = BinaryOperator::Create(Instruction::Shl, L, halfC,
+                                        "constenc.feistel.shl", I);
+    return BinaryOperator::Create(Instruction::Or, Lsh, R,
+                                  "constenc.feistel.rec", I);
+  }
+
+  // ── k-share ensemble secret sharing ─────────────────────────────────────
+  //
+  // Emit IR that reconstructs C from k global-variable shares by XOR-ing them.
+  // Shares are stored as module-level GlobalVariables (private linkage).
+  // Returns the IR Value representing C (the XOR of all k loads).
+  Value *emitKShareDecrypt(Instruction *I, ConstantInt *C, unsigned k) {
+    Module &M = *I->getModule();
+    IntegerType *T = cast<IntegerType>(C->getType());
+    unsigned bits = T->getBitWidth();
+    if (bits < 8 || k < 2) {
+      // Narrow ints or k<2: fall back to single XOR
+      return nullptr;
+    }
+
+    GlobalVariable *KT = getOrCreateKeyTable(M);
+    unsigned slot = cryptoutils->get_range(256);
+    uint32_t dynKeyVal =
+        (uint32_t)((slot * 0x9e3779b9ULL) ^ 0x85ebca6bULL) + 0x1337c0deU;
+    APInt dynKey(bits, dynKeyVal, false, true);
+
+    // Generate k−1 random APInt shares; last share = C ^ xor(r_1..r_{k-1})
+    SmallVector<APInt, 8> shares;
+    shares.reserve(k);
+    APInt xorAccum = C->getValue();
+
+    for (unsigned i = 0; i < k - 1; i++) {
+      APInt r(bits, cryptoutils->get_uint64_t(), false, true);
+      for (unsigned w = 64; w < bits; w += 64) {
+        r |= APInt(bits, cryptoutils->get_uint64_t(), false, true).shl(w);
+      }
+      r = r.zextOrTrunc(bits);
+      if (bits < 64) {
+        r &= APInt::getLowBitsSet(bits, bits);
+      }
+      shares.push_back(r);
+      xorAccum ^= r;
+    }
+    shares.push_back(xorAccum); // last share makes XOR-of-all = C
+
+    // Mask first share with dynKey so it cannot be folded without runtime table
+    // lookup
+    shares[0] ^= dynKey;
+
+    // Create k GlobalVariables for the shares
+    SmallVector<GlobalVariable *, 8> gvs;
+    for (unsigned i = 0; i < k; i++) {
+      GlobalVariable *GV = new GlobalVariable(
+          M, T, /*isConstant=*/false, GlobalValue::InternalLinkage,
+          ConstantInt::get(T, shares[i]), "constenc.share");
+      usedGlobals.push_back(GV);
+      gvs.push_back(GV);
+    }
+
+    // Emit XOR chain: load g0, unmask with dynamic key table load, load g1, ...
+    // XOR all together with volatile loads and opaque barrier
+    IRBuilder<NoFolder> IRB(I);
+    LoadInst *ld0 =
+        new LoadInst(T, gvs[0], "constenc.share0", /*isVolatile=*/true, I);
+
+    Type *I32Ty = Type::getInt32Ty(M.getContext());
+    Value *gepKey = IRB.CreateConstGEP2_32(KT->getValueType(), KT, 0, slot,
+                                           "constenc.kt.gep");
+    LoadInst *ldKey = IRB.CreateLoad(I32Ty, gepKey, "constenc.kt.ld");
+    ldKey->setVolatile(true);
+    Value *dynKeyIR = ldKey;
+    if (bits != 32)
+      dynKeyIR = IRB.CreateZExtOrTrunc(ldKey, T, "constenc.kt.cast");
+    Value *realShare0 = BinaryOperator::Create(Instruction::Xor, ld0, dynKeyIR,
+                                               "constenc.share0.dyn", I);
+
+    // Scheme C: Entangle keystream with runtime dynamic debug token if present
+    Function *F = I->getFunction();
+    if (F && !F->getName().starts_with("__nk_") && !F->isDeclaration()) {
+      auto it = funcTokens.find(F);
+      Value *tok = nullptr;
+      if (it != funcTokens.end()) {
+        tok = it->second;
+      } else {
+        for (Instruction &inst : instructions(F)) {
+          if (CallInst *ci = dyn_cast<CallInst>(&inst)) {
+            if (ci->getName().starts_with("adb.tok")) {
+              tok = ci;
+              break;
+            }
+          }
+        }
+        funcTokens[F] = tok;
+      }
+      bool dominates = false;
+      if (Instruction *tokInst = dyn_cast_or_null<Instruction>(tok)) {
+        if (tokInst->getParent() == &F->getEntryBlock()) {
+          dominates = (I->getParent() != &F->getEntryBlock()) ||
+                      tokInst->comesBefore(I);
+        } else {
+          DominatorTree DT(*F);
+          dominates = DT.dominates(tokInst, I);
+        }
+      }
+      if (tok && !isa<ConstantInt>(tok) && dominates) {
+        Value *tokCast = tok;
+        if (bits < 64) {
+          tokCast = IRB.CreateTrunc(tok, T, "constenc.c.tok");
+        } else if (bits > 64) {
+          tokCast = IRB.CreateZExt(tok, T, "constenc.c.tok");
+        }
+        realShare0 =
+            BinaryOperator::Create(Instruction::Xor, realShare0, tokCast,
+                                   "constenc.share0.entangle", I);
+      }
+    }
+
+    Value *acc = insertOpaqueBarrier(IRB, realShare0);
+    for (unsigned i = 1; i < k; i++) {
+      Value *ld =
+          new LoadInst(T, gvs[i], "constenc.share", /*isVolatile=*/true, I);
+      acc =
+          BinaryOperator::Create(Instruction::Xor, acc, ld, "constenc.xor", I);
+      // Optionally substitute the XOR for additional depth
+      if (SubstituteXorTemp &&
+          cryptoutils->get_range(100) <= SubstituteXorProbTemp)
+        SubstituteImpl::substituteXor(cast<BinaryOperator>(acc));
+    }
+    return acc;
+  }
+
+  void HandleConstantIntOperand(Instruction *I, unsigned opindex) {
+    ConstantInt *origC = cast<ConstantInt>(I->getOperand(opindex));
+    unsigned k = KShareCountTemp;
+
+    // ── Feistel pre-encryption layer ────────────────────────────────────────
+    // When -constenc_feistel is set, encrypt origC at compile time using a
+    // 4-round balanced Feistel cipher, then apply the k-share / XOR layer to
+    // the encrypted value.  At runtime the emitted IR first reconstructs the
+    // encrypted constant (via the XOR chain), then decrypts via the 4-round
+    // inverse Feistel to recover the original constant.
+    //
+    // This stacks two distinct layers:
+    //   XOR-share obfuscation (information-theoretic security over the XOR key)
+    //   + Feistel nonlinearity (multiplication defeats affine analysis)
+    FeistelState fst;
+    bool useFeistel = FeistelTierTemp;
+    ConstantInt *workC = origC;
+    if (useFeistel) {
+      ConstantInt *encC = feistelEncrypt(origC, fst);
+      if (!encC)
+        useFeistel = false; // constant too narrow (<16 bits) — skip Feistel
+      else
+        workC = encC;
+    }
+
+    // ── k-share ensemble or classic XOR ─────────────────────────────────────
+    Value *reconstructed = nullptr;
+    if (k >= 2) {
+      reconstructed = emitKShareDecrypt(I, workC, k);
+    }
+    if (!reconstructed) {
+      // Classic single-XOR: emit (New ^ Key) through opaque memory barrier
+      auto kn = PairConstantInt(workC);
+      if (!kn.first || !kn.second)
+        return;
+      IRBuilder<NoFolder> IRB(I);
+      Value *op0 = insertOpaqueBarrier(IRB, kn.second);
+      BinaryOperator *xorInst = BinaryOperator::Create(
+          Instruction::Xor, op0, kn.first, "constenc.val", I);
+      if (SubstituteXorTemp &&
+          cryptoutils->get_range(100) <= SubstituteXorProbTemp)
+        SubstituteImpl::substituteXor(xorInst);
+      reconstructed = xorInst;
+    }
+
+    // ── Feistel inverse decryption IR ────────────────────────────────────────
+    // The reconstructed value equals workC (== feistelEncrypt(origC)).
+    // Emit the 4-round inverse Feistel to recover origC at runtime.
+    if (useFeistel) {
+      reconstructed = emitFeistelDecryptIR(
+          I, reconstructed, cast<IntegerType>(origC->getType()), fst);
+    }
+
+    I->setOperand(opindex, reconstructed);
+    I->setMetadata("constenc.done", MDNode::get(I->getContext(), {}));
+  }
+
+  std::pair<ConstantInt * /*key*/, ConstantInt * /*new*/>
+  PairConstantInt(ConstantInt *C) {
+    if (!C)
+      return std::make_pair(nullptr, nullptr);
+    IntegerType *IT = cast<IntegerType>(C->getType());
+    uint64_t K;
+    if (IT == Type::getInt1Ty(IT->getContext()) ||
+        IT == Type::getInt8Ty(IT->getContext()))
+      K = cryptoutils->get_uint8_t();
+    else if (IT == Type::getInt16Ty(IT->getContext()))
+      K = cryptoutils->get_uint16_t();
+    else if (IT == Type::getInt32Ty(IT->getContext()))
+      K = cryptoutils->get_uint32_t();
+    else if (IT == Type::getInt64Ty(IT->getContext()))
+      K = cryptoutils->get_uint64_t();
+    else
+      return std::make_pair(nullptr, nullptr);
+    ConstantInt *CI =
+        cast<ConstantInt>(ConstantInt::get(IT, K ^ C->getValue()));
+    return std::make_pair(ConstantInt::get(IT, K), CI);
+  }
+};
+
+ModulePass *createConstantEncryptionPass(bool flag, bool isPrePhase) {
+  return new ConstantEncryption(flag, isPrePhase);
+}
+} // namespace llvm
+char ConstantEncryption::ID = 0;
+INITIALIZE_PASS(ConstantEncryption, "constencobf",
+                "Enable ConstantInt GV Encryption.", false, false)

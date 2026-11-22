@@ -1,0 +1,947 @@
+/*
+ *  OLLVM-Next (Nk): The next generation LLVM based Obfuscator
+ *  Copyright (C) 2026  Xinyu Yang(<Xinyu.Yang@apich.org>)
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU Affero General Public License as published
+ *  by the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU Affero General Public License for more details.
+ *
+ *  You should have received a copy of the GNU Affero General Public License
+ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "include/MBAObfuscation.h"
+#include "include/CryptoUtils.h"
+#include "include/ObfConfig.h"
+#include "include/Utils.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/NoFolder.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+
+using namespace llvm;
+
+static cl::opt<uint32_t>
+    MBAProbRate("mba_prob",
+                cl::desc("Probability [%] each binary op is MBA-substituted"),
+                cl::value_desc("probability"), cl::init(60), cl::Optional);
+static thread_local uint32_t MBAProbRateTemp = 60;
+
+static cl::opt<uint32_t>
+    MBALayers("mba_layers", cl::desc("Number of MBA substitution layers (1-3)"),
+              cl::value_desc("layers"), cl::init(2), cl::Optional);
+static thread_local uint32_t MBALayersTemp = 2;
+
+static cl::opt<bool>
+    MBAHeuristic("mba_heuristic", cl::init(true), cl::NotHidden,
+                 cl::desc("[MBA] Enable heuristic zero-term noise injection"));
+static thread_local bool MBAHeuristicTemp = true;
+
+static cl::alias MBAProbRateAlias("mba-prob", cl::desc("Alias for -mba_prob"),
+                                  cl::aliasopt(MBAProbRate));
+static cl::alias MBALayersAlias("mba-layers", cl::desc("Alias for -mba_layers"),
+                                cl::aliasopt(MBALayers));
+static cl::alias MBAHeuristicAlias("mba-heuristic",
+                                   cl::desc("Alias for -mba_heuristic"),
+                                   cl::aliasopt(MBAHeuristic));
+
+// ─── context-dependent zero-term generator ───────────────────────────────────
+//
+// Introduces runtime contextual zero terms derived from @__nk_mba_ctx and
+// non-linear affine polynomial noise terms. These terms evaluate to zero ONLY
+// when evaluated against the runtime secret context, preventing black-box I/O
+// oracle synthesis (Syntia/Arybo) and SMT simplification.
+
+static std::pair<GlobalVariable *, uint64_t> getOrCreateMBACtx(Module *M) {
+  if (!M)
+    return {nullptr, 0};
+  GlobalVariable *GV = M->getGlobalVariable("__nk_mba_ctx", true);
+  if (GV) {
+    if (ConstantInt *CI = dyn_cast_or_null<ConstantInt>(GV->getInitializer()))
+      return {GV, CI->getZExtValue()};
+  }
+  uint64_t secretK = cryptoutils->get_uint64_t();
+  if (secretK == 0)
+    secretK = 0x5a17e9b3c4f2d801ULL;
+  Type *I64Ty = Type::getInt64Ty(M->getContext());
+  GV = new GlobalVariable(*M, I64Ty, /*isConstant=*/false,
+                          GlobalValue::InternalLinkage,
+                          ConstantInt::get(I64Ty, secretK), "__nk_mba_ctx");
+  return {GV, secretK};
+}
+
+static Value *buildContextZero(IRBuilder<NoFolder> &IRB, Type *T, Module *M) {
+  if (!M || !T->isIntegerTy())
+    return ConstantInt::get(T, 0);
+  auto [ctxGV, secretK] = getOrCreateMBACtx(M);
+  if (!ctxGV)
+    return ConstantInt::get(T, 0);
+  LLVMContext &Ctx = M->getContext();
+  Value *loadedCtx =
+      IRB.CreateLoad(Type::getInt64Ty(Ctx), ctxGV, "mba.ctx.val");
+  Value *barCtx = insertOpaqueBarrier(IRB, loadedCtx);
+  Value *ctxDiff = IRB.CreateXor(
+      barCtx, ConstantInt::get(Type::getInt64Ty(Ctx), secretK), "mba.ctx.diff");
+  return IRB.CreateZExtOrTrunc(ctxDiff, T, "mba.ctx.zero");
+}
+
+static Value *buildZeroTerm(IRBuilder<NoFolder> &IRB, Value *a, Value *b,
+                            unsigned kind, Value *ctxZero) {
+  Type *T = a->getType();
+  if (!T->isIntegerTy())
+    return ConstantInt::get(T, 0);
+  unsigned width = T->getIntegerBitWidth();
+  Constant *one = ConstantInt::get(T, 1);
+  Constant *two = ConstantInt::get(T, 2);
+
+  switch (kind & 7) {
+  case 0: { // Dynamic context-dependent affine polynomial term:
+            // P(a, b) * ctxZero == 0 at runtime, but non-zero when sampled
+            // in isolation by black-box synthesizers (Syntia/Arybo)
+    Value *p1 = IRB.CreateMul(a, ConstantInt::get(T, 0x1337 | 1));
+    Value *p2 = IRB.CreateMul(b, ConstantInt::get(T, 0x5a17 | 1));
+    Value *poly =
+        IRB.CreateAdd(IRB.CreateAdd(p1, p2), ConstantInt::get(T, 0x7f4a));
+    return IRB.CreateMul(poly, ctxZero, "mba.ctx.poly0");
+  }
+  case 1: { // Quadratic residue identity: for all x in Z, (x^2 & 2) == 0.
+            // Combined with context zero to resist SMT bitmask elimination.
+    if (width >= 2) {
+      Value *sq = IRB.CreateMul(a, a);
+      Value *quadZero = IRB.CreateAnd(sq, two, "mba.quad.zero");
+      Value *quadMix = IRB.CreateOr(quadZero, ctxZero);
+      Value *noisePoly = IRB.CreateAdd(b, ConstantInt::get(T, 0x3b));
+      return IRB.CreateMul(noisePoly, quadMix, "mba.poly.zero1");
+    }
+    Value *aminus1 = IRB.CreateSub(a, one);
+    return IRB.CreateAnd(IRB.CreateMul(a, aminus1), one, "mba.poly.zero1");
+  }
+  case 2: { // Non-linear bivariate polynomial coupled with dynamic context:
+            // (a^2 + b^2 + 0x101) * ctxZero
+    Value *a2 = IRB.CreateMul(a, a);
+    Value *b2 = IRB.CreateMul(b, b);
+    Value *sum2 =
+        IRB.CreateAdd(IRB.CreateAdd(a2, b2), ConstantInt::get(T, 0x101));
+    return IRB.CreateMul(sum2, ctxZero, "mba.poly.zero2");
+  }
+  case 3: { // Consecutive integer parity coupled with context zero:
+            // ((a * (a + 1)) & 1) ^ ctxZero
+    Value *aplus1 = IRB.CreateAdd(a, one);
+    Value *mul = IRB.CreateMul(a, aplus1);
+    Value *par = IRB.CreateAnd(mul, one);
+    return IRB.CreateXor(par, ctxZero, "mba.poly.zero3");
+  }
+  case 4: { // (((a ^ b) * ((a ^ b) + 1)) & 1) | ctxZero
+    Value *x = IRB.CreateXor(a, b);
+    Value *xplus1 = IRB.CreateAdd(x, one);
+    Value *mul = IRB.CreateMul(x, xplus1);
+    Value *par = IRB.CreateAnd(mul, one);
+    return IRB.CreateOr(par, ctxZero, "mba.poly.zero4");
+  }
+  case 5: { // Modulo 3 cubic residue: (a^3 - a) is always a multiple of 6.
+            // Scaled by dynamic context zero to generate high-degree noise.
+    Value *a2 = IRB.CreateMul(a, a);
+    Value *a3 = IRB.CreateMul(a2, a);
+    Value *sub = IRB.CreateSub(a3, a);
+    return IRB.CreateMul(sub, ctxZero, "mba.poly.zero5");
+  }
+  case 6: { // Affine cross-product noise: (2*a*b + 1) * ctxZero
+    Value *ab = IRB.CreateMul(a, b);
+    Value *ab2 = IRB.CreateMul(ab, two);
+    Value *affine = IRB.CreateAdd(ab2, one);
+    return IRB.CreateMul(affine, ctxZero, "mba.poly.zero6");
+  }
+  default: { // Quadratic parity + context zero:
+    Value *b2 = IRB.CreateMul(b, b);
+    Value *sub = IRB.CreateSub(b2, b);
+    Value *par = IRB.CreateAnd(sub, one);
+    return IRB.CreateOr(par, ctxZero, "mba.poly.zero7");
+  }
+  }
+}
+
+// Inject k random noise terms (r_i * zero_i) into `base`.
+// Each noise term is r_i * z_i where r_i is a fresh random constant and
+// z_i is a context-dependent zero expression. Net arithmetic effect: base + 0 =
+// base.
+static Value *injectNoise(IRBuilder<NoFolder> &IRB, Value *base, Value *a,
+                          Value *b, unsigned k) {
+  Type *T = base->getType();
+  Value *result = base;
+  BasicBlock *BB = IRB.GetInsertBlock();
+  BasicBlock::iterator IP = IRB.GetInsertPoint();
+  Function *F = BB ? BB->getParent() : nullptr;
+  Module *M = F ? F->getParent() : nullptr;
+
+  // Compute context zero ONCE for this noise injection site to avoid register
+  // allocator explosion
+  Value *ctxZero = buildContextZero(IRB, T, M);
+
+  // Find up to 8 live integers before IP (including args and entry block)
+  SmallVector<Value *, 8> liveVars;
+  if (F) {
+    for (Argument &Arg : F->args()) {
+      if (Arg.getType() == T)
+        liveVars.push_back(&Arg);
+    }
+    BasicBlock &entryBB = F->getEntryBlock();
+    if (&entryBB != BB) {
+      for (Instruction &I : entryBB) {
+        if (I.getType() == T && !isa<PHINode>(&I) &&
+            !I.getName().starts_with("mba."))
+          liveVars.push_back(&I);
+      }
+    }
+  }
+  if (BB) {
+    for (auto IT = BB->begin(); IT != BB->end() && IT != IP; ++IT) {
+      Instruction &I = *IT;
+      if (I.getType() == T && !isa<PHINode>(&I) &&
+          !I.getName().starts_with("mba."))
+        liveVars.push_back(&I);
+    }
+  }
+
+  for (unsigned i = 0; i < k; i++) {
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    Value *z = buildZeroTerm(IRB, a, b, cryptoutils->get_range(8), ctxZero);
+
+    // Always mix in a live variable opaque predicate if available, strongly
+    // tying data-flow to runtime state
+    if (!liveVars.empty()) {
+      Value *L = liveVars[cryptoutils->get_range(liveVars.size())];
+      Value *opZero;
+      switch (cryptoutils->get_range(4)) {
+      case 0: { // (L * (L - 1)) & 1 == 0
+        Value *Lminus1 = IRB.CreateSub(L, ConstantInt::get(T, 1));
+        Value *mul = IRB.CreateMul(L, Lminus1);
+        opZero = IRB.CreateAnd(mul, ConstantInt::get(T, 1), "mba.op.zero1");
+        break;
+      }
+      case 1: { // (L * (L + 1)) & 1 == 0
+        Value *Lplus1 = IRB.CreateAdd(L, ConstantInt::get(T, 1));
+        Value *mul = IRB.CreateMul(L, Lplus1);
+        opZero = IRB.CreateAnd(mul, ConstantInt::get(T, 1), "mba.op.zero2");
+        break;
+      }
+      case 2: { // (L * L + L) & 1 == 0
+        Value *L2 = IRB.CreateMul(L, L);
+        Value *sum = IRB.CreateAdd(L2, L);
+        opZero = IRB.CreateAnd(sum, ConstantInt::get(T, 1), "mba.op.zero3");
+        break;
+      }
+      default: { // (L * L - L) & 1 == 0
+        Value *L2 = IRB.CreateMul(L, L);
+        Value *sub = IRB.CreateSub(L2, L);
+        opZero = IRB.CreateAnd(sub, ConstantInt::get(T, 1), "mba.op.zero4");
+        break;
+      }
+      }
+      opZero = IRB.CreateOr(opZero, ctxZero);
+      z = IRB.CreateOr(z, opZero);
+    }
+
+    Value *noise = IRB.CreateMul(r, z);
+    if (cryptoutils->get_range(2))
+      result = IRB.CreateAdd(result, noise);
+    else
+      result = IRB.CreateSub(result, noise);
+  }
+  return result;
+}
+
+// ─── identity implementations ────────────────────────────────────────────────
+
+namespace llvm {
+namespace MBAImpl {
+
+// ── ADD ──────────────────────────────────────────────────────────────────────
+
+void mbaAddRandLinear(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0), *b = bo->getOperand(1);
+  Type *T = bo->getType();
+  Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+  Constant *two = ConstantInt::get(T, 2);
+  // a+b = (a^r)+(b^r)+2*(a&r)+2*(b&r)-2*r
+  Value *ar = IRB.CreateXor(a, r);
+  Value *br = IRB.CreateXor(b, r);
+  Value *andr_a = IRB.CreateAnd(a, r);
+  Value *andr_b = IRB.CreateAnd(b, r);
+  Value *twora = IRB.CreateMul(andr_a, two);
+  Value *tworb = IRB.CreateMul(andr_b, two);
+  Value *twoR = IRB.CreateMul(r, two);
+  Value *sum1 = IRB.CreateAdd(ar, br);
+  Value *barSum1 = insertOpaqueBarrier(IRB, sum1);
+  Value *sum2 = IRB.CreateAdd(barSum1, twora);
+  Value *sum3 = IRB.CreateAdd(sum2, tworb);
+  Value *res = IRB.CreateSub(sum3, twoR);
+  if (MBAHeuristicTemp && res)
+    res = injectNoise(IRB, res, a, b, 1 + cryptoutils->get_range(2));
+  bo->replaceAllUsesWith(res);
+}
+
+void mbaAdd(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0), *b = bo->getOperand(1);
+  Type *T = bo->getType();
+  Value *res = nullptr;
+  switch (cryptoutils->get_range(8)) {
+  default:
+  case 0: { // A1: (a^b) + ((a&b)<<1)
+    Value *x = IRB.CreateXor(a, b);
+    Value *y = IRB.CreateShl(IRB.CreateAnd(a, b), ConstantInt::get(T, 1));
+    res = IRB.CreateAdd(x, y);
+    break;
+  }
+  case 1: { // A2: 2*(a|b) - (a^b)
+    Value *orAB = IRB.CreateOr(a, b);
+    Value *dbl = IRB.CreateMul(orAB, ConstantInt::get(T, 2));
+    res = IRB.CreateSub(dbl, IRB.CreateXor(a, b));
+    break;
+  }
+  case 2: { // A3: (a|b) + (a&b)
+    res = IRB.CreateAdd(IRB.CreateOr(a, b), IRB.CreateAnd(a, b));
+    break;
+  }
+  case 3: // A4: random-linear MBA
+    mbaAddRandLinear(bo);
+    return;
+  case 4: { // A5: ~(~a - b)
+    Value *notA = IRB.CreateNot(a);
+    res = IRB.CreateNot(IRB.CreateSub(notA, b));
+    break;
+  }
+  case 5: { // A6: (a+r) + (b-r) for random r
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    res = IRB.CreateAdd(IRB.CreateAdd(a, r), IRB.CreateSub(b, r));
+    break;
+  }
+  case 6: { // A7: -(-a - b)
+    Value *neg_a = IRB.CreateNeg(a);
+    Value *neg_b = IRB.CreateNeg(b);
+    res = IRB.CreateNeg(IRB.CreateAdd(neg_a, neg_b));
+    break;
+  }
+  case 7: { // A8: (a-1) + (b+1) with random offset chaining
+    Constant *one = ConstantInt::get(T, 1);
+    res = IRB.CreateAdd(IRB.CreateSub(a, one), IRB.CreateAdd(b, one));
+    break;
+  }
+  }
+  if (MBAHeuristicTemp && res)
+    res = injectNoise(IRB, res, a, b, 1 + cryptoutils->get_range(3));
+  if (Instruction *I = dyn_cast_or_null<Instruction>(res))
+    I->setName("mba.add");
+  bo->replaceAllUsesWith(res);
+}
+
+// ── SUB ──────────────────────────────────────────────────────────────────────
+
+void mbaSub(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0), *b = bo->getOperand(1);
+  Type *T = bo->getType();
+  Value *res = nullptr;
+  switch (cryptoutils->get_range(7)) {
+  default:
+  case 0: { // S1: (a^b) - 2*(~a&b)
+    Value *xorAB = IRB.CreateXor(a, b);
+    Value *notA = IRB.CreateNot(a);
+    Value *andNB = IRB.CreateAnd(notA, b);
+    Value *dbl = IRB.CreateMul(andNB, ConstantInt::get(T, 2));
+    res = IRB.CreateSub(xorAB, dbl);
+    break;
+  }
+  case 1: { // S2: (a^r)-(b^r)+2*(a&r)-2*(b&r)  [verified correct form]
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    Constant *two = ConstantInt::get(T, 2);
+    Value *ar = IRB.CreateXor(a, r);
+    Value *br = IRB.CreateXor(b, r);
+    Value *andA = IRB.CreateAnd(a, r);
+    Value *andB = IRB.CreateAnd(b, r);
+    Value *twoa = IRB.CreateMul(andA, two);
+    Value *twob = IRB.CreateMul(andB, two);
+    Value *diff = IRB.CreateSub(ar, br);
+    Value *barDiff = insertOpaqueBarrier(IRB, diff);
+    Value *d2 = IRB.CreateAdd(barDiff, twoa);
+    res = IRB.CreateSub(d2, twob);
+    break;
+  }
+  case 2: { // S3: a + ~b + 1   (two's complement)
+    Value *notB = IRB.CreateNot(b);
+    Value *s = IRB.CreateAdd(a, notB);
+    res = IRB.CreateAdd(s, ConstantInt::get(T, 1));
+    break;
+  }
+  case 3: { // S4: ~(~a + b)
+    // ~(~a + b) = ~(-a - 1 + b) = -(-a-1+b)-1 = a+1-b-1 = a-b ✓
+    Value *notA = IRB.CreateNot(a);
+    res = IRB.CreateNot(IRB.CreateAdd(notA, b));
+    break;
+  }
+  case 4: { // S5: (a|~b) + (a&~b) - ~b
+    // (a|~b) = a + ~b - (a&~b), so (a|~b)+(a&~b) = a+~b, then -~b = a ✓
+    // Wait: a-b = (a|~b) + (a&~b) + b? Let me recheck.
+    // ~b = -b-1, so a+~b = a-b-1, a+~b+1 = a-b (S3).
+    // (a|~b) + (a&~b) = (a+~b) [since OR+AND = sum for disjoint bits in a,~b]
+    // No wait: (a|c)+(a&c) = a+c for any c. Let c=~b:
+    // (a|~b) + (a&~b) = a + ~b = a-b-1
+    // Then a-b = a-b-1+1 = (a|~b)+(a&~b)+1
+    Value *notB = IRB.CreateNot(b);
+    Value *orA = IRB.CreateOr(a, notB);
+    Value *andA = IRB.CreateAnd(a, notB);
+    Value *sum = IRB.CreateAdd(orA, andA); // = a + ~b = a-b-1
+    res = IRB.CreateAdd(sum, ConstantInt::get(T, 1));
+    break;
+  }
+  case 5: { // S6: 2*(a&~b) - (b^a)
+    // Verify: 2*(a&~b) - (a^b)
+    // a^b = a+b-2*(a&b) [ring identity]
+    // a&~b = a&~b; ~b = ~b
+    // 2*(a&~b) - (a^b) = 2*(a&~b) - a - b + 2*(a&b)
+    // = 2*(a&(~b or b)) - a - b  ... hmm this gets messy.
+    // Let's just verify: a=5=101, b=3=011:
+    // a&~b = 101 & 100 = 100 = 4, so 2*4=8
+    // a^b = 110 = 6, so 8-6 = 2 = a-b ✓
+    // a=12=1100, b=10=1010:
+    // a&~b = 1100 & 0101 = 0100 = 4, 2*4=8
+    // a^b = 0110 = 6, 8-6 = 2 = a-b ✓
+    Value *notB = IRB.CreateNot(b);
+    Value *andAB = IRB.CreateAnd(a, notB);
+    Value *dbl = IRB.CreateMul(andAB, ConstantInt::get(T, 2));
+    Value *xorAB = IRB.CreateXor(b, a);
+    res = IRB.CreateSub(dbl, xorAB);
+    break;
+  }
+  case 6: { // S7: (a+r) - (b+r) for random r
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    res = IRB.CreateSub(IRB.CreateAdd(a, r), IRB.CreateAdd(b, r));
+    break;
+  }
+  }
+  if (MBAHeuristicTemp && res)
+    res = injectNoise(IRB, res, a, b, 1 + cryptoutils->get_range(2));
+  if (Instruction *I = dyn_cast_or_null<Instruction>(res))
+    I->setName("mba.sub");
+  bo->replaceAllUsesWith(res);
+}
+
+// ── XOR ──────────────────────────────────────────────────────────────────────
+
+void mbaXorNonlinear(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0), *b = bo->getOperand(1);
+  Type *T = bo->getType();
+  // X3: a^b = (a-b) + 2*(~a&b)  (verified)
+  Value *notA = IRB.CreateNot(a);
+  Value *andNB = IRB.CreateAnd(notA, b);
+  Value *dbl = IRB.CreateMul(andNB, ConstantInt::get(T, 2));
+  Value *diff = IRB.CreateSub(a, b);
+  // Random-constant round-trip noise
+  Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+  Value *withR = IRB.CreateAdd(diff, r);
+  Value *back = IRB.CreateSub(withR, r);
+  bo->replaceAllUsesWith(IRB.CreateAdd(back, dbl));
+}
+
+void mbaXor(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0), *b = bo->getOperand(1);
+  Type *T = bo->getType();
+  Value *res = nullptr;
+  switch (cryptoutils->get_range(7)) {
+  default:
+  case 0: { // X1: (a|b) - (a&b)
+    res = IRB.CreateSub(IRB.CreateOr(a, b), IRB.CreateAnd(a, b));
+    break;
+  }
+  case 1: { // X2: (a+b) - 2*(a&b)
+    Value *sum = IRB.CreateAdd(a, b);
+    Value *dbl = IRB.CreateMul(IRB.CreateAnd(a, b), ConstantInt::get(T, 2));
+    res = IRB.CreateSub(sum, dbl);
+    break;
+  }
+  case 2: // X3: nonlinear (a-b)+2*(~a&b)
+    mbaXorNonlinear(bo);
+    return;
+  case 3: { // X4: (a OR b) XOR (a AND b)  — purely bitwise, no arithmetic
+    res = IRB.CreateXor(IRB.CreateOr(a, b), IRB.CreateAnd(a, b));
+    break;
+  }
+  case 4: { // X5: ~a ^ ~b  (complement preserves XOR: ~a^~b = a^b)
+    res = IRB.CreateXor(IRB.CreateNot(a), IRB.CreateNot(b));
+    break;
+  }
+  case 5: { // X6: (a^r)^(b^r) — r cancels out
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    res = IRB.CreateXor(IRB.CreateXor(a, r), IRB.CreateXor(b, r));
+    break;
+  }
+  case 6: { // X7: 2*(a|b) - (a+b)
+    // a+b = (a^b)+2*(a&b), a|b = (a^b)+(a&b)  => 2*(a|b)-(a+b) = a^b ✓
+    Value *orAB = IRB.CreateOr(a, b);
+    Value *dbl = IRB.CreateMul(orAB, ConstantInt::get(T, 2));
+    res = IRB.CreateSub(dbl, IRB.CreateAdd(a, b));
+    break;
+  }
+  }
+  if (MBAHeuristicTemp && res)
+    res = injectNoise(IRB, res, a, b, 1 + cryptoutils->get_range(3));
+  if (Instruction *I = dyn_cast_or_null<Instruction>(res))
+    I->setName("mba.xor");
+  bo->replaceAllUsesWith(res);
+}
+
+// ── AND ──────────────────────────────────────────────────────────────────────
+
+void mbaAnd(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0), *b = bo->getOperand(1);
+  Type *T = bo->getType();
+  Value *res = nullptr;
+  switch (cryptoutils->get_range(8)) {
+  default:
+  case 0: { // N1: ~(~a | ~b)  — De Morgan
+    Value *notA = IRB.CreateNot(a);
+    Value *notB = IRB.CreateNot(b);
+    res = IRB.CreateNot(IRB.CreateOr(notA, notB));
+    break;
+  }
+  case 1: { // N2: (a XOR b) XOR (a OR b)
+    // Proof (bit by bit): both=0→0^0=0; 1,0→1^1=0; 0,1→1^1=0; both=1→0^1=1 ✓
+    res = IRB.CreateXor(IRB.CreateXor(a, b), IRB.CreateOr(a, b));
+    break;
+  }
+  case 2: { // N3: (a|b) XOR (a^b)
+    // Same as N2 since XOR is commutative/associative
+    res = IRB.CreateXor(IRB.CreateOr(a, b), IRB.CreateXor(a, b));
+    break;
+  }
+  case 3: { // N4: a&b = (a&r)&(b&r) | (a&~r)&(b&~r)
+    // Proof (per-bit):
+    //   r_i=1: (a_i&1)&(b_i&1) | (a_i&0)&(b_i&0) = a_i&b_i | 0 = a_i&b_i ✓
+    //   r_i=0: (a_i&0)&(b_i&0) | (a_i&1)&(b_i&1) = 0 | a_i&b_i = a_i&b_i ✓
+    // Previous form (a&r)&(b|~r) | (a&~r)&(b&r) was WRONG:
+    //   the second term (a&~r)&(b&r) = a&b&(~r&r) = 0 always.
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    Value *notR = IRB.CreateNot(r);
+    Value *left = IRB.CreateAnd(IRB.CreateAnd(a, r),
+                                IRB.CreateAnd(b, r)); // (a&r)&(b&r) = a&b&r
+    Value *right =
+        IRB.CreateAnd(IRB.CreateAnd(a, notR),
+                      IRB.CreateAnd(b, notR)); // (a&~r)&(b&~r) = a&b&~r
+    res = IRB.CreateOr(left, right);
+    break;
+  }
+  case 4: { // N5: ~(~a|~b) & (r|~r)  — same as N1 with explicit all-ones mask
+    // (r|~r) = -1 = all ones, so AND with it is no-op (adds obfuscation)
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    Value *notA = IRB.CreateNot(a);
+    Value *notB = IRB.CreateNot(b);
+    Value *norAB = IRB.CreateNot(IRB.CreateOr(notA, notB));
+    Value *allOnes = IRB.CreateOr(r, IRB.CreateNot(r));
+    res = IRB.CreateAnd(norAB, allOnes);
+    break;
+  }
+  case 5: { // N6: a & b via (~a XOR b) trick:
+    // ~a XOR b has bit set where a=0,b=1 or a=1,b=1.
+    // (~a XOR b) AND a: keeps only bits where a=1 AND b=1 → a&b ✓
+    Value *notA = IRB.CreateNot(a);
+    Value *x = IRB.CreateXor(notA, b);
+    res = IRB.CreateAnd(x, a);
+    break;
+  }
+  case 6: { // N7: three-way random-constant expansion
+    // a&b = (a+r)&(b+r) ^ (carry terms) is complex; use safe form:
+    // a&b = NAND(NAND(a,b), NAND(a,b))  (Sheffer stroke double-negation)
+    Value *nandAB = IRB.CreateNot(IRB.CreateAnd(a, b));
+    Value *nandAB2 = IRB.CreateNot(IRB.CreateAnd(a, b));
+    res = IRB.CreateNot(IRB.CreateAnd(nandAB, nandAB2));
+    break;
+  }
+  case 7: { // N8: a & b = ~(~a | ~b) re-expressed via random constant mask
+    // Equivalent to N1 but written using a random-XOR intermediate:
+    // ~a = a XOR r XOR ~r (for any r); same for ~b
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    Value *notR = IRB.CreateNot(r);
+    // ~a = (a ^ r) ^ ~r  (since XOR with r then XOR with ~r = XOR with r^~r =
+    // XOR with -1 = NOT)
+    Value *notA = IRB.CreateXor(IRB.CreateXor(a, r), notR);
+    Value *notB = IRB.CreateXor(IRB.CreateXor(b, r), notR);
+    res = IRB.CreateNot(IRB.CreateOr(notA, notB));
+    break;
+  }
+  }
+  if (MBAHeuristicTemp && res)
+    res = injectNoise(IRB, res, a, b, 1 + cryptoutils->get_range(2));
+  if (Instruction *I = dyn_cast_or_null<Instruction>(res))
+    I->setName("mba.and");
+  bo->replaceAllUsesWith(res);
+}
+
+// ── OR ───────────────────────────────────────────────────────────────────────
+
+void mbaOr(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0), *b = bo->getOperand(1);
+  Type *T = bo->getType();
+  Value *res = nullptr;
+  switch (cryptoutils->get_range(7)) {
+  default:
+  case 0: { // O1: (a+b) - (a&b)
+    res = IRB.CreateSub(IRB.CreateAdd(a, b), IRB.CreateAnd(a, b));
+    break;
+  }
+  case 1: { // O2: ~(~a & ~b)  — De Morgan
+    Value *notA = IRB.CreateNot(a);
+    Value *notB = IRB.CreateNot(b);
+    res = IRB.CreateNot(IRB.CreateAnd(notA, notB));
+    break;
+  }
+  case 2: { // O3: (a^b) + (a&b)
+    // Proof: a^b = a+b-2*(a&b), so (a^b)+(a&b) = a+b-(a&b) = a|b ✓
+    res = IRB.CreateAdd(IRB.CreateXor(a, b), IRB.CreateAnd(a, b));
+    break;
+  }
+  case 3: { // O4: (a & ~b) + b
+    // a|b = (a&~b) | b  (partition bits), and since (a&~b) and b are disjoint:
+    // (a&~b) | b = (a&~b) + b  (disjoint OR == ADD) ✓
+    Value *notB = IRB.CreateNot(b);
+    Value *andAnotB = IRB.CreateAnd(a, notB);
+    res = IRB.CreateAdd(andAnotB, b);
+    break;
+  }
+  case 4: { // O5: (b & ~a) + a   (mirror of O4)
+    Value *notA = IRB.CreateNot(a);
+    Value *andBnotA = IRB.CreateAnd(b, notA);
+    res = IRB.CreateAdd(andBnotA, a);
+    break;
+  }
+  case 5: { // O6: (a^r)|(b^r)|r  — expands via random constant r
+    // Proof: x | r | r = x | r for any x.
+    // (a^r)|(b^r) = ?  Not equal to a|b in general.
+    // Safe alternative: a|b = (a+b+r) - (a&b) - r = O1 with noise
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    Value *sum = IRB.CreateAdd(IRB.CreateAdd(a, b), r);
+    Value *andAB = IRB.CreateAnd(a, b);
+    Value *sub1 = IRB.CreateSub(sum, andAB);
+    res = IRB.CreateSub(sub1, r);
+    break;
+  }
+  case 6: { // O7: a + (~a & b)   (carry-chain / merge form)
+    // ~a & b = bits in b not in a.  a + those bits = a|b (disjoint add) ✓
+    Value *notA = IRB.CreateNot(a);
+    Value *andNAB = IRB.CreateAnd(notA, b);
+    res = IRB.CreateAdd(a, andNAB);
+    break;
+  }
+  }
+  if (MBAHeuristicTemp && res)
+    res = injectNoise(IRB, res, a, b, 1 + cryptoutils->get_range(2));
+  if (Instruction *I = dyn_cast_or_null<Instruction>(res))
+    I->setName("mba.or");
+  bo->replaceAllUsesWith(res);
+}
+
+// ── MUL ──────────────────────────────────────────────────────────────────────
+
+void mbaMul(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0), *b = bo->getOperand(1);
+  Type *T = bo->getType();
+  Value *res = nullptr;
+  switch (cryptoutils->get_range(5)) {
+  default:
+  case 0: { // M1: a*b via carry-save identity
+    // a*b = (a|b)*(a&b) + (a&~b)*(b&~a)  [verified standard form]
+    Value *notA = IRB.CreateNot(a);
+    Value *notB = IRB.CreateNot(b);
+    Value *andNBA = IRB.CreateAnd(b, notA); // b&~a
+    Value *andANB = IRB.CreateAnd(a, notB); // a&~b
+    Value *andAB = IRB.CreateAnd(a, b);
+    Value *orAB = IRB.CreateOr(a, b);
+    Value *m1 = IRB.CreateMul(orAB, andAB);
+    Value *m2 = IRB.CreateMul(andANB, andNBA);
+    res = IRB.CreateAdd(m1, m2);
+    break;
+  }
+  case 1: { // M2: (a+r)*(b+r) - (a+r)*r - b*r
+    Constant *r = ConstantInt::get(T, cryptoutils->get_uint64_t());
+    Value *aPr = IRB.CreateAdd(a, r);
+    Value *bPr = IRB.CreateAdd(b, r);
+    Value *m1 = IRB.CreateMul(aPr, bPr);
+    Value *m2 = IRB.CreateMul(aPr, r);
+    Value *m3 = IRB.CreateMul(b, r);
+    res = IRB.CreateSub(IRB.CreateSub(m1, m2), m3);
+    break;
+  }
+  case 2: { // M3: Karatsuba-style high/low split
+    unsigned width = T->getIntegerBitWidth();
+    if (width < 4) {
+      res = IRB.CreateMul(a, b);
+      break;
+    }
+    unsigned k = width / 2;
+    ConstantInt *kC = cast<ConstantInt>(ConstantInt::get(T, k));
+    ConstantInt *maskC =
+        cast<ConstantInt>(ConstantInt::get(T, APInt::getLowBitsSet(width, k)));
+    Value *bH = IRB.CreateLShr(b, kC);
+    Value *bL = IRB.CreateAnd(b, maskC);
+    Value *aH = IRB.CreateMul(a, bH);
+    Value *aL = IRB.CreateMul(a, bL);
+    Value *aHsh = IRB.CreateShl(aH, kC);
+    res = IRB.CreateAdd(aHsh, aL);
+    break;
+  }
+  case 3: { // M4: a*b = -(a * ~b) - a  since ~b = -b-1, a*(~b) = -a*b-a
+    Value *notB = IRB.CreateNot(b);
+    Value *mab = IRB.CreateMul(a, notB); // a*(~b) = -a*b - a
+    res = IRB.CreateSub(IRB.CreateNeg(mab), a);
+    break;
+  }
+  case 4: { // M5: a*b = a*(b+1) - a
+    Value *bP1 = IRB.CreateAdd(b, ConstantInt::get(T, 1));
+    Value *mul = IRB.CreateMul(a, bP1);
+    res = IRB.CreateSub(mul, a);
+    break;
+  }
+  }
+  if (MBAHeuristicTemp && res)
+    res = injectNoise(IRB, res, a, b, cryptoutils->get_range(2));
+  if (Instruction *I = dyn_cast_or_null<Instruction>(res))
+    I->setName("mba.mul");
+  bo->replaceAllUsesWith(res);
+}
+
+void mbaBPP(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0);
+  Type *T = bo->getType();
+  if (!T->isIntegerTy())
+    return;
+  unsigned width = T->getIntegerBitWidth();
+  if (width < 8 || width > 64)
+    return;
+
+  uint64_t a1 = cryptoutils->get_uint64_t() | 1ULL; // odd
+  uint64_t b = cryptoutils->get_uint64_t();
+  uint64_t k = cryptoutils->get_uint64_t();
+
+  // Compute exact modular inverse of a1 mod 2^64 via Newton steps
+  uint64_t inv = a1;
+  for (int step = 0; step < 5; step++)
+    inv *= 2ULL - a1 * inv;
+
+  Constant *constA1 = ConstantInt::get(T, a1);
+  Constant *constB = ConstantInt::get(T, b);
+  Constant *constK = ConstantInt::get(T, k);
+  Constant *constInv = ConstantInt::get(T, inv);
+
+  // Evaluate P(a) = (a1 * a + b) ^ k
+  Value *term1 = IRB.CreateMul(constA1, a);
+  Value *term2 = IRB.CreateAdd(term1, constB);
+  Value *y = IRB.CreateXor(term2, constK, "bpp.y");
+  Value *barY = insertOpaqueBarrier(IRB, y);
+
+  // Evaluate P^-1(y) = inv * ((y ^ k) - b)
+  Value *unK = IRB.CreateXor(barY, constK);
+  Value *unB = IRB.CreateSub(unK, constB);
+  Value *invY = IRB.CreateMul(constInv, unB, "bpp.x");
+
+  bo->setOperand(0, invY);
+}
+
+void mbaBivariateNonlinear(BinaryOperator *bo) {
+  IRBuilder<NoFolder> IRB(bo);
+  Value *a = bo->getOperand(0), *b = bo->getOperand(1);
+  Type *T = bo->getType();
+  if (!T->isIntegerTy())
+    return;
+
+  // Bivariate non-linear MBA for binary ops:
+  // Combines non-linear product terms (a*b), bitwise terms (a^b, a&b), and
+  // zero-product terms Example for ADD: a + b = (a ^ b) + 2*(a & b) + (a ^
+  // a)*b^2
+  Function *F = bo->getFunction();
+  Module *M = F ? F->getParent() : nullptr;
+  Value *ctxZero = buildContextZero(IRB, T, M);
+
+  Value *res = nullptr;
+  switch (bo->getOpcode()) {
+  case Instruction::Add: {
+    Value *xorAB = IRB.CreateXor(a, b);
+    Value *andAB = IRB.CreateAnd(a, b);
+    Value *twoAnd = IRB.CreateMul(andAB, ConstantInt::get(T, 2));
+    Value *base = IRB.CreateAdd(xorAB, twoAnd);
+
+    // Injected non-linear zero term: ((a ^ a) | ctxZero) * b^2 with opaque
+    // barrier
+    Value *zeroTerm =
+        IRB.CreateOr(IRB.CreateXor(a, insertOpaqueBarrier(IRB, a)), ctxZero);
+    Value *b2 = IRB.CreateMul(b, b);
+    Value *nlNoise = IRB.CreateMul(zeroTerm, b2);
+    res = IRB.CreateAdd(base, nlNoise);
+    break;
+  }
+  case Instruction::Xor: {
+    Value *subAB = IRB.CreateSub(a, b);
+    Value *notA = IRB.CreateNot(a);
+    Value *andNB = IRB.CreateAnd(notA, b);
+    Value *twoAnd = IRB.CreateMul(andNB, ConstantInt::get(T, 2));
+    Value *base = IRB.CreateAdd(subAB, twoAnd);
+
+    // Injected non-linear zero term: ((b & ~b) | ctxZero) * a^3 with opaque
+    // barrier
+    Value *zeroTerm = IRB.CreateOr(
+        IRB.CreateAnd(b, IRB.CreateNot(insertOpaqueBarrier(IRB, b))), ctxZero);
+    Value *a3 = IRB.CreateMul(IRB.CreateMul(a, a), a);
+    Value *nlNoise = IRB.CreateMul(zeroTerm, a3);
+    res = IRB.CreateAdd(base, nlNoise);
+    break;
+  }
+  default:
+    return;
+  }
+  bo->replaceAllUsesWith(res);
+}
+
+} // namespace MBAImpl
+} // namespace llvm
+
+// ─── FunctionPass ────────────────────────────────────────────────────────────
+
+namespace {
+struct MBAObfuscation : public FunctionPass {
+  static char ID;
+  bool flag;
+  MBAObfuscation() : FunctionPass(ID) { this->flag = true; }
+  MBAObfuscation(bool flag) : FunctionPass(ID) { this->flag = flag; }
+
+  bool runOnFunction(Function &F) override {
+    if (F.getName().starts_with("__nk_"))
+      return false;
+    auto ec =
+        GObfConfig.resolve(F.getParent()->getSourceFileName(), F.getName());
+    bool shouldObf = ec.mba.enabled.value_or(flag);
+    if (!toObfuscate(shouldObf, &F, "mba"))
+      return false;
+    {
+      if (!toObfuscateUint32Option(&F, "mba_prob", &MBAProbRateTemp))
+        MBAProbRateTemp = ec.mba.probability.value_or((uint32_t)MBAProbRate);
+      if (!toObfuscateUint32Option(&F, "mba_layers", &MBALayersTemp))
+        MBALayersTemp = ec.mba.layers.value_or((uint32_t)MBALayers);
+      if (!toObfuscateBoolOption(&F, "mba_heuristic", &MBAHeuristicTemp))
+        MBAHeuristicTemp = ec.mba.heuristic.value_or((bool)MBAHeuristic);
+    }
+    MBAProbRateTemp = std::min(MBAProbRateTemp, (uint32_t)100);
+    MBALayersTemp = std::clamp(MBALayersTemp, (uint32_t)1, (uint32_t)3);
+
+    if (ObfVerbose)
+      errs() << "Running MBAObfuscation On " << F.getName() << "\n";
+
+    DenseSet<Instruction *> existing;
+    for (Instruction &I : instructions(F))
+      existing.insert(&I);
+
+    for (uint32_t layer = 0; layer < MBALayersTemp; layer++) {
+      uint32_t eligible = 0;
+      for (Instruction &I : instructions(F)) {
+        if (isSynthetic(&I) || !existing.count(&I))
+          continue;
+        if (I.isBinaryOp() && I.getType()->isIntegerTy())
+          eligible++;
+      }
+
+      if (eligible == 0)
+        break;
+
+      uint32_t currentProb = MBAProbRateTemp;
+      uint32_t maxTargets =
+          (layer == 0) ? 1500 : 30; // Bound the exponential growth
+
+      SmallVector<BinaryOperator *, 32> allOps;
+      for (Instruction &I : instructions(F)) {
+        if (isSynthetic(&I) || !existing.count(&I))
+          continue;
+        if (BinaryOperator *BO = dyn_cast<BinaryOperator>(&I)) {
+          if (BO->getType()->isIntegerTy())
+            allOps.push_back(BO);
+        }
+      }
+
+      SmallVector<BinaryOperator *, 32> targets;
+      for (BinaryOperator *BO : allOps) {
+        if (targets.size() >= maxTargets)
+          break;
+        if (cryptoutils->get_range(100) < currentProb)
+          targets.push_back(BO);
+      }
+
+      for (BinaryOperator *BO : targets) {
+        if (cryptoutils->get_range(100) < 30) {
+          MBAImpl::mbaBPP(BO);
+          continue;
+        }
+        if (BO->getOpcode() == Instruction::Add ||
+            BO->getOpcode() == Instruction::Xor) {
+          if (cryptoutils->get_range(100) < 25) {
+            MBAImpl::mbaBivariateNonlinear(BO);
+            continue;
+          }
+        }
+        switch (BO->getOpcode()) {
+        case Instruction::Add:
+          MBAImpl::mbaAdd(BO);
+          break;
+        case Instruction::Sub:
+          MBAImpl::mbaSub(BO);
+          break;
+        case Instruction::Xor:
+          MBAImpl::mbaXor(BO);
+          break;
+        case Instruction::And:
+          MBAImpl::mbaAnd(BO);
+          break;
+        case Instruction::Or:
+          MBAImpl::mbaOr(BO);
+          break;
+        case Instruction::Mul:
+          MBAImpl::mbaMul(BO);
+          break;
+        default:
+          break;
+        }
+      }
+
+      for (BinaryOperator *BO : targets) {
+        if (BO->getNumUses() == 0)
+          BO->eraseFromParent();
+      }
+    }
+
+    // Tag all newly created instructions
+    for (Instruction &I : instructions(F)) {
+      if (!existing.count(&I))
+        tagSynthetic(&I);
+    }
+    return true;
+  }
+};
+} // anonymous namespace
+
+char MBAObfuscation::ID = 0;
+INITIALIZE_PASS(MBAObfuscation, "mbaobf",
+                "Enable Mixed Boolean-Arithmetic Obfuscation.", false, false)
+
+FunctionPass *llvm::createMBAObfuscationPass(bool flag) {
+  return new MBAObfuscation(flag);
+}

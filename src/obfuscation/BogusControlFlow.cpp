@@ -1,0 +1,1360 @@
+/*
+ *  OLLVM-Next (Nk): The next generation LLVM based Obfuscator
+ *  Copyright (C) 2026  Xinyu Yang(<Xinyu.Yang@apich.org>)
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU Affero General Public License as published
+ *  by the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU Affero General Public License for more details.
+ *
+ *  You should have received a copy of the GNU Affero General Public License
+ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "include/BogusControlFlow.h"
+#include "include/CryptoUtils.h"
+#include "include/ObfConfig.h"
+#include "include/Utils.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
+
+using namespace llvm;
+
+static bool targetIsX86_64(Module &M) {
+  StringRef triple = M.getTargetTriple().getTriple();
+  return triple.contains("x86_64") || triple.contains("amd64");
+}
+static bool targetIsX86_32(Module &M) {
+  StringRef triple = M.getTargetTriple().getTriple();
+  return (triple.contains("i686") || triple.contains("i386") ||
+          triple.contains("x86")) &&
+         !targetIsX86_64(M);
+}
+static bool targetIsX86(Module &M) {
+  return targetIsX86_64(M) || targetIsX86_32(M);
+}
+static bool targetIsAArch64(Module &M) {
+  StringRef triple = M.getTargetTriple().getTriple();
+  return triple.contains("aarch64") || triple.contains("arm64");
+}
+
+// Returns an i1 Value that is ALWAYS TRUE at runtime but appears hardware-
+// dependent to a static/symbolic analyzer.
+static Value *buildHardwareTruePredicate(Module &M, IRBuilder<> &IRB) {
+  LLVMContext &Ctx = M.getContext();
+  Type *I32Ty = Type::getInt32Ty(Ctx);
+  Type *I64Ty = Type::getInt64Ty(Ctx);
+
+  if (targetIsX86(M)) {
+    // CPUID leaf 1: EDX bit 25 = SSE support — always set on x86_64/modern x86
+    FunctionType *AsmTy = FunctionType::get(I32Ty, {}, false);
+    const char *asmCode =
+        targetIsX86_64(M)
+            ? "subq $$128, %rsp\n\tpushq %rbx\n\tmovl $$1, "
+              "%eax\n\tcpuid\n\tpopq %rbx\n\taddq $$128, %rsp"
+            : "pushl %ebx\n\tmovl $$1, %eax\n\tcpuid\n\tpopl %ebx";
+    const char *asmConstraints =
+        targetIsX86_64(M) ? "={edx},~{rax},~{rcx},~{dirflag},~{fpsr},~{flags}"
+                          : "={edx},~{eax},~{ecx},~{dirflag},~{fpsr},~{flags}";
+    InlineAsm *cpuidAsm =
+        InlineAsm::get(AsmTy, asmCode, asmConstraints,
+                       /*hasSideEffects=*/true, InlineAsm::AD_ATT);
+    Value *edx = IRB.CreateCall(AsmTy, cpuidAsm, {}, "bcf.cpuid.edx");
+    Value *sse =
+        IRB.CreateAnd(edx, ConstantInt::get(I32Ty, 1u << 25), "bcf.sse.bit");
+    return IRB.CreateICmpNE(sse, ConstantInt::get(I32Ty, 0), "bcf.hw.pred");
+
+  } else if (targetIsAArch64(M)) {
+    // Read virtual counter — always non-zero after the first clock cycle
+    FunctionType *AsmTy = FunctionType::get(I64Ty, {}, false);
+    InlineAsm *mrsAsm = InlineAsm::get(AsmTy, "mrs $0, cntvct_el0", "=r,~{cc}",
+                                       /*hasSideEffects=*/true);
+    Value *tsc = IRB.CreateCall(AsmTy, mrsAsm, {}, "bcf.mrs.tsc");
+    // (tsc | 1) is always non-zero
+    Value *orOne = IRB.CreateOr(tsc, ConstantInt::get(I64Ty, 1), "bcf.tsc.or1");
+    return IRB.CreateICmpNE(orOne, ConstantInt::get(I64Ty, 0), "bcf.hw.pred");
+
+  } else {
+    return nullptr;
+  }
+}
+
+// Returns an i1 Value driven by RDTSC that cannot be resolved statically.
+// Used for a second-level obfuscation layer in the altered-block branch.
+static Value *buildTSCNoisePredicate(Module &M, IRBuilder<> &IRB) {
+  LLVMContext &Ctx = M.getContext();
+  if (!targetIsX86(M))
+    return nullptr;
+
+  Type *I64Ty = Type::getInt64Ty(Ctx);
+  FunctionType *AsmTy = FunctionType::get(I64Ty, {}, false);
+  const char *asmCode = targetIsX86_64(M)
+                            ? "rdtsc\n\tshlq $$32, %rdx\n\torq %rdx, %rax"
+                            : "rdtsc";
+  const char *asmConstraints = targetIsX86_64(M)
+                                   ? "={rax},~{rdx},~{dirflag},~{fpsr},~{flags}"
+                                   : "=A,~{dirflag},~{fpsr},~{flags}";
+  InlineAsm *rdtscAsm =
+      InlineAsm::get(AsmTy, asmCode, asmConstraints,
+                     /*hasSideEffects=*/true, InlineAsm::AD_ATT);
+  Value *tsc = IRB.CreateCall(AsmTy, rdtscAsm, {}, "bcf.rdtsc");
+  Value *orOne = IRB.CreateOr(tsc, ConstantInt::get(I64Ty, 1LL), "bcf.tsc.or");
+  return IRB.CreateICmpNE(orOne, ConstantInt::get(I64Ty, 0LL), "bcf.tsc.pred");
+}
+
+static Value *buildEntropyChainPredicate(Module &M, IRBuilder<> &IRB,
+                                         GlobalVariable *sentinelGV) {
+  LLVMContext &Ctx = M.getContext();
+  Type *I32Ty = Type::getInt32Ty(Ctx);
+  Type *I64Ty = Type::getInt64Ty(Ctx);
+  Value *result = ConstantInt::getTrue(Ctx);
+
+  if (targetIsX86(M)) {
+    // Tier 1: CPUID — EDX bit 25 = SSE (always 1 on x86_64)
+    FunctionType *CpuidTy = FunctionType::get(I32Ty, {}, false);
+    const char *asmCode =
+        targetIsX86_64(M)
+            ? "subq $$128, %rsp\n\tpushq %rbx\n\tmovl $$1, "
+              "%eax\n\tcpuid\n\tpopq %rbx\n\taddq $$128, %rsp"
+            : "pushl %ebx\n\tmovl $$1, %eax\n\tcpuid\n\tpopl %ebx";
+    const char *asmConstraints =
+        targetIsX86_64(M) ? "={edx},~{rax},~{rcx},~{dirflag},~{fpsr},~{flags}"
+                          : "={edx},~{eax},~{ecx},~{dirflag},~{fpsr},~{flags}";
+    InlineAsm *cpuidIA = InlineAsm::get(CpuidTy, asmCode, asmConstraints, true,
+                                        InlineAsm::AD_ATT);
+    Value *edx = IRB.CreateCall(CpuidTy, cpuidIA, {}, "bcf.ec.edx");
+    Value *sse = IRB.CreateAnd(edx, ConstantInt::get(I32Ty, 1u << 25));
+    Value *t1 = IRB.CreateICmpNE(sse, ConstantInt::get(I32Ty, 0), "bcf.ec.t1");
+    result = IRB.CreateAnd(result, t1, "bcf.ec.r1");
+
+    // Tier 2: RDTSC — (rdtsc | 1) != 0
+    FunctionType *RdtscTy = FunctionType::get(I64Ty, {}, false);
+    const char *rdtscCode = targetIsX86_64(M)
+                                ? "rdtsc\n\tshlq $$32, %rdx\n\torq %rdx, %rax"
+                                : "rdtsc";
+    const char *rdtscConstraints =
+        targetIsX86_64(M) ? "={rax},~{rdx},~{dirflag},~{fpsr},~{flags}"
+                          : "=A,~{dirflag},~{fpsr},~{flags}";
+    InlineAsm *rdtscIA = InlineAsm::get(RdtscTy, rdtscCode, rdtscConstraints,
+                                        true, InlineAsm::AD_ATT);
+    Value *tsc = IRB.CreateCall(RdtscTy, rdtscIA, {}, "bcf.ec.tsc");
+    Value *or1 = IRB.CreateOr(tsc, ConstantInt::get(I64Ty, 1LL));
+    Value *t2 = IRB.CreateICmpNE(or1, ConstantInt::get(I64Ty, 0), "bcf.ec.t2");
+    result = IRB.CreateAnd(result, t2, "bcf.ec.r2");
+
+  } else if (targetIsAArch64(M)) {
+    // Tier 1+2 combined: cntvct_el0 | 1 != 0 (virtual timer, always ticking)
+    FunctionType *MrsTy = FunctionType::get(I64Ty, {}, false);
+    InlineAsm *mrsIA =
+        InlineAsm::get(MrsTy, "mrs $0, cntvct_el0", "=r,~{cc}", true);
+    Value *tsc = IRB.CreateCall(MrsTy, mrsIA, {}, "bcf.ec.mrs");
+    Value *or1 = IRB.CreateOr(tsc, ConstantInt::get(I64Ty, 1LL));
+    Value *t1 = IRB.CreateICmpNE(or1, ConstantInt::get(I64Ty, 0), "bcf.ec.t1");
+    result = IRB.CreateAnd(result, t1, "bcf.ec.r1");
+  }
+
+  // Tier 3: global-variable load != sentinel (opaque to constant folding)
+  // sentinelGV is initialized to a non-sentinel value and marked volatile.
+  if (sentinelGV) {
+    Value *gvLoad = IRB.CreateLoad(sentinelGV->getValueType(), sentinelGV, true,
+                                   "bcf.ec.gvload");
+    uint32_t sentinel = 0xDEADC0DEu;
+    Value *t3 = IRB.CreateICmpNE(gvLoad, ConstantInt::get(I32Ty, sentinel),
+                                 "bcf.ec.t3");
+    result = IRB.CreateAnd(result, t3, "bcf.ec.r3");
+  }
+  return result;
+}
+
+// Options for the pass
+static const uint32_t defaultObfRate = 70, defaultObfTime = 1;
+
+static cl::opt<uint32_t>
+    ObfProbRate("bcf_prob",
+                cl::desc("Choose the probability [%] each basic blocks will be "
+                         "obfuscated by the -bcf pass"),
+                cl::value_desc("probability rate"), cl::init(defaultObfRate),
+                cl::Optional);
+static thread_local uint32_t ObfProbRateTemp = defaultObfRate;
+
+static cl::opt<uint32_t>
+    ObfTimes("bcf_loop",
+             cl::desc("Choose how many time the -bcf pass loop on a function"),
+             cl::value_desc("number of times"), cl::init(defaultObfTime),
+             cl::Optional);
+static thread_local uint32_t ObfTimesTemp = defaultObfTime;
+
+static cl::opt<uint32_t> ConditionExpressionComplexity(
+    "bcf_cond_compl",
+    cl::desc("The complexity of the expression used to generate branching "
+             "condition"),
+    cl::value_desc("Complexity"), cl::init(3), cl::Optional);
+static thread_local uint32_t ConditionExpressionComplexityTemp = 3;
+
+static cl::opt<bool>
+    OnlyJunkAssembly("bcf_onlyjunkasm",
+                     cl::desc("only add junk assembly to altered basic block"),
+                     cl::value_desc("only add junk assembly"), cl::init(false),
+                     cl::Optional);
+static thread_local bool OnlyJunkAssemblyTemp = false;
+
+static cl::opt<bool> JunkAssembly(
+    "bcf_junkasm",
+    cl::desc("Whether to add junk assembly to altered basic block"),
+    cl::value_desc("add junk assembly"), cl::init(false), cl::Optional);
+static thread_local bool JunkAssemblyTemp = false;
+
+static cl::opt<uint32_t> MaxNumberOfJunkAssembly(
+    "bcf_junkasm_maxnum",
+    cl::desc("The maximum number of junk assembliy per altered basic block"),
+    cl::value_desc("max number of junk assembly"), cl::init(4), cl::Optional);
+static thread_local uint32_t MaxNumberOfJunkAssemblyTemp = 4;
+
+static cl::opt<uint32_t> MinNumberOfJunkAssembly(
+    "bcf_junkasm_minnum",
+    cl::desc("The minimum number of junk assembliy per altered basic block"),
+    cl::value_desc("min number of junk assembly"), cl::init(2), cl::Optional);
+static thread_local uint32_t MinNumberOfJunkAssemblyTemp = 2;
+
+static cl::opt<bool> CreateFunctionForOpaquePredicate(
+    "bcf_createfunc", cl::desc("Create function for each opaque predicate"),
+    cl::value_desc("create function"), cl::init(false), cl::Optional);
+static thread_local bool CreateFunctionForOpaquePredicateTemp = false;
+
+static cl::opt<bool>
+    BCFNested("bcf_nested",
+              cl::desc("[BCF] Apply BCF recursively to generated bogus blocks "
+                       "(fractal-style CFG obfuscation; higher compile time)"),
+              cl::init(false), cl::Optional);
+static thread_local bool BCFNestedTemp = false;
+
+static cl::opt<bool> BCFEntropyChain(
+    "bcf_entropy_chain",
+    cl::desc("[BCF] Use 3-way AND entropy-chain hardware predicate "
+             "(CPUID & RDTSC & global load) — defeats 3 independent analyzers"),
+    cl::init(false), cl::Optional);
+static thread_local bool BCFEntropyChainTemp = false;
+
+static cl::alias ObfProbRateAlias("bcf-prob", cl::desc("Alias for -bcf_prob"),
+                                  cl::aliasopt(ObfProbRate));
+static cl::alias ObfTimesAlias("bcf-loop", cl::desc("Alias for -bcf_loop"),
+                               cl::aliasopt(ObfTimes));
+static cl::alias
+    CondComplexityAlias("bcf-cond-compl", cl::desc("Alias for -bcf_cond_compl"),
+                        cl::aliasopt(ConditionExpressionComplexity));
+static cl::alias OnlyJunkAsmAlias("bcf-onlyjunkasm",
+                                  cl::desc("Alias for -bcf_onlyjunkasm"),
+                                  cl::aliasopt(OnlyJunkAssembly));
+static cl::alias JunkAsmAlias("bcf-junkasm", cl::desc("Alias for -bcf_junkasm"),
+                              cl::aliasopt(JunkAssembly));
+static cl::alias MaxJunkAsmAlias("bcf-junkasm-maxnum",
+                                 cl::desc("Alias for -bcf_junkasm_maxnum"),
+                                 cl::aliasopt(MaxNumberOfJunkAssembly));
+static cl::alias MinJunkAsmAlias("bcf-junkasm-minnum",
+                                 cl::desc("Alias for -bcf_junkasm_minnum"),
+                                 cl::aliasopt(MinNumberOfJunkAssembly));
+static cl::alias
+    CreateFuncAlias("bcf-createfunc", cl::desc("Alias for -bcf_createfunc"),
+                    cl::aliasopt(CreateFunctionForOpaquePredicate));
+static cl::alias BCFNestedAlias("bcf-nested", cl::desc("Alias for -bcf_nested"),
+                                cl::aliasopt(BCFNested));
+static cl::alias BCFEntropyChainAlias("bcf-entropy-chain",
+                                      cl::desc("Alias for -bcf_entropy_chain"),
+                                      cl::aliasopt(BCFEntropyChain));
+
+static const Instruction::BinaryOps ops[] = {
+    Instruction::Add, Instruction::Sub, Instruction::And, Instruction::Or,
+    Instruction::Xor, Instruction::Mul, Instruction::UDiv};
+static const CmpInst::Predicate preds[] = {
+    CmpInst::ICMP_EQ,  CmpInst::ICMP_NE,  CmpInst::ICMP_UGT,
+    CmpInst::ICMP_UGE, CmpInst::ICMP_ULT, CmpInst::ICMP_ULE};
+
+namespace llvm {
+static bool OnlyUsedBy(Value *V, Value *Usr) {
+  for (User *U : V->users())
+    if (U != Usr)
+      return false;
+  return true;
+}
+static void RemoveDeadConstant(Constant *C) {
+  assert(C->use_empty() && "Constant is not dead!");
+  SmallVector<Constant *, 4> Operands;
+  for (Value *Op : C->operands())
+    if (OnlyUsedBy(Op, C))
+      Operands.emplace_back(cast<Constant>(Op));
+  if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
+    if (!GV->hasLocalLinkage())
+      return; // Don't delete non-static globals.
+    GV->eraseFromParent();
+  } else if (!isa<Function>(C))
+    if (isa<ArrayType>(C->getType()) || isa<StructType>(C->getType()) ||
+        isa<VectorType>(C->getType()))
+      C->destroyConstant();
+
+  // If the constant referenced anything, see if we can delete it as well.
+  for (Constant *O : Operands)
+    RemoveDeadConstant(O);
+}
+struct BogusControlFlow : public FunctionPass {
+  static char ID; // Pass identification
+  bool flag;
+  SmallVector<const ICmpInst *, 8> needtoedit;
+  BogusControlFlow() : FunctionPass(ID) { this->flag = true; }
+  BogusControlFlow(bool flag) : FunctionPass(ID) { this->flag = flag; }
+  /* runOnFunction
+   *
+   * Overwrite FunctionPass method to apply the transformation
+   * to the function. See header for more details.
+   */
+  bool runOnFunction(Function &F) override {
+    auto ec =
+        GObfConfig.resolve(F.getParent()->getSourceFileName(), F.getName());
+    bool shouldObf = ec.bcf.enabled.value_or(flag);
+    if (!toObfuscateUint32Option(&F, "bcf_loop", &ObfTimesTemp)) {
+      ObfTimesTemp = ec.bcf.iterations.value_or((uint32_t)ObfTimes);
+    }
+
+    // Check if the percentage is correct
+    if (ObfTimesTemp <= 0) {
+      errs() << "BogusControlFlow application number -bcf_loop=x must be x > 0";
+      return false;
+    }
+
+    if (!toObfuscateUint32Option(&F, "bcf_prob", &ObfProbRateTemp)) {
+      ObfProbRateTemp = ec.bcf.probability.value_or((uint32_t)ObfProbRate);
+    }
+    // MaxObf: prob=100, times=3.
+    if (ObfuscationMaxMode) {
+      ObfProbRateTemp = 100;
+      if (ObfTimesTemp < 3)
+        ObfTimesTemp = 3;
+    }
+
+    // Check if the number of applications is correct
+    if (!((ObfProbRateTemp > 0) && (ObfProbRateTemp <= 100))) {
+      errs() << "BogusControlFlow application basic blocks percentage "
+                "-bcf_prob=x must be 0 < x <= 100";
+      return false;
+    }
+
+    if (!toObfuscateUint32Option(&F, "bcf_junkasm_maxnum",
+                                 &MaxNumberOfJunkAssemblyTemp)) {
+      MaxNumberOfJunkAssemblyTemp =
+          ec.bcf.junk_asm_max.value_or((uint32_t)MaxNumberOfJunkAssembly);
+    }
+    if (!toObfuscateUint32Option(&F, "bcf_junkasm_minnum",
+                                 &MinNumberOfJunkAssemblyTemp)) {
+      MinNumberOfJunkAssemblyTemp =
+          ec.bcf.junk_asm_min.value_or((uint32_t)MinNumberOfJunkAssembly);
+    }
+
+    // Check if the number of applications is correct
+    if (MaxNumberOfJunkAssemblyTemp < MinNumberOfJunkAssemblyTemp) {
+      errs() << "BogusControlFlow application numbers of junk asm "
+                "-bcf_junkasm_maxnum=x must be x >= bcf_junkasm_minnum";
+      return false;
+    }
+
+    // If fla annotations
+    if (toObfuscate(shouldObf, &F, "bcf") && !F.isPresplitCoroutine() &&
+        !readAnnotationMetadata(&F, "bcfopfunc")) {
+      if (ObfVerbose)
+        errs() << "Running BogusControlFlow On " << F.getName() << "\n";
+      bogus(F);
+      doF(F);
+    }
+
+    return true;
+  } // end of runOnFunction()
+
+  void bogus(Function &F) {
+    {
+      auto ec =
+          GObfConfig.resolve(F.getParent()->getSourceFileName(), F.getName());
+      if (!toObfuscateBoolOption(&F, "bcf_junkasm", &JunkAssemblyTemp))
+        JunkAssemblyTemp = ec.bcf.junk_asm.value_or((bool)JunkAssembly);
+      if (!toObfuscateBoolOption(&F, "bcf_onlyjunkasm", &OnlyJunkAssemblyTemp))
+        OnlyJunkAssemblyTemp =
+            ec.bcf.only_junk_asm.value_or((bool)OnlyJunkAssembly);
+      if (!toObfuscateBoolOption(&F, "bcf_nested", &BCFNestedTemp))
+        BCFNestedTemp = ec.bcf.nested.value_or((bool)BCFNested);
+      if (!toObfuscateBoolOption(&F, "bcf_createfunc",
+                                 &CreateFunctionForOpaquePredicateTemp))
+        CreateFunctionForOpaquePredicateTemp =
+            ec.bcf.create_func.value_or((bool)CreateFunctionForOpaquePredicate);
+      if (!toObfuscateBoolOption(&F, "bcf_entropy_chain", &BCFEntropyChainTemp))
+        BCFEntropyChainTemp =
+            ec.bcf.entropy_chain.value_or((bool)BCFEntropyChain);
+    }
+    // MaxObf: override to extremes.
+    // NOTE: BCFNestedTemp is intentionally NOT forced true in MaxObf mode.
+    // With times=3 and prob=100, nested expansion causes exponential BB growth
+    // (each outer iteration rebuilds from the already-enlarged function),
+    // making the pass appear to freeze.  times=3 + prob=100 + entropy-chain is
+    // already the heaviest meaningful configuration.
+    if (ObfuscationMaxMode) {
+      BCFEntropyChainTemp = true;
+    }
+
+    uint32_t NumObfTimes = ObfTimesTemp;
+
+    // Real begining of the pass
+    // Loop for the number of time we run the pass on the function
+    uint32_t bogusIter = 0;
+    do {
+      bogusIter++;
+      // Put all the function's block in a list
+      std::list<BasicBlock *> basicBlocks;
+      for (BasicBlock &BB : F)
+        if (!BB.isEHPad() && !BB.isLandingPad() && !containsSwiftError(&BB) &&
+            !containsMustTailCall(&BB) && !containsCoroBeginInst(&BB))
+          basicBlocks.emplace_back(&BB);
+
+      // Count to limit nested expansion (prevent exponential blowup)
+      size_t origSize = basicBlocks.size();
+      size_t processed = 0;
+
+      while (!basicBlocks.empty()) {
+        BasicBlock *basicBlock = basicBlocks.front();
+        basicBlocks.pop_front();
+        // Basic Blocks' selection
+        if (cryptoutils->get_range(100) <= ObfProbRateTemp) {
+          // Record existing successors before we modify the block
+          size_t bbsBefore = 0;
+          if (BCFNestedTemp) {
+            // Count blocks so we know which ones are new
+            for (BasicBlock &BB : F)
+              bbsBefore++;
+          }
+
+          if (ObfuscationMaxMode || cryptoutils->get_range(2) == 0) {
+            addStateExplosion(basicBlock, F);
+          } else {
+            addBogusFlow(basicBlock, F);
+          }
+
+          // In nested mode: add newly created blocks back to the queue
+          // (but only blocks from the original set to avoid infinite recursion)
+          if (BCFNestedTemp && processed < origSize * 2) {
+            size_t bbsAfter = 0;
+            for (BasicBlock &BB : F)
+              bbsAfter++;
+            if (bbsAfter > bbsBefore) {
+              // New blocks were created; find and enqueue them
+              size_t skip = bbsBefore;
+              for (BasicBlock &BB : F) {
+                if (skip > 0) {
+                  skip--;
+                  continue;
+                }
+                if (!BB.isEHPad() && !BB.isLandingPad() &&
+                    !containsSwiftError(&BB) && !containsMustTailCall(&BB) &&
+                    !containsCoroBeginInst(&BB) &&
+                    !BB.getName().contains("originalBB") &&
+                    cryptoutils->get_range(3) == 0) // 33% chance to recurse
+                  basicBlocks.emplace_back(&BB);
+              }
+            }
+          }
+        }
+        processed++;
+      } // end of while(!basicBlocks.empty())
+    } while (--NumObfTimes > 0);
+  }
+
+  bool containsCoroBeginInst(BasicBlock *b) {
+    for (Instruction &I : *b)
+      if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(&I))
+        if (II->getIntrinsicID() == Intrinsic::coro_begin)
+          return true;
+    return false;
+  }
+
+  bool containsMustTailCall(BasicBlock *b) {
+    for (Instruction &I : *b)
+      if (CallInst *CI = dyn_cast<CallInst>(&I))
+        if (CI->isMustTailCall())
+          return true;
+    return false;
+  }
+
+  bool containsSwiftError(BasicBlock *b) {
+    for (Instruction &I : *b)
+      if (AllocaInst *AI = dyn_cast<AllocaInst>(&I))
+        if (AI->isSwiftError())
+          return true;
+    return false;
+  }
+
+  /* addStateExplosion
+   *
+   * Adds a branch that depends on a symbolic condition (live variable),
+   * forcing symbolic execution engines like angr to fork states exponentially.
+   */
+  void addStateExplosion(BasicBlock *basicBlock, Function &F) {
+    BasicBlock::iterator i1 = basicBlock->begin();
+    if (basicBlock->getFirstNonPHIOrDbgOrLifetime() != basicBlock->end())
+      i1 = basicBlock->getFirstNonPHIOrDbgOrLifetime();
+
+    if (F.hasFnAttribute("probe-stack") && basicBlock->isEntryBlock()) {
+      while ((i1 != basicBlock->end()) && isa<AllocaInst>(i1))
+        i1++;
+      if (i1 == basicBlock->end())
+        return;
+    }
+
+    BasicBlock *originalBB = basicBlock->splitBasicBlock(i1, "originalBB");
+
+    BasicBlock *junkBB1 =
+        BasicBlock::Create(F.getContext(), "stateExp1", &F, originalBB);
+    BasicBlock *junkBB2 =
+        BasicBlock::Create(F.getContext(), "stateExp2", &F, originalBB);
+
+    LLVMContext &Ctx = F.getContext();
+    Type *I32Ty = Type::getInt32Ty(Ctx);
+
+    // In junkBB1: perform synthetic arithmetic before jumping, sink with
+    // volatile store
+    BasicBlock &Entry = F.getEntryBlock();
+    IRBuilder<> EntryIRB(&Entry, Entry.getFirstInsertionPt());
+    AllocaInst *sink1 = EntryIRB.CreateAlloca(I32Ty, nullptr, "bcf.exp1.sink");
+    AllocaInst *sink2 = EntryIRB.CreateAlloca(I32Ty, nullptr, "bcf.exp2.sink");
+
+    IRBuilder<> IRB1(junkBB1);
+    uint32_t r1 = cryptoutils->get_uint32_t();
+    Value *val1 =
+        IRB1.CreateAdd(ConstantInt::get(I32Ty, r1),
+                       ConstantInt::get(I32Ty, 0x1337), "bcf.exp1.val");
+    Value *xor1 = IRB1.CreateXor(val1, ConstantInt::get(I32Ty, 0x55AA55AA),
+                                 "bcf.exp1.xor");
+    IRB1.CreateStore(xor1, sink1, /*isVolatile=*/true);
+    InlineAsm *IA1 = InlineAsm::get(
+        FunctionType::get(Type::getVoidTy(Ctx), false), "nop", "", true, false);
+    IRB1.CreateCall(IA1, {});
+    IRB1.CreateBr(originalBB);
+
+    // In junkBB2: perform alternative synthetic arithmetic before jumping, sink
+    // with volatile store
+    IRBuilder<> IRB2(junkBB2);
+    uint32_t r2 = cryptoutils->get_uint32_t();
+    Value *val2 = IRB2.CreateSub(ConstantInt::get(I32Ty, r2),
+                                 ConstantInt::get(I32Ty, 0x42), "bcf.exp2.val");
+    Value *mul2 =
+        IRB2.CreateMul(val2, ConstantInt::get(I32Ty, 33), "bcf.exp2.mul");
+    IRB2.CreateStore(mul2, sink2, /*isVolatile=*/true);
+    InlineAsm *IA2 =
+        InlineAsm::get(FunctionType::get(Type::getVoidTy(Ctx), false),
+                       "nop\nnop", "", true, false);
+    IRB2.CreateCall(IA2, {});
+    IRB2.CreateBr(originalBB);
+
+    basicBlock->getTerminator()->eraseFromParent();
+
+    SmallVector<Value *, 8> liveVars;
+    for (Argument &Arg : F.args()) {
+      if (Arg.getType()->isIntegerTy())
+        liveVars.push_back(&Arg);
+    }
+
+    IRBuilder<> IRB(basicBlock);
+    Value *cond = IRB.getTrue();
+    if (!liveVars.empty()) {
+      Value *liveVar = liveVars[cryptoutils->get_range(liveVars.size())];
+      Type *T = liveVar->getType();
+      switch (cryptoutils->get_range(4)) {
+      case 0: {
+        // (x * (x - 1)) & 1 == 0
+        Value *minus1 = IRB.CreateSub(liveVar, ConstantInt::get(T, 1));
+        Value *mul = IRB.CreateMul(liveVar, minus1);
+        Value *and1 = IRB.CreateAnd(mul, ConstantInt::get(T, 1));
+        cond = IRB.CreateICmpEQ(and1, ConstantInt::get(T, 0));
+        break;
+      }
+      case 1: {
+        // (x * (x + 1)) & 1 == 0
+        Value *plus1 = IRB.CreateAdd(liveVar, ConstantInt::get(T, 1));
+        Value *mul = IRB.CreateMul(liveVar, plus1);
+        Value *and1 = IRB.CreateAnd(mul, ConstantInt::get(T, 1));
+        cond = IRB.CreateICmpEQ(and1, ConstantInt::get(T, 0));
+        break;
+      }
+      case 2: {
+        // (x | ~x) + 1 == 0
+        Value *notx = IRB.CreateNot(liveVar);
+        Value *orx = IRB.CreateOr(liveVar, notx);
+        Value *add1 = IRB.CreateAdd(orx, ConstantInt::get(T, 1));
+        cond = IRB.CreateICmpEQ(add1, ConstantInt::get(T, 0));
+        break;
+      }
+      default: {
+        // (x & ~x) == 0
+        Value *notx = IRB.CreateNot(liveVar);
+        Value *andx = IRB.CreateAnd(liveVar, notx);
+        cond = IRB.CreateICmpEQ(andx, ConstantInt::get(T, 0));
+        break;
+      }
+      }
+    } else {
+      cond = IRB.CreateICmpEQ(
+          ConstantInt::get(Type::getInt32Ty(F.getContext()),
+                           cryptoutils->get_range(2)),
+          ConstantInt::get(Type::getInt32Ty(F.getContext()), 0));
+    }
+
+    IRB.CreateCondBr(cond, junkBB1, junkBB2);
+    turnOffOptimization(basicBlock->getParent());
+  }
+
+  /* addBogusFlow
+   *
+   * Add bogus flow to a given basic block, according to the header's
+   * description
+   */
+  void addBogusFlow(BasicBlock *basicBlock, Function &F) {
+    // Split the block: first part with only the phi nodes and debug info and
+    // terminator
+    //                  created by splitBasicBlock. (-> No instruction)
+    //                  Second part with every instructions from the original
+    //                  block
+    // We do this way, so we don't have to adjust all the phi nodes, metadatas
+    // and so on for the first block. We have to let the phi nodes in the first
+    // part, because they actually are updated in the second part according to
+    // them.
+    BasicBlock::iterator i1 = basicBlock->begin();
+    if (basicBlock->getFirstNonPHIOrDbgOrLifetime() != basicBlock->end())
+      i1 = basicBlock->getFirstNonPHIOrDbgOrLifetime();
+
+    // When "probe-stack" is present, moving allocas out of the entry block
+    // can segfault (the probe thunk expects all allocas to stay in the entry
+    // block).  Split after the last alloca run instead so all allocas remain.
+    if (F.hasFnAttribute("probe-stack") && basicBlock->isEntryBlock()) {
+      // Find the first non alloca instruction
+      while ((i1 != basicBlock->end()) && isa<AllocaInst>(i1))
+        i1++;
+
+      // If there are no other kind of instruction we just don't split that
+      // entry block
+      if (i1 == basicBlock->end())
+        return;
+    }
+
+    BasicBlock *originalBB = basicBlock->splitBasicBlock(i1, "originalBB");
+
+    // Creating the altered basic block on which the first basicBlock will jump
+    BasicBlock *alteredBB =
+        createAlteredBasicBlock(originalBB, "alteredBB", &F);
+
+    // Now that all the blocks are created,
+    // we modify the terminators to adjust the control flow.
+
+    if (!OnlyJunkAssemblyTemp)
+      alteredBB->getTerminator()->eraseFromParent();
+    basicBlock->getTerminator()->eraseFromParent();
+
+    // Preparing a condition..
+    // For now, the condition is an always true comparaison between 2 float
+    // This will be complicated after the pass (in doFinalization())
+
+    // We need to use ConstantInt instead of ConstantFP as ConstantFP results in
+    // strange dead-loop when injected into Xcode
+    Value *LHS = ConstantInt::get(Type::getInt32Ty(F.getContext()), 1);
+    Value *RHS = ConstantInt::get(Type::getInt32Ty(F.getContext()), 1);
+
+    // The always true condition. End of the first block
+    ICmpInst *condition = new ICmpInst(basicBlock->end(), ICmpInst::ICMP_EQ,
+                                       LHS, RHS, "BCFPlaceHolderPred");
+    needtoedit.emplace_back(condition);
+
+    // Jump to the original basic block if the condition is true or
+    // to the altered block if false.
+    BranchInst::Create(originalBB, alteredBB, condition, basicBlock);
+
+    // The altered block loop back on the original one.
+    BranchInst::Create(originalBB, alteredBB);
+
+    // The end of the originalBB is modified to give the impression that
+    // sometimes it continues in the loop, and sometimes it return the desired
+    // value (of course it's always true, so it always use the original
+    // terminator..
+    //  but this will be obfuscated too;) )
+
+    // iterate on instruction just before the terminator of the originalBB
+    BasicBlock::iterator i = originalBB->end();
+
+    // Split at this point (we only want the terminator in the second part)
+    BasicBlock *originalBBpart2 =
+        originalBB->splitBasicBlock(--i, "originalBBpart2");
+    // the first part go either on the return statement or on the begining
+    // of the altered block.. So we erase the terminator created when splitting.
+    originalBB->getTerminator()->eraseFromParent();
+    // We add at the end a new always true condition
+    ICmpInst *condition2 = new ICmpInst(originalBB->end(), CmpInst::ICMP_EQ,
+                                        LHS, RHS, "BCFPlaceHolderPred");
+    needtoedit.emplace_back(condition2);
+    // Do random behavior to avoid pattern recognition.
+    // This is achieved by jumping to a random BB
+    switch (cryptoutils->get_range(2)) {
+    case 0: {
+      BranchInst::Create(originalBBpart2, originalBB, condition2, originalBB);
+      break;
+    }
+    case 1: {
+      BranchInst::Create(originalBBpart2, alteredBB, condition2, originalBB);
+      break;
+    }
+    default:
+      llvm_unreachable("wtf?");
+    }
+  } // end of addBogusFlow()
+
+  /* createAlteredBasicBlock
+   *
+   * This function return a basic block similar to a given one.
+   * It's inserted just after the given basic block.
+   * The instructions are similar but junk instructions are added between
+   * the cloned one. The cloned instructions' phi nodes, metadatas, uses and
+   * debug locations are adjusted to fit in the cloned basic block and
+   * behave nicely.
+   */
+  BasicBlock *createAlteredBasicBlock(BasicBlock *basicBlock,
+                                      const Twine &Name = "gen",
+                                      Function *F = nullptr) {
+    BasicBlock *alteredBB = OnlyJunkAssemblyTemp
+                                ? BasicBlock::Create(F->getContext(), "", F)
+                                : nullptr;
+    if (!OnlyJunkAssemblyTemp) {
+      // Useful to remap the informations concerning instructions.
+      ValueToValueMapTy VMap;
+      alteredBB = CloneBasicBlock(basicBlock, VMap, Name, F);
+      // Remap operands.
+      BasicBlock::iterator ji = basicBlock->begin();
+      for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end();
+           i != e; ++i) {
+        // Loop over the operands of the instruction
+        for (User::op_iterator opi = i->op_begin(), ope = i->op_end();
+             opi != ope; ++opi) {
+          // get the value for the operand
+          Value *v = MapValue(*opi, VMap, RF_NoModuleLevelChanges, 0);
+          if (v != 0)
+            *opi = v;
+        }
+        // Remap phi nodes' incoming blocks.
+        if (PHINode *pn = dyn_cast<PHINode>(i)) {
+          for (unsigned j = 0, e = pn->getNumIncomingValues(); j != e; ++j) {
+            Value *v = MapValue(pn->getIncomingBlock(j), VMap, RF_None, 0);
+            if (v != 0)
+              pn->setIncomingBlock(j, cast<BasicBlock>(v));
+          }
+        }
+        // Remap attached metadata.
+        SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
+        i->getAllMetadata(MDs);
+        // important for compiling with DWARF, using option -g.
+        i->setDebugLoc(ji->getDebugLoc());
+        ji++;
+      } // The instructions' informations are now all correct
+
+      // Erase stores and call side-effects from alteredBB so executing the dead
+      // block cannot corrupt program state or trigger invalid call frames.
+      SmallVector<Instruction *, 16> sideEffectsToErase;
+      for (Instruction &I : *alteredBB) {
+        if (isa<StoreInst>(&I))
+          sideEffectsToErase.push_back(&I);
+        else if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+          if (!CI->isLifetimeStartOrEnd() && !CI->isDebugOrPseudoInst())
+            sideEffectsToErase.push_back(&I);
+        }
+      }
+      for (Instruction *I : sideEffectsToErase) {
+        if (I->getNumUses() == 0)
+          I->eraseFromParent();
+      }
+
+      // Insert junk instructions throughout the dead block to create synthetic
+      // data-dependency chains that confuse decompilers and pattern matchers.
+      // ICmp/FCmp are handled with dyn_cast outside the isBinaryOp() guard
+      // because CmpInst is not a BinaryOperator subclass.
+      for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end();
+           i != e; ++i) {
+        if (i->isBinaryOp() && i->getType()->isIntegerTy()) {
+          unsigned int opcode = i->getOpcode();
+          Instruction *op, *op1 = nullptr;
+
+          // Integer binary ops
+          if (opcode == Instruction::Add || opcode == Instruction::Sub ||
+              opcode == Instruction::Mul || opcode == Instruction::UDiv ||
+              opcode == Instruction::SDiv || opcode == Instruction::URem ||
+              opcode == Instruction::SRem || opcode == Instruction::Shl ||
+              opcode == Instruction::LShr || opcode == Instruction::AShr ||
+              opcode == Instruction::And || opcode == Instruction::Or ||
+              opcode == Instruction::Xor) {
+            for (int random = (int)cryptoutils->get_range(10); random < 10;
+                 ++random) {
+              switch (cryptoutils->get_range(8)) {
+              case 0:
+                break;
+              case 1:
+                op = BinaryOperator::CreateNeg(i->getOperand(0), "", &*i);
+                op1 = BinaryOperator::Create(Instruction::Add, op,
+                                             i->getOperand(1), "", &*i);
+                break;
+              case 2:
+                op1 = BinaryOperator::Create(Instruction::Sub, i->getOperand(0),
+                                             i->getOperand(1), "", &*i);
+                op = BinaryOperator::Create(Instruction::Mul, op1,
+                                            i->getOperand(1), "", &*i);
+                break;
+              case 3: {
+                Type *Ty = i->getOperand(0)->getType();
+                Value *one = ConstantInt::get(Ty, 1);
+                op = BinaryOperator::Create(Instruction::Shl, i->getOperand(0),
+                                            one, "", &*i);
+                break;
+              }
+              case 4: // XOR operands together, then add to first
+                op = BinaryOperator::Create(Instruction::Xor, i->getOperand(0),
+                                            i->getOperand(1), "", &*i);
+                op1 = BinaryOperator::Create(Instruction::Add, op,
+                                             i->getOperand(0), "", &*i);
+                break;
+              case 5: // AND then OR chain (creates multi-level dependency)
+                op = BinaryOperator::Create(Instruction::And, i->getOperand(0),
+                                            i->getOperand(1), "", &*i);
+                op1 = BinaryOperator::Create(Instruction::Or, op,
+                                             i->getOperand(1), "", &*i);
+                break;
+              case 6: { // Shift left by 1 then right by 1 (lossy round-trip)
+                Type *Ty = i->getOperand(0)->getType();
+                Value *one = ConstantInt::get(Ty, 1);
+                op = BinaryOperator::Create(Instruction::Shl, i->getOperand(0),
+                                            one, "", &*i);
+                op1 =
+                    BinaryOperator::Create(Instruction::LShr, op, one, "", &*i);
+                break;
+              }
+              case 7: // Mul then Sub (creates diverging dependency tree)
+                op = BinaryOperator::Create(Instruction::Mul, i->getOperand(0),
+                                            i->getOperand(1), "", &*i);
+                op1 = BinaryOperator::Create(Instruction::Sub, op,
+                                             i->getOperand(0), "", &*i);
+                break;
+              }
+            }
+          }
+          // Float binary ops
+          if (opcode == Instruction::FAdd || opcode == Instruction::FSub ||
+              opcode == Instruction::FMul || opcode == Instruction::FDiv ||
+              opcode == Instruction::FRem) {
+            for (int random = (int)cryptoutils->get_range(10); random < 10;
+                 ++random) {
+              switch (cryptoutils->get_range(6)) {
+              case 0:
+                break;
+              case 1:
+                op = UnaryOperator::CreateFNeg(i->getOperand(0), "", &*i);
+                op1 = BinaryOperator::Create(Instruction::FAdd, op,
+                                             i->getOperand(1), "", &*i);
+                break;
+              case 2:
+                op = BinaryOperator::Create(Instruction::FSub, i->getOperand(0),
+                                            i->getOperand(1), "", &*i);
+                op1 = BinaryOperator::Create(Instruction::FMul, op,
+                                             i->getOperand(1), "", &*i);
+                break;
+              case 3: { // FSub 0.0 then FAdd (identity chain)
+                Type *Ty = i->getOperand(0)->getType();
+                Value *zero = ConstantFP::get(Ty, 0.0);
+                op = BinaryOperator::Create(Instruction::FSub, i->getOperand(0),
+                                            zero, "", &*i);
+                op1 = BinaryOperator::Create(Instruction::FAdd, op,
+                                             i->getOperand(1), "", &*i);
+                break;
+              }
+              case 4: { // FMul -1.0 then FNeg (double negation, net identity)
+                Type *Ty = i->getOperand(0)->getType();
+                Value *negOne = ConstantFP::get(Ty, -1.0);
+                op = BinaryOperator::Create(Instruction::FMul, i->getOperand(0),
+                                            negOne, "", &*i);
+                op1 = UnaryOperator::CreateFNeg(op, "", &*i);
+                break;
+              }
+              case 5: { // FDiv 1.0 then FMul (scale-by-one dependency)
+                Type *Ty = i->getOperand(0)->getType();
+                Value *one = ConstantFP::get(Ty, 1.0);
+                op = BinaryOperator::Create(Instruction::FDiv, i->getOperand(0),
+                                            one, "", &*i);
+                op1 = BinaryOperator::Create(Instruction::FMul, op,
+                                             i->getOperand(1), "", &*i);
+                break;
+              }
+              }
+            }
+          }
+        }
+        // ICmpInst mutation — predicate scrambling + operand noise injection.
+        // This block is intentionally outside isBinaryOp() because ICmpInst
+        // inherits from CmpInst, not BinaryOperator.
+        if (ICmpInst *currentI = dyn_cast<ICmpInst>(&*i)) {
+          if (!currentI->getOperand(0)->getType()->isIntegerTy())
+            continue;
+          switch (cryptoutils->get_range(6)) {
+          case 0:
+            break;
+          case 1:
+            currentI->swapOperands();
+            break;
+          case 2: {
+            switch (cryptoutils->get_range(10)) {
+            case 0:
+              currentI->setPredicate(ICmpInst::ICMP_EQ);
+              break;
+            case 1:
+              currentI->setPredicate(ICmpInst::ICMP_NE);
+              break;
+            case 2:
+              currentI->setPredicate(ICmpInst::ICMP_UGT);
+              break;
+            case 3:
+              currentI->setPredicate(ICmpInst::ICMP_UGE);
+              break;
+            case 4:
+              currentI->setPredicate(ICmpInst::ICMP_ULT);
+              break;
+            case 5:
+              currentI->setPredicate(ICmpInst::ICMP_ULE);
+              break;
+            case 6:
+              currentI->setPredicate(ICmpInst::ICMP_SGT);
+              break;
+            case 7:
+              currentI->setPredicate(ICmpInst::ICMP_SGE);
+              break;
+            case 8:
+              currentI->setPredicate(ICmpInst::ICMP_SLT);
+              break;
+            case 9:
+              currentI->setPredicate(ICmpInst::ICMP_SLE);
+              break;
+            }
+            break;
+          }
+          case 3: { // XOR first operand with zero (adds instruction, same
+                    // value)
+            Value *xorZero = BinaryOperator::Create(
+                Instruction::Xor, currentI->getOperand(0),
+                ConstantInt::get(currentI->getOperand(0)->getType(), 0), "",
+                currentI);
+            currentI->setOperand(0, xorZero);
+            break;
+          }
+          case 4: { // Negate both operands and swap (reverses ordering
+                    // predicate)
+            Value *negLHS = BinaryOperator::CreateNeg(currentI->getOperand(0),
+                                                      "", currentI);
+            Value *negRHS = BinaryOperator::CreateNeg(currentI->getOperand(1),
+                                                      "", currentI);
+            currentI->setOperand(0, negLHS);
+            currentI->setOperand(1, negRHS);
+            currentI->swapOperands();
+            break;
+          }
+          case 5: { // Add same random constant to both sides (constant-offset
+                    // equivalence)
+            Type *OpTy = currentI->getOperand(0)->getType();
+            Value *c = ConstantInt::get(OpTy, cryptoutils->get_uint32_t());
+            Value *lhsNew = BinaryOperator::Create(
+                Instruction::Add, currentI->getOperand(0), c, "", currentI);
+            Value *rhsNew = BinaryOperator::Create(
+                Instruction::Add, currentI->getOperand(1), c, "", currentI);
+            currentI->setOperand(0, lhsNew);
+            currentI->setOperand(1, rhsNew);
+            break;
+          }
+          }
+        }
+        // FCmpInst mutation — same structure as ICmp above.
+        if (FCmpInst *currentI = dyn_cast<FCmpInst>(&*i)) {
+          if (!currentI->getOperand(0)->getType()->isFloatingPointTy())
+            continue;
+          switch (cryptoutils->get_range(6)) {
+          case 0:
+            break;
+          case 1:
+            currentI->swapOperands();
+            break;
+          case 2: {
+            switch (cryptoutils->get_range(10)) {
+            case 0:
+              currentI->setPredicate(FCmpInst::FCMP_OEQ);
+              break;
+            case 1:
+              currentI->setPredicate(FCmpInst::FCMP_ONE);
+              break;
+            case 2:
+              currentI->setPredicate(FCmpInst::FCMP_UGT);
+              break;
+            case 3:
+              currentI->setPredicate(FCmpInst::FCMP_UGE);
+              break;
+            case 4:
+              currentI->setPredicate(FCmpInst::FCMP_ULT);
+              break;
+            case 5:
+              currentI->setPredicate(FCmpInst::FCMP_ULE);
+              break;
+            case 6:
+              currentI->setPredicate(FCmpInst::FCMP_OGT);
+              break;
+            case 7:
+              currentI->setPredicate(FCmpInst::FCMP_OGE);
+              break;
+            case 8:
+              currentI->setPredicate(FCmpInst::FCMP_OLT);
+              break;
+            case 9:
+              currentI->setPredicate(FCmpInst::FCMP_OLE);
+              break;
+            }
+            break;
+          }
+          case 3: { // FNeg both operands and swap (flip ordering direction)
+            Value *negLHS = UnaryOperator::CreateFNeg(currentI->getOperand(0),
+                                                      "", currentI);
+            Value *negRHS = UnaryOperator::CreateFNeg(currentI->getOperand(1),
+                                                      "", currentI);
+            currentI->setOperand(0, negLHS);
+            currentI->setOperand(1, negRHS);
+            currentI->swapOperands();
+            break;
+          }
+          case 4: { // FMul first operand by 1.0 (IEEE identity, adds node)
+            Type *Ty = currentI->getOperand(0)->getType();
+            Value *one = ConstantFP::get(Ty, 1.0);
+            Value *mul = BinaryOperator::Create(
+                Instruction::FMul, currentI->getOperand(0), one, "", currentI);
+            currentI->setOperand(0, mul);
+            break;
+          }
+          case 5: { // FDiv first operand by 1.0 (scale-by-one noise)
+            Type *Ty = currentI->getOperand(0)->getType();
+            Value *one = ConstantFP::get(Ty, 1.0);
+            Value *div = BinaryOperator::Create(
+                Instruction::FDiv, currentI->getOperand(0), one, "", currentI);
+            currentI->setOperand(0, div);
+            break;
+          }
+          }
+        }
+      }
+      // Remove DIs from AlterBB
+      SmallVector<CallInst *, 4> toRemove;
+      SmallVector<Constant *, 4> DeadConstants;
+      for (Instruction &I : *alteredBB) {
+        if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+          if (CI->getCalledFunction() != nullptr &&
+              CI->getCalledFunction()->getName().starts_with("llvm.dbg"))
+            toRemove.emplace_back(CI);
+        }
+      }
+      // Shamefully stolen from IPO/StripSymbols.cpp
+      for (CallInst *CI : toRemove) {
+        Value *Arg1 = CI->getArgOperand(0);
+        Value *Arg2 = CI->getArgOperand(1);
+        assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
+        CI->eraseFromParent();
+        if (Arg1->use_empty()) {
+          if (Constant *C = dyn_cast<Constant>(Arg1))
+            DeadConstants.emplace_back(C);
+          else
+            RecursivelyDeleteTriviallyDeadInstructions(Arg1);
+        }
+        if (Arg2->use_empty())
+          if (Constant *C = dyn_cast<Constant>(Arg2))
+            DeadConstants.emplace_back(C);
+      }
+      while (!DeadConstants.empty()) {
+        Constant *C = DeadConstants.back();
+        DeadConstants.pop_back();
+        if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
+          if (GV->hasLocalLinkage())
+            RemoveDeadConstant(GV);
+        } else {
+          RemoveDeadConstant(C);
+        }
+      }
+    }
+    // Retain computed values in alteredBB using volatile stack stores so that
+    // dead-code elimination (DCE) or backward taint analysis cannot slice
+    // alteredBB away as dead code.
+    if (!alteredBB->empty()) {
+      Instruction *sinkInsertPt = alteredBB->getTerminator();
+      if (!sinkInsertPt)
+        sinkInsertPt = &alteredBB->back();
+      SmallVector<Value *, 4> valsToSink;
+      for (Instruction &I : *alteredBB) {
+        if (!I.isTerminator() && !I.getType()->isVoidTy() &&
+            !isa<AllocaInst>(&I)) {
+          valsToSink.push_back(&I);
+          if (valsToSink.size() >= 4)
+            break;
+        }
+      }
+      Function *F = basicBlock->getParent();
+      BasicBlock &Entry = F->getEntryBlock();
+      IRBuilder<> EntryIRB(&Entry, Entry.getFirstInsertionPt());
+      for (Value *V : valsToSink) {
+        AllocaInst *sinkSlot =
+            EntryIRB.CreateAlloca(V->getType(), nullptr, "bcf.sink.slot");
+        new StoreInst(V, sinkSlot, /*isVolatile=*/true, sinkInsertPt);
+      }
+    }
+    if (JunkAssemblyTemp || OnlyJunkAssemblyTemp) {
+      std::string junk = "";
+      for (uint32_t i = cryptoutils->get_range(MinNumberOfJunkAssemblyTemp,
+                                               MaxNumberOfJunkAssemblyTemp);
+           i > 0; i--)
+        junk += ".long " + std::to_string(cryptoutils->get_uint32_t()) + "\n";
+      InlineAsm *IA = InlineAsm::get(
+          FunctionType::get(Type::getVoidTy(alteredBB->getContext()), false),
+          junk, "", true, false);
+      if (OnlyJunkAssemblyTemp)
+        CallInst::Create(IA, {}, "", alteredBB);
+      else
+        CallInst::Create(IA, {}, "",
+                         alteredBB->getFirstNonPHIOrDbgOrLifetime());
+      turnOffOptimization(basicBlock->getParent());
+    }
+    return alteredBB;
+  } // end of createAlteredBasicBlock()
+
+  /* doF
+   *
+   * This part obfuscate the always true predicates generated in addBogusFlow()
+   * of the function.
+   */
+  bool doF(Function &F) {
+    if (!toObfuscateBoolOption(&F, "bcf_createfunc",
+                               &CreateFunctionForOpaquePredicateTemp))
+      CreateFunctionForOpaquePredicateTemp = CreateFunctionForOpaquePredicate;
+    if (!toObfuscateUint32Option(&F, "bcf_cond_compl",
+                                 &ConditionExpressionComplexityTemp)) {
+      auto ec =
+          GObfConfig.resolve(F.getParent()->getSourceFileName(), F.getName());
+      ConditionExpressionComplexityTemp =
+          ec.bcf.complexity.value_or((uint32_t)ConditionExpressionComplexity);
+    }
+    // MaxObf: crank up complexity
+    if (ObfuscationMaxMode) {
+      if (ConditionExpressionComplexityTemp < 6)
+        ConditionExpressionComplexityTemp = 6;
+      BCFEntropyChainTemp = true;
+    }
+
+    SmallVector<Instruction *, 8> toEdit, toDelete;
+    // Looking for the conditions and branches to transform
+    for (BasicBlock &BB : F) {
+      Instruction *tbb = BB.getTerminator();
+      if (BranchInst *br = dyn_cast<BranchInst>(tbb)) {
+        if (br->isConditional()) {
+          ICmpInst *cond = dyn_cast<ICmpInst>(br->getCondition());
+          if (cond && std::find(needtoedit.begin(), needtoedit.end(), cond) !=
+                          needtoedit.end()) {
+            toDelete.emplace_back(cond); // The condition
+            toEdit.emplace_back(tbb);    // The branch using the condition
+          }
+        }
+      }
+    }
+    Module &M = *F.getParent();
+    Type *I1Ty = Type::getInt1Ty(M.getContext());
+    Type *I32Ty = Type::getInt32Ty(M.getContext());
+
+    // Determine once whether hardware predicates are available for this target
+    bool useHWPred = targetIsX86(M) || targetIsAArch64(M);
+
+    // Create the sentinel GlobalVariable for the entropy-chain tier-3
+    // predicate. Initialized to a value != 0xDEADC0DE so the predicate is
+    // always true. Marked non-constant so constant propagation cannot resolve
+    // it.
+    GlobalVariable *sentinelGV = nullptr;
+    if (BCFEntropyChainTemp) {
+      uint32_t initVal = cryptoutils->get_uint32_t();
+      while (initVal == 0xDEADC0DEu)
+        initVal = cryptoutils->get_uint32_t();
+      sentinelGV = new GlobalVariable(
+          M, I32Ty, /*isConstant=*/false, GlobalValue::InternalLinkage,
+          ConstantInt::get(I32Ty, initVal), "bcf.sentinel");
+    }
+
+    // Replacing all the branches we found.
+    // Use a per-predicate counter so each LHSGV/RHSGV GlobalVariable gets a
+    // unique name on the first attempt.  Without this, LLVM's ValueSymbolTable
+    // must linearly scan "LHSGV0".."LHSGV(N-1)" for every new "LHSGV" → O(N²)
+    // string ops that appear as a freeze for large N (>500 predicates).
+    uint32_t predIdx = 0;
+    for (Instruction *i : toEdit) {
+      // Previously We Use LLVM EE To Calculate LHS and RHS
+      // Since IRBuilder<> uses ConstantFolding to fold constants.
+      // The return instruction is already returning constants
+      // The variable names below are the artifact from the Emulation Era
+      Function *emuFunction = Function::Create(
+          FunctionType::get(I32Ty, false),
+          GlobalValue::LinkageTypes::InternalLinkage, "NkBCFEmuFunction", M);
+      BasicBlock *emuEntryBlock =
+          BasicBlock::Create(emuFunction->getContext(), "", emuFunction);
+
+      Function *opFunction = nullptr;
+      IRBuilder<> *IRBOp = nullptr;
+      if (CreateFunctionForOpaquePredicateTemp) {
+        opFunction = Function::Create(FunctionType::get(I1Ty, false),
+                                      GlobalValue::LinkageTypes::InternalLinkage,
+                                      "NkBCFOpaquePredicateFunction", M);
+        BasicBlock *opTrampBlock =
+            BasicBlock::Create(opFunction->getContext(), "", opFunction);
+        BasicBlock *opEntryBlock =
+            BasicBlock::Create(opFunction->getContext(), "", opFunction);
+        // Insert a br to make it can be obfuscated by IndirectBranch
+        BranchInst::Create(opEntryBlock, opTrampBlock);
+        writeAnnotationMetadata(opFunction, "bcfopfunc");
+        IRBOp = new IRBuilder<>(opEntryBlock);
+      }
+      Instruction *tmp = i;
+      IRBuilder<> *IRBReal = new IRBuilder<>(tmp);
+      IRBuilder<> IRBEmu(emuEntryBlock);
+      // First,Construct a real RHS that will be used in the actual condition
+      Constant *RealRHS = ConstantInt::get(I32Ty, cryptoutils->get_uint32_t());
+      // Prepare Initial LHS and RHS to bootstrap the emulator
+      Constant *LHSC =
+          ConstantInt::get(I32Ty, cryptoutils->get_range(1, UINT32_MAX));
+      Constant *RHSC =
+          ConstantInt::get(I32Ty, cryptoutils->get_range(1, UINT32_MAX));
+      // Use unique per-predicate names to avoid O(N²) ValueSymbolTable probing.
+      std::string lhsName = "bcf.lhs." + std::to_string(predIdx);
+      std::string rhsName = "bcf.rhs." + std::to_string(predIdx);
+      predIdx++;
+      GlobalVariable *LHSGV =
+          new GlobalVariable(M, Type::getInt32Ty(M.getContext()), false,
+                             GlobalValue::InternalLinkage, LHSC, lhsName);
+      GlobalVariable *RHSGV =
+          new GlobalVariable(M, Type::getInt32Ty(M.getContext()), false,
+                             GlobalValue::InternalLinkage, RHSC, rhsName);
+      LoadInst *LHS = (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
+                          ->CreateLoad(LHSGV->getValueType(), LHSGV,
+                                       /*isVolatile=*/true, "Initial LHS");
+      LoadInst *RHS = (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
+                          ->CreateLoad(RHSGV->getValueType(), RHSGV,
+                                       /*isVolatile=*/true, "Initial RHS");
+
+      // To Speed-Up Evaluation
+      Value *emuLHS = LHSC;
+      Value *emuRHS = RHSC;
+      Instruction::BinaryOps initialOp =
+          ops[cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
+      Value *emuLast =
+          IRBEmu.CreateBinOp(initialOp, emuLHS, emuRHS, "EmuInitialCondition");
+      Value *barLHS = insertOpaqueBarrier(
+          *(CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal), LHS);
+      Value *barRHS = insertOpaqueBarrier(
+          *(CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal), RHS);
+      Value *Last =
+          (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
+              ->CreateBinOp(initialOp, barLHS, barRHS, "InitialCondition");
+      for (uint32_t i = 0; i < ConditionExpressionComplexityTemp; i++) {
+        Constant *newTmp =
+            ConstantInt::get(I32Ty, cryptoutils->get_range(1, UINT32_MAX));
+        Instruction::BinaryOps initialOp2 =
+            ops[cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
+        emuLast = IRBEmu.CreateBinOp(initialOp2, emuLast, newTmp,
+                                     "EmuInitialCondition");
+        Last = (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
+                   ->CreateBinOp(initialOp2, Last, newTmp, "InitialCondition");
+      }
+      // Randomly Generate Predicate
+      CmpInst::Predicate pred =
+          preds[cryptoutils->get_range(sizeof(preds) / sizeof(preds[0]))];
+      if (CreateFunctionForOpaquePredicateTemp) {
+        IRBOp->CreateRet(IRBOp->CreateICmp(pred, Last, RealRHS));
+        Last = IRBReal->CreateCall(opFunction);
+      } else {
+        Value *swPred = IRBReal->CreateICmp(pred, Last, RealRHS);
+        bool doEntropyChain =
+            BCFEntropyChainTemp &&
+            (ObfuscationMaxMode || cryptoutils->get_range(2) == 0);
+        if (doEntropyChain) {
+          Value *ecPred = buildEntropyChainPredicate(M, *IRBReal, sentinelGV);
+          if (ecPred)
+            swPred = IRBReal->CreateAnd(swPred, ecPred, "bcf.ec.and");
+        } else if (useHWPred && cryptoutils->get_range(2) == 0) {
+          Value *hwPred = buildHardwareTruePredicate(M, *IRBReal);
+          if (hwPred)
+            swPred = IRBReal->CreateAnd(swPred, hwPred, "bcf.hw.and");
+        }
+
+        // Data-Flow Opaque Predicate: Mix live variables into the condition
+        if (cryptoutils->get_range(2) == 0) {
+          SmallVector<Value *, 8> liveVars;
+          for (Argument &Arg : i->getParent()->getParent()->args()) {
+            if (Arg.getType()->isIntegerTy())
+              liveVars.push_back(&Arg);
+          }
+          if (!liveVars.empty()) {
+            Value *liveVar = liveVars[cryptoutils->get_range(liveVars.size())];
+            Type *T = liveVar->getType();
+            // (x * (x - 1)) & 1 == 0
+            Value *minus1 = IRBReal->CreateSub(liveVar, ConstantInt::get(T, 1));
+            Value *mul = IRBReal->CreateMul(liveVar, minus1);
+            Value *and1 = IRBReal->CreateAnd(mul, ConstantInt::get(T, 1));
+            Value *livePred = IRBReal->CreateICmpEQ(
+                and1, ConstantInt::get(T, 0), "bcf.df.pred");
+            // If swPred was true, true AND true = true. If swPred was false,
+            // false AND true = false.
+            swPred = IRBReal->CreateAnd(swPred, livePred, "bcf.df.and");
+          }
+        }
+
+        Last = swPred;
+      }
+      emuLast = IRBEmu.CreateICmp(pred, emuLast, RealRHS);
+      ReturnInst *RI = IRBEmu.CreateRet(emuLast);
+      ConstantInt *emuCI = cast<ConstantInt>(RI->getReturnValue());
+      APInt emulateResult = emuCI->getValue();
+      if (emulateResult == 1) {
+        // Our ConstantExpr evaluates to true;
+        BranchInst::Create(((BranchInst *)i)->getSuccessor(0),
+                           ((BranchInst *)i)->getSuccessor(1), Last,
+                           i->getParent());
+      } else {
+        // False, swap operands
+        BranchInst::Create(((BranchInst *)i)->getSuccessor(1),
+                           ((BranchInst *)i)->getSuccessor(0), Last,
+                           i->getParent());
+      }
+      emuFunction->eraseFromParent();
+      i->eraseFromParent(); // erase the branch
+      if (IRBOp)
+        delete IRBOp;
+      delete IRBReal;
+    }
+    // Erase all the associated conditions we found
+    for (Instruction *i : toDelete)
+      i->eraseFromParent();
+    return true;
+  } // end of doFinalization
+}; // end of struct BogusControlFlow : public FunctionPass
+} // namespace llvm
+
+char BogusControlFlow::ID = 0;
+INITIALIZE_PASS(BogusControlFlow, "bcfobf", "Enable BogusControlFlow.", false,
+                false)
+FunctionPass *llvm::createBogusControlFlowPass(bool flag) {
+  return new BogusControlFlow(flag);
+}

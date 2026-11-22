@@ -1,0 +1,100 @@
+/*
+ *  OLLVM-Next (Nk): The next generation LLVM based Obfuscator
+ *  Copyright (C) 2026  Xinyu Yang(<Xinyu.Yang@apich.org>)
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU Affero General Public License as published
+ *  by the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU Affero General Public License for more details.
+ *
+ *  You should have received a copy of the GNU Affero General Public License
+ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef _UTILS_H_
+#define _UTILS_H_
+
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/NoFolder.h"
+#include "llvm/TargetParser/Triple.h"
+#include <string>
+
+namespace llvm {
+
+// Global flag: when true every pass runs at maximum intensity.
+// Set by -enable-maxobf in Obfuscation.cpp.
+extern bool ObfuscationMaxMode;
+
+// Global flag: when true passes run at high-preset intensity.
+// Set by -enable-highobf / preset=high in Obfuscation.cpp.
+extern bool ObfuscationHighMode;
+
+// Global flag: when true passes run at med-preset intensity.
+// Set by -enable-medobf / preset=mid in Obfuscation.cpp.
+extern bool ObfuscationMedMode;
+
+// Global flag: when true passes run at low-preset intensity.
+// Set by -enable-lowobf / preset=low in Obfuscation.cpp.
+extern bool ObfuscationLowMode;
+
+// Global flag: when true FCO is enabled in pipeline, coordinating with FW.
+extern bool ObfuscationFCOActive;
+
+// Global flag: when true each pass prints a "Running X On Y" line for every
+// function it processes.  Defaults to false because hundreds of stdlib
+// functions generate enough output to fill a 64 KB stderr pipe, causing the
+// WriteFile syscall to block with 0% CPU (appearing as a deadlock).
+// Enable with -obf-verbose on the opt command line.
+extern bool ObfVerbose;
+
+// Global flag: when true, Obfuscation.cpp emits one "[OLLVM-Next][Nx]" line
+// before and after each major pipeline stage (FunctionWrapper, AntiDebugging,
+// StringEncryption, ConstantEncryption, per-function loop, IndirectBranch,
+// etc.). Also prints each function name and each sub-pass tag inside the
+// per-function loop. Maximum output: ~15 lines (module-level) + ~7 lines per
+// function. Use -obf-trace on the opt command line to diagnose 0% CPU hangs.
+extern bool ObfTrace;
+
+void fixStack(Function *f);
+void manuallyLowerSwitches(Function *F);
+bool toObfuscate(bool flag, Function *f, std::string attribute);
+bool toObfuscateBoolOption(Function *f, std::string option, bool *val);
+bool toObfuscateUint32Option(Function *f, std::string option, uint32_t *val);
+bool hasApplePtrauth(Module *M);
+void FixFunctionConstantExpr(Function *Func);
+void turnOffOptimization(Function *f);
+void annotation2Metadata(Module &M);
+bool readAnnotationMetadata(Function *f, std::string annotation);
+void writeAnnotationMetadata(Function *f, std::string annotation);
+bool AreUsersInOneFunction(GlobalVariable *GV);
+void tagSynthetic(Instruction *I);
+bool isSynthetic(const Instruction *I);
+Value *insertOpaqueBarrier(IRBuilder<NoFolder> &IRB, Value *V);
+Value *insertOpaqueBarrier(IRBuilder<> &IRB, Value *V);
+
+GlobalVariable *getOrCreateOpaqueSink(Module *M);
+std::string getViolentExitAsm(const Triple &triple, int exitCode = 137);
+std::string getPolymorphicBarrierAsm(const Triple &triple);
+void insertViolentExit(IRBuilder<> &IRB, const Triple &triple,
+                       int exitCode = 137);
+
+// ── Anti-Taint & Data-Flow Entanglement Primitives ──────────────────────────
+GlobalVariable *getOrCreateLaunderLUT(Module *M);
+Value *insertTaintLaunder(IRBuilder<> &IRB, Value *Val);
+Value *insertVectorTaintDiffusion(IRBuilder<> &IRB, Value *Val,
+                                  Value *EntropyToken);
+Value *getOrCreateDynamicDebugToken(Function *F, Instruction *InsertPt,
+                                    const Triple &triple);
+void entangleFunctionIO(Function *F, Value *DbgToken, Value *HookToken,
+                        Value *HookBase, Instruction *InsertPt,
+                        const Triple &triple);
+
+} // namespace llvm
+
+#endif
