@@ -35,6 +35,7 @@ data class UiState(
     val progress: Float = 0f,
     val logs: List<String> = emptyList(),
     val files: List<SourceFile> = emptyList(),
+    val dropped: Set<String> = emptySet(),
     val project: String = "myproj",
     val outName: String = "lucifer",
     val passes: Set<String> = PassCatalog.DEFAULTS,
@@ -129,16 +130,50 @@ class BuildViewModel : ViewModel() {
                 val e = it.rel.substringAfterLast('.', "").lowercase()
                 e in setOf("h", "hpp", "hh", "hxx", "inc", "inl")
             }
+            // 有些项目会把 .c 直接 #include 进 .cpp（典型：res/cJSON.c）。
+            // 这种文件若同时出现在 SRC_FILES 里，链接期必然 duplicate symbol，所以标出来不让它单独编译。
+            val textExt = setOf("c", "cc", "cpp", "cxx", "c++", "h", "hpp", "hh", "hxx", "inc", "inl")
+            val includedBases = mutableSetOf<String>()
+            for (f in found) {
+                val e = f.rel.substringAfterLast('.', "").lowercase()
+                if (e !in textExt) continue
+                if (f.size > 2L * 1024 * 1024) continue
+                try {
+                    ctx.contentResolver.openInputStream(f.uri)?.use { ins ->
+                        ins.bufferedReader().useLines { lines ->
+                            lines.take(5000).forEach { ln ->
+                                val t = ln.trim()
+                                if (t.startsWith("#include")) {
+                                    val q = t.substringAfter('"', "").substringBefore('"')
+                                    if (q.isNotEmpty()) includedBases.add(q.substringAfterLast('/'))
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+            val dropped = found.filter {
+                val e = it.rel.substringAfterLast('.', "").lowercase()
+                e in compileExt && it.rel.substringAfterLast('/') in includedBases
+            }.map { it.rel }.toSet()
+
             val proj = (root.name ?: "myproj").replace(" ", "_")
-            _s.value = _s.value.copy(files = found, project = proj)
+            _s.value = _s.value.copy(files = found, project = proj, dropped = dropped)
             log("扫描到 $units 个编译单元、${found.size} 个待上传文件（含 $headers 个头文件）")
+            if (dropped.isNotEmpty()) {
+                log("跳过被 #include 的源文件（单独编译会 duplicate symbol）：" + dropped.joinToString("、"))
+            }
         }
     }
 
     fun start(ctx: Context, prefs: Prefs) {
         if (_s.value.phase == Phase.RUNNING) return
         val files = _s.value.files
-        val units = files.filter { it.rel.substringAfterLast('.', "").lowercase() in compileExt }
+        val dropped = _s.value.dropped
+        val units = files.filter {
+            it.rel.substringAfterLast('.', "").lowercase() in compileExt && it.rel !in dropped
+        }
         if (units.isEmpty()) {
             _s.value = _s.value.copy(phase = Phase.ERROR, error = "先选目录：里面没有 .c/.cpp")
             return
