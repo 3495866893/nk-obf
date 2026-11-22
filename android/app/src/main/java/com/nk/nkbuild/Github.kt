@@ -45,6 +45,24 @@ class Github(private val token: String) {
         }
     }
 
+    /** 网络抖动 / 5xx / 限流退避重试：大文件上传最怕一次超时就把整次提交废掉 */
+    private fun <T> retry(times: Int = 4, block: () -> T): T {
+        var last: Exception? = null
+        for (i in 1..times) {
+            try {
+                return block()
+            } catch (e: Exception) {
+                last = e
+                val m = e.message ?: ""
+                val fatal = m.contains("HTTP 401") || m.contains("HTTP 403") ||
+                    m.contains("HTTP 422") || m.contains("Token") || m.contains("权限")
+                if (fatal || i == times) throw e
+                Thread.sleep(1200L * i)
+            }
+        }
+        throw last ?: RuntimeException("未知错误")
+    }
+
     fun me(): String = JSONObject(req("/user")).optString("login", "?")
 
     fun headSha(o: String, r: String, br: String): String {
@@ -57,12 +75,16 @@ class Github(private val token: String) {
         return j.getJSONObject("tree").getString("sha")
     }
 
+    /**
+     * git/blob 接口：单个 blob 上限 100 MB（实测 20 MB 正常），
+     * 它跟 contents 接口不一样，**没有 1 MB 限制**，所以源码全部走这条。
+     */
     fun blob(o: String, r: String, data: ByteArray): String {
         val body = JSONObject()
             .put("content", android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP))
             .put("encoding", "base64")
             .toString()
-        return JSONObject(req("/repos/$o/$r/git/blobs", "POST", body)).getString("sha")
+        return JSONObject(retry { req("/repos/$o/$r/git/blobs", "POST", body) }).getString("sha")
     }
 
     fun tree(o: String, r: String, base: String, entries: JSONArray): String {
