@@ -93,7 +93,7 @@ export NK_CONFIG=$PWD/ci/tuned.toml
 bash ci/build-lucifer.sh <NDK_DIR> <PLUGIN_BUILD_DIR> <out_name>
 ```
 
-The pre-rename `ENSIA` / `ENSIA_CONFIG` names still work as aliases. `ci/build-lucifer.sh` locates `ld.lld`, the sysroot and the aarch64 runtime, collects include paths, compiles unit by unit with `-c`, links `libc++_static` / `libc++abi` / `libunwind`, appends `nk_ad_extra.o` when anti-debug is on, then `llvm-strip`s the result.
+`ci/build-lucifer.sh` locates `ld.lld`, the sysroot and the aarch64 runtime, collects include paths, compiles unit by unit with `-c`, links `libc++_static` / `libc++abi` / `libunwind`, appends `nk_ad_extra.o` when anti-debug is on, then `llvm-strip`s the result.
 
 ## Where the token lives
 
