@@ -141,16 +141,21 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
       *) CF+=("$a") ;;
     esac
   done
-  local objs=() o n i t0 rc
+  local objs=() o n i t0 rc fopt fsz
   n=${#SRCS[@]}
   i=0
   for f in "${SRCS[@]}"; do
     i=$((i + 1))
     o="/tmp/nk_o_$$_${i}_$(basename "${f%.*}").o"
-    echo "  [$i/$n] 编译 $f"
+    # 大 TU（imgui.cpp 这种）在 flattening/indirect 下会把后端内存吃爆，
+    # 被 runner 判超限直接 SIGTERM（exit 143）。超过 300 KB 的文件自动降到 -O1。
+    fsz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+    fopt="${NKO:--O2}"
+    if [ "$fsz" -gt 300000 ]; then fopt="-O1"; fi
+    echo "  [$i/$n] 编译 $f（$(numfmt --to=iec "$fsz" 2>/dev/null || echo "$fsz")B，优化级别 $fopt）"
     t0=$(date +%s)
     # shellcheck disable=SC2086
-    timeout 1800 "$CLANG" "${CF[@]}" "${extra[@]}" ${NK_DIAG:+-save-temps=obj} \
+    timeout 1800 "$CLANG" "${CF[@]}" "$fopt" "${extra[@]}" ${NK_DIAG:+-save-temps=obj} \
       -c "$f" -o "$o" 2>&1 \
       | tee -a /tmp/nk_err.txt | stdbuf -oL -eL sed -u 's/^/     /'
     rc=${PIPESTATUS[0]}
@@ -164,7 +169,7 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     if [ $((i % 4)) = "0" ]; then rm -rf /tmp/nk_o_*.d /tmp/nk_o_*.i /tmp/nk_o_*.s; fi
   done
   echo "  [链接] ${#objs[@]} 个 .o -> $out"
-  timeout 1800 "$CLANG" "${CF[@]}" "${extra[@]}" "${LIBS[@]}" \
+  timeout 1800 "$CLANG" "${CF[@]}" "${NKO:--O2}" "${extra[@]}" "${LIBS[@]}" \
     -o "$out" "${objs[@]}" -lEGL -lGLESv2 -lGLESv3 -landroid -llog 2>&1 \
     | tee -a /tmp/nk_err.txt | tail -30
   rc=${PIPESTATUS[0]}
