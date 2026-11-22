@@ -607,7 +607,7 @@ private fun SetPage(
 
         GlassCard(haze) {
             SectionTitle("", "关于")
-            Text("NKBuild 手机版 v1.2（versionCode 3）\n" +
+            Text("NKBuild 手机版 v1.3（versionCode 5）\n" +
                 "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                 "构建：GitHub Actions · 产物：AArch64 PIE",
                 color = TextSub, fontSize = 11.sp)
@@ -845,40 +845,48 @@ private fun PrecheckPage(st: UiState, haze: HazeState?) {
     ) {
         GlassCard(haze) {
             SectionTitle("◎", "上传预检")
-            Text(
-                if (st.files.isEmpty()) "还没选源码：先在「构建」里选一次项目目录"
-                else "${st.files.size} 个文件、共 ${Precheck.human(st.files.sumOf { it.size })}"
+            if (st.files.isEmpty()) {
+                Text("还没选源码：先去「构建」页选一次项目目录，回来这里就能看到逐条风险清单。",
+                    color = TextMain, fontSize = 13.sp)
+                Spacer(Modifier.height(8.dp))
+                Text("判定规则在下面，可以先看一眼什么样的文件会把这次构建搞崩。",
+                    color = TextDim, fontSize = 11.sp)
+            } else {
+                Text("${st.files.size} 个文件、共 ${Precheck.human(st.files.sumOf { it.size })}"
                         + " · ${st.files.count { it.rel.substringAfterLast('.', "").lowercase() in Precheck.compileExt }} 个编译单元",
-                color = TextMain, fontSize = 13.sp)
+                    color = TextMain, fontSize = 13.sp)
 
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                CountBadge("必崩", blocks, Color(0xFFFF5D5D))
-                CountBadge("很可能崩", highs, Color(0xFFFFB04D))
-                CountBadge("注意", notes, Color(0xFF6FB3FF))
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CountBadge("必崩", blocks, Color(0xFFFF5D5D))
+                    CountBadge("很可能崩", highs, Color(0xFFFFB04D))
+                    CountBadge("注意", notes, Color(0xFF6FB3FF))
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (blocks > 0) "① 有 $blocks 个必崩项：点「开始编译」会被直接拦下"
+                    else if (highs > 0) "② 没有必崩项，但有 $highs 个高风险：能跑，可能慢或超时"
+                    else "③ 没发现问题，可以放心编",
+                    color = if (blocks > 0) Color(0xFFFF8A8A)
+                    else if (highs > 0) Color(0xFFFFC68A) else Color(0xFF3DDC97),
+                    fontSize = 12.sp)
             }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                if (blocks > 0) "① 有 $blocks 个必崩项：点「开始编译」会被直接拦下"
-                else if (highs > 0) "② 没有必崩项，但有 $highs 个高风险：能跑，可能慢或超时"
-                else "③ 没发现问题，可以放心编",
-                color = if (blocks > 0) Color(0xFFFF8A8A)
-                else if (highs > 0) Color(0xFFFFC68A) else Color(0xFF3DDC97),
-                fontSize = 12.sp)
         }
 
-        if (risks.isEmpty()) {
-            GlassCard(haze) {
-                SectionTitle("✓", "全部通过")
-                Text("没有超过 1 MB 的文件、没有带空格的文件名、没有会用不上的大素材。",
-                    color = TextDim, fontSize = 12.sp)
-            }
-        } else {
-            GlassCard(haze) {
-                SectionTitle("!", "逐条清单")
-                risks.forEach { r ->
-                    RiskRow(r)
-                    Spacer(Modifier.height(10.dp))
+        if (st.files.isNotEmpty()) {
+            if (risks.isEmpty()) {
+                GlassCard(haze) {
+                    SectionTitle("✓", "全部通过")
+                    Text("没有超过 1 MB 的文件、没有带空格的文件名、没有会用不上的大素材。",
+                        color = TextDim, fontSize = 12.sp)
+                }
+            } else {
+                GlassCard(haze) {
+                    SectionTitle("!", "逐条清单")
+                    risks.forEach { r ->
+                        RiskRow(r)
+                        Spacer(Modifier.height(10.dp))
+                    }
                 }
             }
         }
