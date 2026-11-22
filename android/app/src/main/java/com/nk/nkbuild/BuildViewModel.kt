@@ -199,7 +199,16 @@ class BuildViewModel : ViewModel() {
                         null
                     }
                     if (data == null) { log("读不到，跳过：${f.rel}"); continue }
-                    val sha = gh.blob(o, r, data)
+                    if (data.size > 70 * 1024 * 1024) {
+                        log("超过 70 MB 跳过（GitHub 单文件上限 100 MB）：${f.rel}")
+                        continue
+                    }
+                    if (data.size > 1024 * 1024) log("大文件 ${f.rel} · ${data.size / 1024 / 1024} MB")
+                    val sha = try {
+                        gh.blob(o, r, data)
+                    } catch (e: Exception) {
+                        throw RuntimeException("上传 ${f.rel}（${data.size / 1024} KB）失败：${e.message}")
+                    }
                     entries.put(JSONObject().put("path", "$projDir/${f.rel}")
                         .put("mode", "100644").put("type", "blob").put("sha", sha))
                     total += data.size
