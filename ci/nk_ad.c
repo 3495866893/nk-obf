@@ -1,4 +1,7 @@
-// nk_ad.c v6 —— Ensia 反调试强化模块（arm64 / Android，纯用户态）
+// nk_ad.c v7 —— Ensia 反调试强化模块（arm64 / Android，纯用户态）
+// v7 新增「模拟执行检测」：build.prop / 设备节点 / cpuinfo / auxv(vdso) / statfs(/proc)
+//    / uname 一致性 / 无效系统调用语义 / cntvbr 与 CLOCK_MONOTONIC 比例 / SIGSEGV 投递
+//    / 进程名回读 / 线程可见性。硬证据直接 _exit(97)，软证据只记日志（fail-open）。
 // 原则：fail-open。读不到/权限不足一律放行，只在确定性证据上退出(_exit(97))。
 //
 // v6：NK_AD_OFF 只做「两处提前返回」(nk_die_r / __nk_ad_check)，文件其余部分
@@ -20,6 +23,9 @@
 #include <sys/wait.h>
 #include <link.h>
 #include <dlfcn.h>
+#include <setjmp.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 #define NK_EXIT 97
 
@@ -257,8 +263,339 @@ static int nk_text_cb(struct dl_phdr_info *info, size_t sz, void *data) {
     return 0;
 }
 
+
+/* ================= 模拟执行 / 沙箱 / 模拟器检测（v7） =================
+ * 目标：unidbg / Qiling / Unicorn / Frida-模拟 CPU / 各类云手机与模拟器。
+ * 判定原则：
+ *   硬证据（命中即 _exit(97)）：build.prop 里的 qemu 标记、qemu 设备节点、
+ *     cpuinfo implementer=0x00、无 vDSO 的 auxv、/proc 文件系统魔数不对、
+ *     uname 与 /proc/sys/kernel/osrelease 不一致、无效系统调用语义异常。
+ *   软证据（只记分，不杀）：cntvct 比例异常、SIGSEGV 未投递、进程名回读失败、
+ *     线程不可见、/proc/self/maps 缺 [stack]。软证据 ≥3 项也杀。
+ */
+
+static int g_emu_score = 0;
+
+static int nk_emu_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("NK_AD_EMU");
+        cached = (e && e[0] == '0') ? 0 : 1;
+    }
+    return cached;
+}
+
+static void nk_soft(const char *tag) {
+    g_emu_score++;
+    nk_dbg("nk_ad[emu] soft %s (score=%d)\n", tag, g_emu_score);
+}
+
+/* ---- 1. build.prop：qemu / SDK 型号 / goldfish 硬件 ---- */
+static int nk_emu_prop(void) {
+    static const char *paths[] = {
+        "/system/build.prop", "/vendor/build.prop", "/product/build.prop",
+        "/default.prop", "/odm/etc/build.prop", "/system/etc/build.prop",
+    };
+    static const char *bad[] = {
+        "ro.kernel.qemu=1", "ro.kernel.qemu=2", "ro.boot.qemu=1",
+        "ro.hardware=goldfish", "ro.hardware=ranchu", "ro.hardware=qemu",
+        "ro.product.model=Android SDK", "ro.product.name=sdk",
+        "ro.product.device=generic", "ro.build.flavor=sdk_",
+        "init.svc.qemud=", "ro.bootloader=unknown",
+    };
+    char buf[8192];
+    for (int i = 0; i < (int)(sizeof paths / sizeof paths[0]); i++) {
+        int n = nk_slurp(paths[i], buf, (int)sizeof buf - 1);
+        if (n <= 0) continue;
+        buf[n] = 0;
+        for (int j = 0; j < (int)(sizeof bad / sizeof bad[0]); j++)
+            if (strstr(buf, bad[j])) {
+                nk_dbg("nk_ad[emu] prop %s -> %s\n", paths[i], bad[j]);
+                return 1;
+            }
+    }
+    return 0;
+}
+
+/* ---- 2. qemu / goldfish 设备节点与驱动库 ---- */
+static int nk_emu_dev(void) {
+    static const char *nodes[] = {
+        "/dev/qemu_pipe", "/dev/qemu_trace", "/dev/goldfish_pipe",
+        "/dev/qemu_events", "/dev/socket/qemud", "/system/bin/qemud",
+        "/system/lib/libc_malloc_debug_qemu.so",
+        "/system/lib64/libc_malloc_debug_qemu.so",
+        "/sys/qemu_trace", "/proc/tty/drivers/goldfish",
+    };
+    for (int i = 0; i < (int)(sizeof nodes / sizeof nodes[0]); i++) {
+        /* access(path, F_OK) = syscall 48 */
+        if (nk_sys(48, (long)nodes[i], 0, 0) == 0) {
+            nk_dbg("nk_ad[emu] node %s\n", nodes[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* ---- 3. cpuinfo：qemu 的 CPU implementer 是 0x00 ---- */
+static int nk_emu_cpu(void) {
+    char buf[8192];
+    int n = nk_slurp("/proc/cpuinfo", buf, (int)sizeof buf - 1);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    const char *p = buf;
+    int impl_zero = 0, seen_impl = 0, goldfish = 0;
+    while (p && *p) {
+        if (strncmp(p, "CPU implementer", 15) == 0) {
+            const char *c = strchr(p, ':');
+            if (c) {
+                seen_impl = 1;
+                if (strstr(c, "0x00") || strstr(c, "0x0 ")) impl_zero = 1;
+            }
+        }
+        if (strstr(p, "goldfish") || strstr(p, "ranchu")) { goldfish = 1; break; }
+        p = strchr(p, '\n');
+        if (p) p++;
+    }
+    if (goldfish) { nk_dbg("nk_ad[emu] cpuinfo goldfish\n"); return 1; }
+    /* 真机一定是 0x41(ARM)/0x48/0x51/0x61；0x00 只出现在纯软件模拟里 */
+    if (seen_impl && impl_zero) { nk_dbg("nk_ad[emu] cpuinfo implementer=0x00\n"); return 1; }
+    return 0;
+}
+
+/* ---- 4. auxv：没有 vDSO / HWCAP 为 0 = 模拟 ---- */
+static int nk_emu_auxv(void) {
+    int fd = nk_open_ro("/proc/self/auxv");
+    if (fd < 0) return 0;
+    unsigned long long e[128 * 2];
+    long n = nk_read_fd(fd, e, (long)sizeof e);
+    nk_close_fd(fd);
+    if (n <= 0) return 0;
+    int cnt = (int)(n / (long)sizeof(unsigned long long) / 2);
+    unsigned long long sysinfo = 0, hwcap = 0, platform = 0, random = 0;
+    for (int i = 0; i < cnt; i++) {
+        unsigned long long t = e[i * 2], v = e[i * 2 + 1];
+        if (t == 0) break;
+        if (t == 33) sysinfo = v;   /* AT_SYSINFO_EHDR */
+        if (t == 16) hwcap = v;     /* AT_HWCAP */
+        if (t == 15) platform = v;  /* AT_PLATFORM */
+        if (t == 25) random = v;    /* AT_RANDOM */
+    }
+    if (sysinfo == 0) { nk_dbg("nk_ad[emu] auxv no vDSO\n"); return 1; }
+    if (hwcap == 0)   { nk_dbg("nk_ad[emu] auxv hwcap=0\n"); return 1; }
+    if (platform == 0 || random == 0) nk_soft("auxv-platform");
+    return 0;
+}
+
+/* ---- 5. /proc 必须是 procfs（f_type = PROC_SUPER_MAGIC） ---- */
+static int nk_emu_procfs(void) {
+    unsigned long long st[32];          /* struct statfs 在 arm64 上 ~120B */
+    memset(st, 0, sizeof st);
+    long r = nk_sys(43 /* statfs */, (long)"/proc", (long)st, 0);
+    if (r != 0) return 0;                       /* fail-open */
+    unsigned long long magic = st[0];           /* f_type 在首位 */
+    if (magic == 0) { nk_dbg("nk_ad[emu] procfs magic=0\n"); return 1; }
+    if (magic != 0x9fa0ULL) {
+        nk_dbg("nk_ad[emu] procfs magic=%llx\n", magic);
+        /* 有些内核报 0x9fa0 的高位扩展，只认低 16 位 */
+        if ((magic & 0xFFFFULL) != 0x9fa0ULL) return 1;
+    }
+    return 0;
+}
+
+/* ---- 6. uname 与 /proc/sys/kernel/osrelease 必须一致，machine 必须 aarch64 ---- */
+struct nk_uts { char sys[65], node[65], rel[65], ver[65], mach[65], dom[65]; };
+
+static int nk_emu_uname(void) {
+    struct nk_uts u;
+    memset(&u, 0, sizeof u);
+    if (nk_sys(160 /* uname */, (long)&u, 0, 0) != 0) return 0;
+    if (u.mach[0] && strcmp(u.mach, "aarch64") != 0) {
+        nk_dbg("nk_ad[emu] uname machine=%s\n", u.mach);
+        return 1;
+    }
+    char os[128];
+    int n = nk_slurp("/proc/sys/kernel/osrelease", os, (int)sizeof os - 1);
+    if (n > 0) {
+        while (n > 0 && (os[n - 1] == '\n' || os[n - 1] == '\r')) os[--n] = 0;
+        if (u.rel[0] && strcmp(u.rel, os) != 0) {
+            nk_dbg("nk_ad[emu] uname rel=%s vs proc=%s\n", u.rel, os);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* ---- 7. 无效系统调用必须回 ENOSYS(38)；getpid/gettid 与 /proc 一致 ---- */
+static int nk_emu_syscall(void) {
+    long bad = nk_sys(999999, 0, 0, 0);           /* 不存在的调用号 */
+    if (bad == 0 || bad > 0) {
+        nk_dbg("nk_ad[emu] bogus syscall returned %ld\n", bad);
+        return 1;
+    }
+    long pid = nk_sys(172 /* getpid on arm64 */, 0, 0, 0);
+    char st[2048];
+    int n = nk_slurp("/proc/self/status", st, (int)sizeof st - 1);
+    if (n > 0) {
+        st[n] = 0;
+        char *t = strstr(st, "Pid:");
+        if (t) {
+            long real = strtol(t + 4, NULL, 10);
+            if (pid > 0 && real > 0 && pid != real) {
+                nk_dbg("nk_ad[emu] getpid=%ld vs proc=%ld\n", pid, real);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* ---- 8. cntvct 与 CLOCK_MONOTONIC 比例（模拟器常给死计数器） ---- */
+static int nk_emu_timer(void) {
+    unsigned long long frq = 0, t0 = 0, t1 = 0;
+    __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(frq));
+    if (frq == 0 || frq < 1000000ULL || frq > 5000000000ULL) {
+        nk_dbg("nk_ad[emu] cntfrq=%llu\n", frq);
+        nk_soft("cntfrq");
+        return 0;
+    }
+    struct timespec a, b;
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(t0));
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    usleep(20000);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(t1));
+
+    double wall = (double)(b.tv_sec - a.tv_sec) + (double)(b.tv_nsec - a.tv_nsec) / 1e9;
+    double hw   = (double)(t1 - t0) / (double)frq;
+    if (wall > 0.002) {
+        double ratio = hw / wall;
+        nk_dbg("nk_ad[emu] timer wall=%.4f hw=%.4f ratio=%.3f\n", wall, hw, ratio);
+        /* 真机 0.9~1.1；模拟器要么 0（计数不动）要么差一个数量级 */
+        if (ratio < 0.25 || ratio > 4.0) nk_soft("timer-ratio");
+    }
+    return 0;
+}
+
+/* ---- 9. SIGSEGV 必须被投递，且 si_addr 指向被访问的那页 ---- */
+static sigjmp_buf g_emu_jb;
+static volatile unsigned long long g_emu_page;
+static volatile int g_emu_kind;   /* 0=没收到 1=收到了但地址不对 2=正确 */
+
+static void nk_emu_segv(int sig, siginfo_t *si, void *uc) {
+    (void)sig; (void)uc;
+    g_emu_kind = (si && (unsigned long long)(uintptr_t)si->si_addr == g_emu_page) ? 2 : 1;
+    siglongjmp(g_emu_jb, 1);
+}
+
+static int nk_emu_trap(void) {
+    void *p = mmap(NULL, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return 0;
+    struct sigaction sa, old;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = nk_emu_segv;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, &old) != 0) { munmap(p, 4096); return 0; }
+
+    g_emu_page = (unsigned long long)(uintptr_t)p;
+    g_emu_kind = 0;
+    if (sigsetjmp(g_emu_jb, 1) == 0) {
+        volatile unsigned char c = *(volatile unsigned char *)p;   /* 故意越权读 */
+        (void)c;
+    }
+    sigaction(SIGSEGV, &old, NULL);
+    munmap(p, 4096);
+
+    nk_dbg("nk_ad[emu] segv kind=%d\n", g_emu_kind);
+    if (g_emu_kind == 0) nk_soft("segv-not-delivered");
+    else if (g_emu_kind == 1) { nk_dbg("nk_ad[emu] segv si_addr wrong\n"); return 1; }
+    return 0;
+}
+
+/* ---- 10. 进程名回读：prctl 设的名字必须出现在 /proc/self/comm ---- */
+static int nk_emu_name(void) {
+    char old[17];
+    memset(old, 0, sizeof old);
+    if (prctl(PR_GET_NAME, (unsigned long)old, 0, 0, 0) != 0) return 0;
+    const char *probe = "nk-ad-chk";
+    if (prctl(PR_SET_NAME, (unsigned long)probe, 0, 0, 0) != 0) return 0;
+    char c[64];
+    int n = nk_slurp("/proc/self/comm", c, (int)sizeof c - 1);
+    prctl(PR_SET_NAME, (unsigned long)old, 0, 0, 0);
+    if (n <= 0) return 0;                     /* fail-open */
+    c[n] = 0;
+    if (strncmp(c, probe, 9) != 0) {
+        nk_dbg("nk_ad[emu] comm=%s\n", c);
+        nk_soft("comm-readback");
+    }
+    return 0;
+}
+
+/* ---- 11. 线程可见性：我们开了看门狗线程，/proc/self/task 至少 2 个 ---- */
+static int nk_emu_task(void) {
+    int fd = nk_open_ro("/proc/self/task");
+    if (fd < 0) return 0;
+    char buf[2048];
+    long n = nk_read_fd(fd, buf, (long)sizeof buf - 1);
+    nk_close_fd(fd);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    int cnt = 0;
+    for (long i = 0; i < n; i++) if (buf[i] == '\n') cnt++;
+    nk_dbg("nk_ad[emu] task entries=%d\n", cnt);
+    if (cnt <= 1) nk_soft("task-invisible");
+    return 0;
+}
+
+/* ---- 12. maps 里必须有 [stack]；有 vDSO 就必须有 [vdso] ---- */
+static int nk_emu_maps(void) {
+    char buf[16384];
+    int n = nk_slurp("/proc/self/maps", buf, (int)sizeof buf - 1);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    if (!strstr(buf, "[stack]")) nk_soft("no-stack");
+    if (!strstr(buf, "[vdso]"))  nk_soft("no-vdso");
+    return 0;
+}
+
+static unsigned long long g_emu_last_deep;
+
+static unsigned long long nk_now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (unsigned long long)t.tv_sec * 1000ULL + (unsigned long long)t.tv_nsec / 1000000ULL;
+}
+
+static void nk_emu_scan(int early) {
+    if (!nk_emu_on()) return;
+
+    if (nk_emu_prop())     nk_die_r("nk_ad: emulator build.prop");
+    if (nk_emu_dev())      nk_die_r("nk_ad: emulator device node");
+    if (nk_emu_cpu())      nk_die_r("nk_ad: emulator cpuinfo");
+    if (nk_emu_auxv())     nk_die_r("nk_ad: emulated auxv (no vDSO)");
+    if (nk_emu_procfs())   nk_die_r("nk_ad: /proc is not procfs");
+    if (nk_emu_uname())    nk_die_r("nk_ad: uname mismatch");
+    if (nk_emu_syscall())  nk_die_r("nk_ad: syscall semantics");
+
+    if (!early) {
+        /* 深度检测里有 20ms 的 sleep 和一次故意缺页，绝不能每次调用都跑 —— 4 秒一次 */
+        unsigned long long now = nk_now_ms();
+        if (now - g_emu_last_deep >= 4000ULL) {
+            g_emu_last_deep = now;
+            if (nk_emu_trap()) nk_die_r("nk_ad: segv si_addr");
+            nk_emu_timer();
+            nk_emu_name();
+            nk_emu_task();
+            nk_emu_maps();
+            if (g_emu_score >= 3) nk_die_r("nk_ad: emulation score>=3");
+        }
+    }
+}
+
 static void nk_check_full(int early) {
     nk_dbg("nk_ad[chk] early=%d wd=%d\n", early, (int)g_wd_pid);
+
+    nk_emu_scan(early);
 
     if (nk_any_thread_traced()) nk_die_r("nk_ad: thread traced");
 
