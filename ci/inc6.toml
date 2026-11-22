@@ -10,7 +10,7 @@ anti_dump = true
 force_content = [".*"]
 
 [passes.constant_encryption]
-enabled = false
+enabled = true
 
 [passes.substitution]
 enabled = true
@@ -28,7 +28,7 @@ nested = false
 create_func = false
 
 [passes.split_blocks]
-enabled = true
+enabled = false
 splits = 3
 stack_confusion = false
 
@@ -36,7 +36,7 @@ stack_confusion = false
 enabled = false
 
 [passes.flattening]
-enabled = false
+enabled = true
 
 [passes.anti_debugging]
 enabled = false
