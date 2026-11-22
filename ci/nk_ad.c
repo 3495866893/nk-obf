@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <sys/ptrace.h>
 #include <sys/prctl.h>
@@ -43,6 +44,20 @@ static uint64_t g_text_addr = 0;
 static uint64_t g_text_size = 0;
 
 static long nk_sys(long n, long a, long b, long c);   /* fwd decl */
+static long nk_sys5(long n, long a, long b, long c, long d, long e)
+{
+    register long x8 __asm__("x8") = n;
+    register long x0 __asm__("x0") = a;
+    register long x1 __asm__("x1") = b;
+    register long x2 __asm__("x2") = c;
+    register long x3 __asm__("x3") = d;
+    register long x4 __asm__("x4") = e;
+    __asm__ __volatile__("svc #0"
+                         : "+r"(x0)
+                         : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4)
+                         : "memory");
+    return x0;
+}
 static int  nk_slurp(const char *path, char *buf, int cap); /* fwd decl */
 
 static int nk_dbg_on(void) {
@@ -571,6 +586,9 @@ static const char *g_bad_maps[] = {
     "linjector", "re.frida", "lsposed", "libxposed", "xposedbridge",
     "zygisk_lsposed", "riru_", "edbg", "stackplz", "qbdi", "libqbdi",
     "unicorntrace", "libunicorn", "substrate", "libhoudini_frida",
+    /* Frida 17.x / phantom-frida 之后常见的运行时痕迹 */
+    "gum-js", "frida:rpc", "libfrida-gadget", "frida_rpc", "gadget.so",
+    "libgadget", "frida_helper",
 };
 
 /* 线程名（Frida 运行时线程 + 常见注入器） */
@@ -666,17 +684,45 @@ static int nk_frida_socket(void) {
 }
 
 /* 常见落盘位置（phantom-frida 会改名，这里只查默认名 + gadget） */
+/* 设备本身有没有 root 框架（KernelSU / Magisk / APatch）。有的话 /data/adb 下的
+ * 目录属正常现象，只能记软分；没有却有，才是硬证据。 */
+static int nk_root_framework(void)
+{
+    static const char *m[] = {
+        "/data/adb/ksud", "/data/adb/ksu", "/data/adb/magisk",
+        "/data/adb/apd", "/data/adb/ap", "/data/adb/modules",
+    };
+    for (int i = 0; i < (int)(sizeof m / sizeof m[0]); i++)
+        if (nk_sys(48, (long)m[i], 0, 0) == 0) return 1;
+    return 0;
+}
+
 static int nk_frida_files(void) {
-    static const char *f[] = {
+    static const char *hard[] = {
         "/data/local/tmp/frida-server", "/data/local/tmp/re.frida.server",
         "/data/local/tmp/frida-gadget.so", "/data/local/tmp/libgadget.so",
         "/data/local/tmp/libfrida-gadget.so", "/data/local/tmp/hluda",
-        "/data/adb/lspd", "/data/adb/zygisk_lsposed", "/data/adb/riru",
+        "/data/local/tmp/frida", "/data/local/tmp/libfrida",
     };
-    for (int i = 0; i < (int)(sizeof f / sizeof f[0]); i++)
-        if (nk_sys(48, (long)f[i], 0, 0) == 0) {
-            nk_dbg("nk_ad[tool] file %s\n", f[i]);
+    static const char *soft[] = {
+        "/data/adb/lspd", "/data/adb/zygisk_lsposed", "/data/adb/riru",
+        "/data/adb/modules/zygisk_lsposed", "/data/adb/modules/riru-core",
+    };
+    for (int i = 0; i < (int)(sizeof hard / sizeof hard[0]); i++)
+        if (nk_sys(48, (long)hard[i], 0, 0) == 0) {
+            nk_dbg("nk_ad[tool] file %s\n", hard[i]);
             return 1;
+        }
+    int rooted = nk_root_framework();
+    for (int i = 0; i < (int)(sizeof soft / sizeof soft[0]); i++)
+        if (nk_sys(48, (long)soft[i], 0, 0) == 0) {
+            if (rooted) {
+                nk_dbg("nk_ad[tool] %s（环境自带 root，记软分）\n", soft[i]);
+                nk_soft("xposed-dir-in-rooted");
+            } else {
+                nk_dbg("nk_ad[tool] file %s\n", soft[i]);
+                return 1;
+            }
         }
     return 0;
 }
@@ -726,17 +772,40 @@ static int nk_uprobe_brk(void) {
 
 /* 硬件断点/单步的侧信道：连续两次读 cntvct 的执行间隔若出现异常尖峰，
  * 说明有 perf_event 断点在打（只记软分，避免误杀） */
-static void nk_hwbp_hiccup(void) {
-    unsigned long long frq = 0, a = 0, b = 0;
-    __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(frq));
-    if (!frq) return;
-    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(a));
-    for (volatile int i = 0; i < 2000; i++) { }     /* ~几微秒的紧循环 */
-    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(b));
-    double us = (double)(b - a) * 1e6 / (double)frq;
-    nk_dbg("nk_ad[tool] tightloop=%.2fus\n", us);
-    if (us > 2000.0) nk_soft("hwbp-hiccup");
+/* 硬件断点槽位自检：arm64 只有 4~6 个 DBGBVR/DBGBCR 槽。
+ * 自己在自身文本上申请一个执行断点，perf_event_open 返回 ENOSPC/EBUSY
+ * 说明槽位已被外部工具（universal-debug-tool / stackplz HWBP / ATrace）占满。
+ * SELinux 常见的 EACCES/EPERM 一律放行（fail-open）。 */
+static int nk_hwbp_slots(void)
+{
+    unsigned char at[128];
+    memset(at, 0, sizeof at);
+    uint32_t type = 5;                 /* PERF_TYPE_BREAKPOINT */
+    uint32_t size = (uint32_t)sizeof at;
+    memcpy(at + 0, &type, 4);
+    memcpy(at + 4, &size, 4);
+    uint64_t flags = (1ull << 5) | (1ull << 6);   /* exclude_kernel | exclude_hv */
+    memcpy(at + 40, &flags, 8);
+    uint32_t bp_type = 4;              /* HW_BREAKPOINT_X */
+    memcpy(at + 52, &bp_type, 4);
+    uint64_t addr = g_text_addr ? g_text_addr
+                                : (uint64_t)(uintptr_t)&nk_hwbp_slots;
+    memcpy(at + 56, &addr, 8);
+    uint64_t len = 4;                  /* HW_BREAKPOINT_LEN_4 */
+    memcpy(at + 64, &len, 8);
+
+    long fd = nk_sys5(241, (long)(uintptr_t)at, 0, -1, -1, 0);
+    if (fd >= 0) {
+        nk_sys(57, fd, 0, 0);          /* close */
+        nk_dbg("nk_ad[tool] hwbp slot free\n");
+        return 0;
+    }
+    long e = (long)errno;
+    nk_dbg("nk_ad[tool] perf_event_open -> %ld errno %ld\n", fd, e);
+    if (e == 28 /*ENOSPC*/ || e == 16 /*EBUSY*/) return 1;
+    return 0;
 }
+
 
 
 /* v9：uprobe 痕迹 —— [uprobes] 条目 + 自身文本 VMA 可写（eDBG/eBPF 打桩前置条件） */
@@ -790,6 +859,149 @@ static void nk_text_wlock(void)
     if (r == 0) nk_soft("text-rwx-blocks-uprobe");
 }
 
+
+/* ================= v10：补齐 mj(3).md 的八条 ================= */
+
+/* 3) 只带 svc #0 的 getpid，用来验证系统调用通路没被拦 */
+static long nk_raw_getpid(void)
+{
+    register long x8 __asm__("x8") = 172;      /* getpid */
+    register long x0 __asm__("x0");
+    __asm__ __volatile__("svc #0" : "=r"(x0) : "r"(x8) : "memory");
+    return x0;
+}
+
+static int nk_svc_ok(void)
+{
+    return nk_raw_getpid() == (long)getpid();
+}
+
+/* 2)/7) 匿名可执行映射 / memfd 加载：Frida gadget、linjector 落地的典型形态。
+ * 纯 native 程序不该有「没有任何路径」的可执行段。 */
+static int nk_anon_exec(void)
+{
+    char *buf = (char *)malloc(262144);
+    if (!buf) return 0;
+    int n = nk_slurp("/proc/self/maps", buf, 262143);
+    if (n <= 0) { free(buf); return 0; }
+    buf[n] = 0;
+    int hit = 0;
+    char *p = buf;
+    while (p && *p) {
+        char *nl = strchr(p, '\n');
+        unsigned long a = 0, b = 0;
+        char perm[8] = {0};
+        if (sscanf(p, "%lx-%lx %7s", &a, &b, perm) == 3 && perm[2] == 'x') {
+            char *q = p;
+            for (int k = 0; k < 5 && q; k++) {          /* 跳过 5 个字段到路径 */
+                q = strchr(q, ' ');
+                if (q) q++;
+            }
+            int self = g_text_addr && g_text_addr >= (uint64_t)a &&
+                       g_text_addr < (uint64_t)b;
+            if (!self && q) {
+                if (*q == '/') {                        /* 文件映射，正常 */
+                    /* 继续 */
+                } else if (strncmp(q, "memfd:", 6) == 0) {
+                    nk_dbg("nk_ad[tool] memfd exec %s\n", q);
+                    hit = 1;
+                } else if (*q == '\n' || *q == 0) {      /* 完全没有路径 */
+                    nk_dbg("nk_ad[tool] pathless exec %lx-%lx %s\n", a, b, perm);
+                    nk_soft("pathless-exec");
+                }
+            }
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    free(buf);
+    return hit;
+}
+
+/* 1)/8) JNI 派发表完整性：JavaVM / JNIEnv 的函数指针必须都落在 ART 模块内。
+ * 被 LSPosed/Xposed 或 ART 层 hook 过时，表项会指向外来内存。 */
+static int nk_jni_table_ok(void)
+{
+    typedef long (*getvms_t)(void **, long, long *);
+    getvms_t g = (getvms_t)dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
+    if (!g) return -1;                              /* 不是 ART 进程，跳过 */
+    void *vm = NULL;
+    long nvm = 0;
+    if (g(&vm, 1, &nvm) != 0 || !vm || nvm < 1) return -1;
+    void **vt = *(void ***)vm;
+    if (!vt) return 1;
+    Dl_info di;
+    if (dladdr((void *)vt, &di) == 0 || !di.dli_fbase) return 0;
+    uint64_t lo = (uint64_t)di.dli_fbase;
+    uint64_t hi = lo + (64u << 20);
+    for (int i = 0; i < 8; i++) {
+        void *fn = vt[i];
+        if (!fn) continue;
+        Dl_info d2;
+        if (dladdr(fn, &d2) == 0 || !d2.dli_fbase) {
+            nk_dbg("nk_ad[tool] JNI vtable[%d]=%p 不在任何模块内\n", i, fn);
+            return 0;
+        }
+        uint64_t base = (uint64_t)d2.dli_fbase;
+        if (base < lo || base >= hi) {
+            nk_dbg("nk_ad[tool] JNI vtable[%d] 跳到模块外 %p\n", i, fn);
+            return 0;
+        }
+        if (nk_hooked_at_in((const unsigned char *)fn, base, base + (16u << 20)))
+            return 0;
+    }
+    return 1;
+}
+
+/* 6) 关键模块的代码段哈希基线（主模块 + libc/libart/libc++ 等） */
+typedef struct { uint64_t a, s, h; } nk_tm_t;
+static nk_tm_t g_tm[8];
+static int     g_ntm = 0;
+
+static int nk_tm_cb(struct dl_phdr_info *info, size_t sz, void *data)
+{
+    (void)sz; (void)data;
+    if (g_ntm >= 8 || g_inited) return 1;          /* 只收一次基线 */
+    const char *nm = info->dlpi_name ? info->dlpi_name : "";
+    int keep = (nm[0] == 0) || strstr(nm, "libc.so") || strstr(nm, "libart.so") ||
+               strstr(nm, "libc++.so") || strstr(nm, "libm.so") ||
+               strstr(nm, "libnativehelper") || strstr(nm, "libdl.so");
+    if (!keep) return 0;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        if (ph->p_type == PT_LOAD && (ph->p_flags & PF_X)) {
+            uint64_t a = (uint64_t)info->dlpi_addr + ph->p_vaddr;
+            uint64_t s = ph->p_memsz > (256u << 10) ? (uint64_t)(256u << 10)
+                                                    : (uint64_t)ph->p_memsz;
+            g_tm[g_ntm].a = a;
+            g_tm[g_ntm].s = s;
+            g_tm[g_ntm].h = nk_hash_mem((const unsigned char *)a, s);
+            g_ntm++;
+            break;
+        }
+    }
+    return 0;
+}
+
+static void nk_tm_collect(void)
+{
+    g_ntm = 0;
+    dl_iterate_phdr(nk_tm_cb, NULL);
+    nk_dbg("nk_ad[tool] 代码段基线 %d 个模块\n", g_ntm);
+}
+
+static void nk_tm_verify(void)
+{
+    for (int i = 0; i < g_ntm; i++) {
+        uint64_t h = nk_hash_mem((const unsigned char *)g_tm[i].a, g_tm[i].s);
+        if (h != g_tm[i].h) {
+            nk_dbg("nk_ad[tool] 模块 %d 代码段被改 %llx vs %llx\n", i,
+                   (unsigned long long)h, (unsigned long long)g_tm[i].h);
+            nk_die_r("nk_ad: critical module .text patched");
+            return;
+        }
+    }
+}
+
 static void nk_tool_scan(int early) {
     if (nk_uprobe_maps())  nk_die_r("nk_ad: text writable / [uprobes]");
     if (nk_maps_hit())     nk_die_r("nk_ad: frida/xposed module in maps");
@@ -799,7 +1011,12 @@ static void nk_tool_scan(int early) {
     if (nk_trace_state())  nk_die_r("nk_ad: traced state");
     if (!early) {
         if (nk_uprobe_brk()) nk_die_r("nk_ad: BRK patched into .text (uprobe)");
-        nk_hwbp_hiccup();
+        if (nk_anon_exec())  nk_die_r("nk_ad: exec mapping from memfd");
+        if (!nk_svc_ok())    nk_die_r("nk_ad: svc #0 intercepted");
+        int jt = nk_jni_table_ok();
+        if (jt == 0)         nk_die_r("nk_ad: JNI/ART table hooked");
+        if (nk_hwbp_slots()) nk_die_r("nk_ad: hw breakpoint slots occupied");
+        nk_tm_verify();
         nk_text_wlock();
     }
 }
@@ -930,6 +1147,8 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
         g_text_size = ctx.s;
         g_text_hash = nk_hash_mem((const unsigned char *)g_text_addr, g_text_size);
     }
+
+    nk_tm_collect();
 
     g_inited = 1;
     nk_check_full(1);
