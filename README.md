@@ -15,6 +15,10 @@ NK 是一个基于 **LLVM 21** 的 **IR 级代码混淆插件**（`libNk.so`）�
 | 手机端 GUI（Kotlin） | [`android/`](android/) |
 | 文档 | [中文](docs/zh/index.md) · [English](docs/en/index.md) |
 
+## 流水线
+
+![流水线](docs/figs/flow_zh.png)
+
 ## 下载
 
 | 产物 | 位置 | 大小 |
