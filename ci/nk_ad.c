@@ -300,6 +300,9 @@ static int nk_text_cb(struct dl_phdr_info *info, size_t sz, void *data) {
  */
 
 static int g_emu_score = 0;
+/* JNI 表检查的软分只记一次：真机上这条可能稳定误报（JIT 指针），
+ * 而 worker 每 1.5s 一次深检，若每次加分，4~6 秒就撞上 g_emu_score>=3 自杀。 */
+static int g_jni_soft_done = 0;
 
 static int nk_emu_on(void) {
     static int cached = -1;
@@ -929,9 +932,14 @@ static int nk_anon_exec(void)
                     /* P0：ART 的 JIT code cache 本身就是 memfd，名字带 jit：
                      *   /memfd:jit-cache、/memfd:jit-cache-zygote、/memfd:jit-zygote-cache
                      * 现代 App 启动几十毫秒内就出现，硬杀等于把自己杀掉。 */
-                    if (strstr(q, "jit-cache") || strstr(q, "jit-zygote") ||
-                        strstr(q, "jit_zygote") || strstr(q, "jit_cache") ||
-                        strstr(q, "jit")) {
+                    /* 只认 ART 的真实命名，且必须是 "memfd:" 之后的前缀。
+                     * 以前用 strstr(q,"jit") 任意位置匹配，
+                     * 攻击者把 gadget 命名成 /memfd:frida-jit-agent 就绕过了。 */
+                    const char *mname = q + 6;
+                    if (strncmp(mname, "jit-cache", 9) == 0 ||
+                        strncmp(mname, "jit-zygote", 10) == 0 ||
+                        strncmp(mname, "jit_zygote", 10) == 0 ||
+                        strncmp(mname, "jit_cache", 9) == 0) {
                         nk_dbg("nk_ad[tool] memfd exec 合法 JIT，放过: %s\n", q);
                     } else {
                         nk_dbg("nk_ad[tool] memfd exec %s\n", q);
@@ -1019,6 +1027,7 @@ static int nk_tm_cb(struct dl_phdr_info *info, size_t sz, void *data)
     return 0;
 }
 
+/* 0=未采  1=采集中  2=就绪；用原子交换防并发重入。 */
 static int g_tm_ready = 0;
 
 static void nk_tm_collect(void)
@@ -1031,12 +1040,14 @@ static void nk_tm_collect(void)
 static void nk_tm_verify(void)
 {
     /* P0：基线延后到首次深检采集，避开 ART 启动期的合法自修改。 */
-    if (!g_tm_ready) {
+    if (__atomic_load_n(&g_tm_ready, __ATOMIC_ACQUIRE) == 0 &&
+        __atomic_exchange_n(&g_tm_ready, 1, __ATOMIC_ACQ_REL) == 0) {
         nk_tm_collect();
-        g_tm_ready = 1;
+        __atomic_store_n(&g_tm_ready, 2, __ATOMIC_RELEASE);
         nk_dbg("nk_ad[tool] 基线延后采样完成\n");
         return;
     }
+    if (__atomic_load_n(&g_tm_ready, __ATOMIC_ACQUIRE) != 2) return;
     for (int i = 0; i < g_ntm; i++) {
         uint64_t h = nk_hash_mem((const unsigned char *)g_tm[i].a, g_tm[i].s);
         if (h != g_tm[i].h) {
@@ -1061,7 +1072,10 @@ static void nk_tool_scan(int early) {
         if (!nk_svc_ok())    nk_die_r("nk_ad: svc #0 intercepted");
         int jt = nk_jni_table_ok();
         /* P2：ART 会把入口指到 JIT 代码区或 libc helper，硬杀误报太高，降为软分。 */
-        if (jt == 0)         nk_soft("jni-table-out-of-module");
+        if (jt == 0 && !g_jni_soft_done) {     /* 只记一次，不参与累积判死 */
+            g_jni_soft_done = 1;
+            nk_soft("jni-table-out-of-module");
+        }
         if (nk_hwbp_slots()) nk_die_r("nk_ad: hw breakpoint slots occupied");
         nk_tm_verify();
         nk_text_wlock();
@@ -1195,7 +1209,8 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
         g_text_hash = nk_hash_mem((const unsigned char *)g_text_addr, g_text_size);
     }
 
-    nk_tm_collect();
+    /* 基线不在这里采：延后到第一次深检（nk_tm_verify）再做——
+     * 既避开 ART 启动期的合法自修改，也省掉 init 阶段对几 MB libc 的哈希。 */
 
     g_inited = 1;
     nk_check_full(1);
