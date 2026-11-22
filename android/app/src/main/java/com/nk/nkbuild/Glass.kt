@@ -17,6 +17,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -122,6 +124,8 @@ fun GlassSegmented(
 /** 开关 */
 @Composable
 fun GlassSwitch(on: Boolean, onChange: (Boolean) -> Unit) {
+    val ctx = LocalContext.current
+    val view = LocalView.current
     val pos by animateFloatAsState(
         if (on) 1f else 0f,
         spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
@@ -134,7 +138,10 @@ fun GlassSwitch(on: Boolean, onChange: (Boolean) -> Unit) {
             .width(54.dp).height(30.dp)
             .clip(RoundedCornerShape(15.dp))
             .background(bg)
-            .clickable { onChange(!on) }
+            .clickable {
+                Sfx.tap(ctx, view, Sfx.TICK)
+                onChange(!on)
+            }
             .padding(3.dp)
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -153,6 +160,8 @@ fun GlassSwitch(on: Boolean, onChange: (Boolean) -> Unit) {
 /** 主按钮 */
 @Composable
 fun PrimaryButton(text: String, enabled: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val ctx = LocalContext.current
+    val view = LocalView.current
     var pressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
         if (pressed) 0.96f else 1f,
@@ -167,7 +176,9 @@ fun PrimaryButton(text: String, enabled: Boolean, modifier: Modifier = Modifier,
                 else Brush.horizontalGradient(listOf(Color(0xFFEDE8F0), Color(0xFFE2DCE6)))
             )
             .clickable(enabled = enabled) {
-                pressed = true; onClick()
+                pressed = true
+                Sfx.tap(ctx, view, Sfx.CLICK)
+                onClick()
             }
             .padding(horizontal = 18.dp),
         contentAlignment = Alignment.Center
