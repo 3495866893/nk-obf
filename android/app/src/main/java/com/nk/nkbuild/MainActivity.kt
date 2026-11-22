@@ -35,6 +35,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -59,12 +60,13 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 
-enum class Tab(val label: String, val glyph: String) {
-    BUILD("构建", "⚡"),
-    OBF("混淆", "◈"),
-    PRE("预检", "◎"),
-    OUT("产物", "▣"),
-    SET("设置", "⚙"),
+/** 导航图标直接用主人给的皮肤图切出来的头像，不用 emoji/颜文字 */
+enum class Tab(val label: String, val icon: Int) {
+    BUILD("构建", R.drawable.ic_nav_home),
+    OBF("混淆", R.drawable.ic_nav_kernel),
+    PRE("预检", R.drawable.ic_nav_pre),
+    OUT("产物", R.drawable.ic_nav_out),
+    SET("设置", R.drawable.ic_nav_set),
 }
 
 val TABS = listOf(Tab.BUILD, Tab.OBF, Tab.PRE, Tab.OUT, Tab.SET)
@@ -90,10 +92,9 @@ fun App(vm: BuildViewModel = viewModel()) {
     val prefs = remember { Prefs(ctx) }
     val st by vm.state.collectAsStateWithLifecycle()
 
-    var blurOn by remember { mutableStateOf(prefs.blur) }
-    val haze: HazeState? = remember(blurOn) {
-        if (blurOn && Build.VERSION.SDK_INT >= 31) HazeState() else null
-    }
+    // 液态玻璃在 vivo/OPPO/一加/realme 部分机型 GPU 会崩，这里直接不用
+    // （玻璃卡片在没有 haze 时退化成白色半透明卡，观感一致）
+    val haze: HazeState? = null
     var tab by remember { mutableStateOf(if (prefs.token.isBlank()) Tab.SET else Tab.BUILD) }
 
     LaunchedEffect(Unit) {
@@ -116,7 +117,7 @@ fun App(vm: BuildViewModel = viewModel()) {
 
     Box(Modifier.fillMaxSize().background(Color(0xFFF6EFF4))) {
         // ---- 皮肤背景：每切一页换一张（素材取自 KernelSU 那套粉色皮肤）----
-        SkinBackground(tab, prefs.skin, haze)
+        SkinBackground(tab, true, haze)
 
         Column(
             Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)
@@ -130,9 +131,7 @@ fun App(vm: BuildViewModel = viewModel()) {
                     Tab.OBF -> ObfPage(vm, st, haze)
                     Tab.PRE -> PrecheckPage(st, haze)
                     Tab.OUT -> OutPage(vm, st, haze)
-                    Tab.SET -> SetPage(prefs, blurOn, prefs.skin, haze,
-                        onBlur = { on -> blurOn = on; prefs.blur = on },
-                        onSkin = { on -> prefs.skin = on })
+                    Tab.SET -> SetPage(prefs, haze)
                 }
             }
         }
@@ -522,11 +521,7 @@ private fun OutPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
 @Composable
 private fun SetPage(
     prefs: Prefs,
-    blurOn: Boolean,
-    skinOn: Boolean,
     haze: HazeState?,
-    onBlur: (Boolean) -> Unit,
-    onSkin: (Boolean) -> Unit,
 ) {
     var token by remember { mutableStateOf(prefs.token) }
     var owner by remember { mutableStateOf(prefs.owner) }
@@ -577,30 +572,11 @@ private fun SetPage(
                 }
                 GlassSwitch(autoExport) { autoExport = it; prefs.autoExport = it }
             }
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("液态玻璃模糊（RenderEffect）", color = TextMain, fontSize = 13.sp)
-                    Spacer(Modifier.height(4.dp))
-                    Text("vivo/OPPO/一加/realme 部分机型 GPU 会崩，默认已关",
-                        color = TextDim, fontSize = 10.sp)
-                }
-                GlassSwitch(blurOn) { onBlur(it) }
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("皮肤背景（每页一张）", color = TextMain, fontSize = 13.sp)
-                    Spacer(Modifier.height(4.dp))
-                    Text("5 张开源皮肤图，切页交叉淡入", color = TextDim, fontSize = 10.sp)
-                }
-                GlassSwitch(skinOn) { onSkin(it) }
-            }
         }
 
         GlassCard(haze) {
             SectionTitle("", "关于")
-            Text("NKBuild 手机版 v1.4（versionCode 6）\n" +
+            Text("NKBuild 手机版 v1.4.2（versionCode 7）\n" +
                 "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                 "构建：GitHub Actions · 产物：AArch64 PIE",
                 color = TextSub, fontSize = 11.sp)
@@ -624,9 +600,9 @@ private fun LiquidNav(
 
     Box(
         m.background(
-            Brush.verticalGradient(listOf(Color(0xF2FFFFFF), Color(0xE8FFF7FB)))
+            Brush.verticalGradient(listOf(Color(0x59FFFFFF), Color(0x40FFF2F8)))
         )
-            .border(1.dp, Color(0x40FFFFFF), shape)
+            .border(1.dp, Color(0x59FFFFFF), shape)
             .padding(6.dp)
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -639,8 +615,9 @@ private fun LiquidNav(
             Box(
                 Modifier.offset(x = off).width(w / TABS.size).fillMaxHeight()
                     .clip(RoundedCornerShape(22.dp))
-                    .background(Brush.verticalGradient(listOf(Accent2, Accent)))
-                    .border(1.dp, Color(0x66FFFFFF), RoundedCornerShape(22.dp))
+                    .background(Brush.verticalGradient(
+                        listOf(Color(0xB3E88BB0), Color(0x99C4497A))))
+                    .border(1.dp, Color(0x7FFFFFFF), RoundedCornerShape(22.dp))
             )
             Row(Modifier.fillMaxSize()) {
                 TABS.forEach { t ->
@@ -650,9 +627,17 @@ private fun LiquidNav(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Text(t.glyph, color = if (on) Color.White else TextSub, fontSize = 15.sp)
+                        Image(
+                            painter = painterResource(t.icon),
+                            contentDescription = t.label,
+                            modifier = Modifier
+                                .size(if (on) 27.dp else 24.dp)
+                                .clip(RoundedCornerShape(50))
+                                .alpha(if (on) 1f else 0.72f),
+                            contentScale = ContentScale.Crop
+                        )
                         Spacer(Modifier.height(1.dp))
-                        Text(t.label, color = if (on) Color.White else TextSub,
+                        Text(t.label, color = if (on) Color.White else TextMain.copy(alpha = 0.65f),
                             fontSize = 10.sp,
                             fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
                     }
