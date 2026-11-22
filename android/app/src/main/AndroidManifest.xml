@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".NkApp"
@@ -23,6 +26,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 上传/编译期间的前台服务：抬进程优先级，切后台不被回收 -->
+        <service
+            android:name=".BuildService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- 安装/打开产物：把私有目录里的文件以 content:// 交给安装器 -->
         <provider
