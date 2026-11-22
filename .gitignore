@@ -1,0 +1,22 @@
+# 构建产物
+build/
+obj/
+out/
+.gradle/
+dist/
+
+# Python
+__pycache__/
+
+# 目标文件与库
+*.o
+*.a
+*.so
+
+# 可执行与安装包
+*.exe
+*.apk
+
+# 归档
+*.tar.gz
+*.zst
