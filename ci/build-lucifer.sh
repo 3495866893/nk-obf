@@ -63,6 +63,17 @@ echo "头文件路径 (${#INCS[@]}): ${INCS[*]:-无}"
 #   所以 pass 永远开着，"关闭反调试"只把实现换成空函数。
 if [ -f "$PWD/ci/nk_ad.c" ]; then
   NK_AD_OBJ="$PWD/nk_ad_extra.o"
+  # ---- 随机入口符号（每次构建不同，成品里搜不到固定名字）----
+  NK_AD_SYM="__nk_$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')_g"
+  export NK_AD_SYM
+  echo "反调试入口符号: $NK_AD_SYM"
+  # ---- 给 nk_ad.c 用的插件路径（PLUGINS 数组在后面才建，这里先探一次）----
+  NK_PLUG=""
+  if [ -n "$PLUGIN_ARG" ]; then
+    for c in "$PLUGIN_ARG/libNk.so" "$PLUGIN_ARG/libNk-linked.so"; do
+      [ -f "$c" ] && NK_PLUG="$c" && break
+    done
+  fi
   if [ "${NK_AD:-1}" = "0" ]; then
     NK_AD_DEF="-DNK_AD_OFF=1"
     echo "反调试强化模块: NK_AD=0 -> 编成空实现（anti_debugging pass 仍开）"
@@ -70,8 +81,24 @@ if [ -f "$PWD/ci/nk_ad.c" ]; then
     NK_AD_DEF=""
     echo "反调试强化模块: 单独编译 ci/nk_ad.c -> nk_ad_extra.o（不经混淆）"
   fi
+  # nk_ad.c 自己也过一遍混淆（字符串加密 + 常量加密 + 指令替换 + 虚假控制流 +
+  # 块分割 + 间接跳转 + 反调试），但用 nk-nofold 配置跳过 flattening（大 TU 上会炸内存）。
+  # NK_SKIP_ADB=1 让 Pass 不给这个 TU 自己插 __nk_ad_check 调用 —— 否则自己调自己。
+  NK_SELF_CFG="$PWD/nk/config/presets/nk-nofold.toml"
+  [ -f "$NK_SELF_CFG" ] || NK_SELF_CFG="$PWD/nk/config/presets/nk-light.toml"
+  NK_SELF_PLUG=()
+  if [ -n "$NK_PLUG" ] && [ -f "$NK_SELF_CFG" ]; then
+    NK_SELF_PLUG=("-fpass-plugin=$NK_PLUG")
+    echo "反调试模块自混淆: $(basename "$NK_SELF_CFG")（跳过 flattening，不插自身检查）"
+  else
+    echo "反调试模块自混淆: 跳过（无插件或配置）"
+  fi
+  # shellcheck disable=SC2086
+  NK_SKIP_ADB=1 NK=1 NK_CONFIG="$NK_SELF_CFG" \
   "$CLANG" -x c --target=aarch64-linux-android21 --sysroot="$SYS" \
-           "-resource-dir=$TC/lib/clang/21" -O2 -fPIE -fno-ident $NK_AD_DEF \
+           "-resource-dir=$TC/lib/clang/21" -O2 -fPIE -fno-ident \
+           -fvisibility=hidden "-DNK_AD_SYM=$NK_AD_SYM" $NK_AD_DEF \
+           "${NK_SELF_PLUG[@]}" \
            -c "$PWD/ci/nk_ad.c" -o "$NK_AD_OBJ" || { echo "!! nk_ad 编译失败"; exit 1; }
   SRCS+=("$NK_AD_OBJ")
 fi

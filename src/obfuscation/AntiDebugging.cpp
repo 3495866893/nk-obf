@@ -261,6 +261,10 @@ struct AntiDebugging : public ModulePass {
     // （不调用 TRACEME、不做计时判定、不做数据流纠缠，因此不会误报）
     if (F.isDeclaration() || F.empty())
       return false;
+    // NK_SKIP_ADB: this TU *is* the protector itself (ci/nk_ad.c).
+    // Injecting checks into it would make it call itself.
+    if (getenv("NK_SKIP_ADB"))
+      return false;
     if (F.getName() == "__adb_tracerpid_probe" ||
         F.getName() == "__adb_init_watchdog" ||
         F.getName().starts_with("__adb") ||
@@ -273,7 +277,12 @@ struct AntiDebugging : public ModulePass {
       Module *M3 = F.getParent();
       LLVMContext &C3 = M3->getContext();
       FunctionType *VFT = FunctionType::get(Type::getVoidTy(C3), false);
-      FunctionCallee chk = M3->getOrInsertFunction("__nk_ad_check", VFT);
+      // Symbol name is randomized per build (-DNK_AD_SYM / env NK_AD_SYM),
+      // so the final .dynsym never contains a fixed, greppable name.
+      const char *nkSymEnv = getenv("NK_AD_SYM");
+      std::string nkSym =
+          (nkSymEnv && *nkSymEnv) ? std::string(nkSymEnv) : std::string("__nk_ad_check");
+      FunctionCallee chk = M3->getOrInsertFunction(nkSym, VFT);
       Value *fn = chk.getCallee();
       if (auto *FC = dyn_cast<Function>(fn)) {
         if (!FC->isDeclaration() || FC->empty()) {

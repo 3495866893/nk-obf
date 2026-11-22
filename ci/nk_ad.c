@@ -29,6 +29,12 @@
 #include <sys/stat.h>
 #include <time.h>
 
+/* 入口符号名由构建脚本随机指定（-DNK_AD_SYM=...），避免 .dynsym 里出现固定名字。
+ * Pass 通过环境变量 NK_AD_SYM 拿到同一个名字，才能把 call 接到这里。 */
+#ifndef NK_AD_SYM
+#define NK_AD_SYM __nk_ad_check
+#endif
+
 #define NK_EXIT 97
 
 static pid_t    g_wd_pid = -1;
@@ -1549,7 +1555,7 @@ static void nk_check_full(int early) {
     }
 }
 
-__attribute__((visibility("default"))) void __nk_ad_check(void) {
+__attribute__((visibility("default"))) void NK_AD_SYM(void) {
 #ifdef NK_AD_OFF
     return;   /* 关闭反调试：入口检查直接放行 */
 #endif
