@@ -220,7 +220,6 @@ static void gm_rand_bytes(unsigned char *out, int n)
 static char *GmWrap(const char *plain, const char *key)
 {
 #ifdef GM_DEBUG
-    fprintf(stderr, "[dbg] GmWrap 进入\n");
 #endif
     int plen = (int)strlen(plain);
     int total = 12 + plen;
@@ -247,7 +246,6 @@ static char *GmWrap(const char *plain, const char *key)
     memcpy(k, key, 16);
     gm_sm4_cbc_encrypt(k, iv, pt, ctlen, ct);
 #ifdef GM_DEBUG
-    fprintf(stderr, "[dbg] SM4 完成 ctlen=%d\n", ctlen);
 #endif
 
     memcpy(all, iv, 16);
@@ -255,12 +253,10 @@ static char *GmWrap(const char *plain, const char *key)
     gm_hmac_sm3(k, 16, all, 16 + ctlen, tag);      /* tag = HMAC-SM3(key, IV||密文) */
     memcpy(all + 16 + ctlen, tag, 32);
 #ifdef GM_DEBUG
-    fprintf(stderr, "[dbg] HMAC 完成 alllen=%d\n", alllen);
 #endif
 
     b64 = Base64Encode(all, alllen);
 #ifdef GM_DEBUG
-    fprintf(stderr, "[dbg] Base64 完成\n");
 #endif
     delete[] pt; delete[] ct; delete[] all;
     return b64;
@@ -277,9 +273,17 @@ static char *GmUnwrap(const char *b64, const char *key)
     if (ctlen <= 0 || (ctlen % 16)) { delete[] raw; return NULL; }
 
     unsigned char k[16], calc[32];
-    unsigned char *pt = new unsigned char[ctlen];
+    unsigned char *pt = NULL;
     memcpy(k, key, 16);
-    gm_hmac_sm3(k, 16, raw, 16 + ctlen, calc);          /* 标签校验（可选） */
+    /* ---- 加固第 5 条：HMAC-SM3 标签必须校验，不通过直接拒绝 ----
+       此前这里算了标签却不比对，攻击者可以任意改密文/IV 而不被发现，
+       甚至能构造"服务端从不签名"的假响应。现在强制 memcmp，不等即 fail。 */
+    gm_hmac_sm3(k, 16, raw, 16 + ctlen, calc);
+    if (memcmp(calc, raw + 16 + ctlen, 32) != 0) {
+        delete[] raw;
+        return NULL;
+    }
+    pt = new unsigned char[ctlen];
     gm_sm4_cbc_decrypt(k, raw, raw + 16, ctlen, pt);
 
     int total = ctlen;

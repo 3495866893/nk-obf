@@ -1,0 +1,60 @@
+/* TEXT_INJECTOR:BEGIN */
+/*此源码完全免费，请勿被骗
+看到不加群死全家@WanMiankernel
+q群 1105344707
+晚宀宝宝
+当前注入时间：2026-09-05 12:09:45（北京时间）
+*/
+/* TEXT_INJECTOR:END */
+#pragma once
+
+#include <linux/input.h>
+#include <vector>
+#include <functional>
+#include "VectorStruct.h"
+
+namespace Touch {
+    struct touchObj {
+        My_Vector2 pos{};
+        int id = 0;
+        bool isDown = false;
+    };
+
+    struct Device {
+        int fd;
+        float S2TX;
+        float S2TY;
+        input_absinfo absX, absY;
+        touchObj Finger[10];
+
+        Device() { memset((void *) this, 0, sizeof(*this)); }
+    };
+
+    bool Init(const My_Vector2 &s, bool p_readOnly);
+
+    void Close();
+
+    void Down(float x, float y);
+
+    void Move(float x, float y);
+
+    void Up();
+
+    void Move(touchObj *touch, float x, float y);
+
+    void Upload();
+
+    void SetCallBack(const std::function<void(std::vector<Device> *)> &cb);
+
+    My_Vector2 Touch2Screen(const My_Vector2 &coord);
+
+    My_Vector2 GetScale();
+
+    void UpdateDisplaySize(const My_Vector2 &size);
+
+    void UpdateImGuiInput();
+
+    void setOrientation(int orientation);
+
+    void setOtherTouch(bool p_otherTouch);
+}
