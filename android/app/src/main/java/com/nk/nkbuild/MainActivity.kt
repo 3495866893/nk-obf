@@ -315,7 +315,7 @@ private fun BuildPage(vm: BuildViewModel, st: UiState, haze: HazeState?, onPick:
             Column(
                 Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 260.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color.Black.copy(alpha = 0.35f))
+                    .background(Color(0x12000000))
                     .padding(10.dp)
                     .verticalScroll(rememberScrollState())
             ) {
@@ -396,7 +396,7 @@ private fun ObfPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
                 Column(
                     Modifier.fillMaxWidth().heightIn(max = 420.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black.copy(alpha = 0.40f))
+                        .background(Color(0x12000000))
                         .padding(10.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
@@ -504,7 +504,7 @@ private fun OutPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
             Column(
                 Modifier.fillMaxWidth().heightIn(min = 160.dp, max = 320.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color.Black.copy(alpha = 0.35f))
+                    .background(Color(0x12000000))
                     .padding(10.dp)
                     .verticalScroll(rememberScrollState())
             ) {
@@ -576,7 +576,7 @@ private fun SetPage(
 
         GlassCard(haze) {
             SectionTitle("", "关于")
-            Text("NKBuild 手机版 v1.4.3（versionCode 8）\n" +
+            Text("NKBuild 手机版 v1.4.4（versionCode 9）\n" +
                 "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                 "构建：GitHub Actions · 产物：AArch64 PIE",
                 color = TextSub, fontSize = 11.sp)
