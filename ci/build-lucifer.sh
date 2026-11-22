@@ -151,21 +151,25 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     esac
     i=$((i + 1))
     o="/tmp/nk_o_$$_${i}_$(basename "${f%.*}").o"
-    # 大 TU（imgui.cpp 这种）在 flattening/indirect 下会把后端内存吃爆，
-    # 被 runner 判超限直接 SIGTERM（exit 143）。超过 300 KB 的文件自动降到 -O1。
+    # 大 TU 判定不能看源文件大小：main.cpp 只有 1.3 KB，但 #include 了 pz.h/xz.h/Encrypt.h，
+    # 预处理后有几 MB、几万行 —— 按源大小判断会漏判，8 个 pass 全开直接把内存吃光，
+    # runner 判超限 SIGTERM（exit 143）。这里先跑 clang -E 数真正喂给前端的字节数。
     fsz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+    ppsz=$(timeout 300 "$CLANG" "${CF[@]}" -E -P "$f" 2>/dev/null | wc -c)
+    [ -z "$ppsz" ] && ppsz=0
+    # 大 TU 自动降优化级别：-O2 后端在混淆后的爆炸 IR 上内存/时间都是几倍
     fopt="${NKO:--O2}"
-    if [ "$fsz" -gt 300000 ]; then fopt="-O1"; fi
+    if [ "$fsz" -gt 300000 ] || [ "$ppsz" -gt 1500000 ]; then fopt="-O1"; fi
     # 大 TU 换成轻量配置（只加密字符串 + 指令替换 + 反调试），
-    # flattening/bcf/indirect 在几万行函数上会把内存吃爆 → runner SIGTERM 143
+    # flattening/bcf/indirect 在这种 TU 上会把内存吃爆 → runner SIGTERM 143
     LIGHT="$PWD/ensia/config/presets/nk-light.toml"
-    if [ "$fsz" -gt 200000 ] && [ -f "$LIGHT" ]; then
+    if { [ "$fsz" -gt 200000 ] || [ "$ppsz" -gt 800000 ]; } && [ -f "$LIGHT" ]; then
       export ENSIA_CONFIG="$LIGHT"
-      echo "   → 大 TU：切轻量配置 nk-light.toml（无 flattening/bcf/indirect）"
+      echo "   → 大 TU（预处理 ${ppsz}B）：切轻量配置 nk-light.toml（无 flattening/bcf/indirect）"
     else
       export ENSIA_CONFIG="$cfg"
     fi
-    echo "  [$i/$n] 编译 $f（$(numfmt --to=iec "$fsz" 2>/dev/null || echo "$fsz")B，优化级别 $fopt）"
+    echo "  [$i/$n] 编译 $f（源 $(numfmt --to=iec "$fsz" 2>/dev/null || echo "$fsz")B / 预处理 $(numfmt --to=iec "$ppsz" 2>/dev/null || echo "$ppsz")B，优化级别 $fopt）"
     t0=$(date +%s)
     # shellcheck disable=SC2086
     timeout 1800 "$CLANG" "${CF[@]}" "$fopt" "${extra[@]}" ${NK_DIAG:+-save-temps=obj} \
