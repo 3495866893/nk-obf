@@ -182,11 +182,22 @@ class BuildViewModel : ViewModel() {
                 e in compileExt && it.rel.substringAfterLast('/') in includedBases
             }.map { it.rel }.toSet()
 
+            // 被 #include 的 .c 如果根本不在目录里，clang 会直接 fatal error:
+            // 'cJSON.c' file not found —— 这种报错看不出根因，所以扫描阶段先喊出来。
+            val presentNames = found.map { it.rel.substringAfterLast('/') }.toSet()
+            val missingIncludes = includedBases.filter { b ->
+                b.substringAfterLast('.', "").lowercase() in compileExt && b !in presentNames
+            }.sorted()
+
             val proj = (root.name ?: "myproj").replace(" ", "_")
             _s.value = _s.value.copy(files = found, project = proj, dropped = dropped)
             log("扫描到 $units 个编译单元、${found.size} 个待上传文件（含 $headers 个头文件）")
             if (dropped.isNotEmpty()) {
                 log("跳过被 #include 的源文件（单独编译会 duplicate symbol）：" + dropped.joinToString("、"))
+            }
+            if (missingIncludes.isNotEmpty()) {
+                log("⚠ 头文件里 #include 了这些源文件，但目录里没有：" + missingIncludes.joinToString("、"))
+                log("   CI 会先尝试从 ci/vendor/ 补齐；补不到就直接失败（不会白等）")
             }
         }
     }
