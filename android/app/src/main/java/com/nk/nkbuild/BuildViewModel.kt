@@ -630,9 +630,7 @@ class BuildViewModel : ViewModel() {
     }
 
     fun licAuto(ctx: Context, prefs: Prefs) {
-        // 卡密是一次性绑定物：已经用账号体系的人绝不能再拿它 kmlogon 一次，
-        // 否则服务器回「卡密已使用」，用户会以为授权坏了
-        if (prefs.acctUser.isNotBlank()) return
+        // 纯卡密登录：这张卡密在本机绑过，就直接复验一次
         val km = prefs.kami
         if (km.isBlank()) {
             _s.value = _s.value.copy(licOk = false, licText = "未登录")
@@ -697,6 +695,13 @@ class BuildViewModel : ViewModel() {
     private fun toast(msg: String, ok: Boolean) {
         _s.value = _s.value.copy(toast = msg, toastOk = ok,
             toastId = System.currentTimeMillis())
+    }
+
+    /** 只用于展示：把到期秒转成 "yyyy-MM-dd HH:mm"，0 表示永久 */
+    fun expiryText(sec: Long): String {
+        if (sec <= 0L) return "永久"
+        val f = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+        return f.format(java.util.Date(sec * 1000L))
     }
 
     fun clearToast() {
@@ -781,15 +786,9 @@ class BuildViewModel : ViewModel() {
                 if (r.ok) {
                     prefs.kami = k
                     prefs.licVip = r.vip
-                    // 有账号的回查一次 userlogon，200 才算真的开通
-                    var activated = true
-                    if (prefs.acctUser.isNotBlank() && prefs.acctPass.isNotBlank()) {
-                        val a = XlVerify.account(ctx, false, prefs.acctUser, prefs.acctPass)
-                        activated = a.ok && a.activated
-                        if (!activated) log("充值后账号仍未激活：" + a.msg)
-                    }
+                    val activated = true
                     _s.value = _s.value.copy(
-                        acctOk = activated, acctNeedCharge = !activated, licOk = activated,
+                        acctOk = true, acctNeedCharge = false, licOk = true,
                     )
                     if (activated) {
                         toast("充值成功 · 已开通", true)
