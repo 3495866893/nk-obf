@@ -125,7 +125,7 @@ char* httppost(char* hostname, char* url, char* cs){
 		char* xytzz = xyt;
 		char* xytmaxlen = xyt + 1023;
 		int readlen;
-		while ((readlen = read(sockfd, xytzz, 1)) > 0){
+		while (readlen = read(sockfd, xytzz, 1)){
 			if(*xytzz == '\n'){
 				//printf("匹配到一个\\n\n");
 				if(strncmp(xytzz - 3,"\r\n\r",3) == 0){
@@ -141,10 +141,6 @@ char* httppost(char* hostname, char* url, char* cs){
 				return NULL;
 			}
 		}
-		if(readlen < 0){
-			close(sockfd);
-			return NULL;
-		}
 		if(!readlen){
 			//printf("服务器断开了连接，并未发送任何数据。\n");
 			close(sockfd);
@@ -157,15 +153,9 @@ char* httppost(char* hostname, char* url, char* cs){
 			//如果读取正文长度失败则进入分段读取模式
 			char hexlen[8];
 			char* hex = hexlen;
-			int nk_r;
-			memset(hexlen, 0, sizeof(hexlen));
 			do{
-				nk_r = read(sockfd, hex, 1);
-				if(nk_r <= 0){
-					close(sockfd);
-					return NULL;
-				}
-			}while(*hex++ != '\n' && hex < hexlen + (int)sizeof(hexlen) - 1);
+				read(sockfd, hex, 1);
+			}while(*hex++ != '\n');
 			*hex = '\0';
 			int rdlen = hextoint(hexlen);
 			if(rdlen == 0){
@@ -179,15 +169,9 @@ char* httppost(char* hostname, char* url, char* cs){
 			//读取下一块内容
 			while(1){
 				hex = hexlen;
-				memset(hexlen, 0, sizeof(hexlen));
 				do{
-					nk_r = read(sockfd, hex, 1);
-					if(nk_r <= 0){
-						free(xyzw);
-						close(sockfd);
-						return NULL;
-					}
-				}while(*hex++ != '\n' && hex < hexlen + (int)sizeof(hexlen) - 1);
+					read(sockfd, hex, 1);
+				}while(*hex++ != '\n');
 				*hex = '\0';
 				int chlen = hextoint(hexlen);
 				//判断当前区块是否为0
@@ -206,11 +190,6 @@ char* httppost(char* hostname, char* url, char* cs){
 			//printf("正文共%d字节\n",xyzwlen);
 			xyzw = (char*)malloc(xyzwlen + 1);
 			readlen = read(sockfd, xyzw, xyzwlen);//接受网络数据
-			if(readlen <= 0){
-				free(xyzw);
-				close(sockfd);
-				return NULL;
-			}
 			xyzw[readlen] = '\0';
 			//printf("读取了%d字节\n",readlen);
 		}
@@ -293,7 +272,7 @@ char* httpget(const char* hostname, char* url){
 		char* xytzz = xyt;
 		char* xytmaxlen = xyt + 1023;
 		int readlen;
-		while ((readlen = read(sockfd, xytzz, 1)) > 0){
+		while (readlen = read(sockfd, xytzz, 1)){
 			if(*xytzz == '\n'){
 				//printf("匹配到一个\\n\n");
 				if(strncmp(xytzz - 3,"\r\n\r",3) == 0){
@@ -310,10 +289,6 @@ char* httpget(const char* hostname, char* url){
 			}
 		}
 
-		if(readlen < 0){
-			close(sockfd);
-			return NULL;
-		}
 		if(!readlen){
 			//printf("服务器断开了连接，并未发送任何数据。\n");
 			close(sockfd);
@@ -327,15 +302,9 @@ char* httpget(const char* hostname, char* url){
 			//如果读取正文长度失败则进入分段读取模式
 			char hexlen[8];
 			char* hex = hexlen;
-			int nk_r;
-			memset(hexlen, 0, sizeof(hexlen));
 			do{
-				nk_r = read(sockfd, hex, 1);
-				if(nk_r <= 0){
-					close(sockfd);
-					return NULL;
-				}
-			}while(*hex++ != '\n' && hex < hexlen + (int)sizeof(hexlen) - 1);
+				read(sockfd, hex, 1);
+			}while(*hex++ != '\n');
 			*hex = '\0';
 			int rdlen = hextoint(hexlen);
 			if(rdlen == 0){
@@ -349,15 +318,9 @@ char* httpget(const char* hostname, char* url){
 			//读取下一块内容
 			while(1){
 				hex = hexlen;
-				memset(hexlen, 0, sizeof(hexlen));
 				do{
-					nk_r = read(sockfd, hex, 1);
-					if(nk_r <= 0){
-						free(xyzw);
-						close(sockfd);
-						return NULL;
-					}
-				}while(*hex++ != '\n' && hex < hexlen + (int)sizeof(hexlen) - 1);
+					read(sockfd, hex, 1);
+				}while(*hex++ != '\n');
 				*hex = '\0';
 				int chlen = hextoint(hexlen);
 				//判断当前区块是否为0
@@ -376,11 +339,6 @@ char* httpget(const char* hostname, char* url){
 			//printf("正文共%d字节\n",xyzwlen);
 			xyzw = (char*)malloc(xyzwlen + 1);
 			readlen = read(sockfd, xyzw, xyzwlen);//接受网络数据
-			if(readlen <= 0){
-				free(xyzw);
-				close(sockfd);
-				return NULL;
-			}
 			xyzw[readlen] = '\0';
 			//printf("读取了%d字节\n",readlen);
 		}
