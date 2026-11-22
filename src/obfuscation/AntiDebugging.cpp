@@ -282,6 +282,76 @@ struct AntiDebugging : public ModulePass {
       }
       CallInst::Create(VFT, fn, ArrayRef<Value *>{}, "",
                        cast<Instruction>(F.getEntryBlock().getFirstInsertionPt()));
+      
+
+      // ---- IR-level ART JNI table check (v11.6) ----
+      // Inlined into every obfuscated function so the verification lives inside
+      // the caller instead of one nop-able C helper.
+      {
+        Module *MA = F.getParent();
+        LLVMContext &CA = MA->getContext();
+        Type *I64A = Type::getInt64Ty(CA);
+        PointerType *P0A = PointerType::getUnqual(CA);
+        FunctionType *VFTA = FunctionType::get(Type::getVoidTy(CA), false);
+        FunctionCallee PanicA = MA->getOrInsertFunction("__nk_ad_panic", VFTA);
+
+        GlobalVariable *LoGV = cast<GlobalVariable>(
+            MA->getOrInsertGlobal("__nk_art_lo", I64A));
+        GlobalVariable *HiGV = cast<GlobalVariable>(
+            MA->getOrInsertGlobal("__nk_art_hi", I64A));
+        GlobalVariable *VmGV = cast<GlobalVariable>(
+            MA->getOrInsertGlobal("__nk_vm", P0A));
+
+        BasicBlock *EntryA = &F.getEntryBlock();
+        Instruction *FirstNP = EntryA->getFirstNonPHI();
+        if (FirstNP && isa<LandingPadInst>(FirstNP))
+          FirstNP = nullptr;
+        Instruction *SplitAt = FirstNP ? FirstNP->getNextNode() : nullptr;
+        if (SplitAt) {
+          BasicBlock *Body = EntryA->splitBasicBlock(SplitAt, "nk.body");
+          EntryA->getTerminator()->eraseFromParent();
+
+          BasicBlock *Chk = BasicBlock::Create(CA, "nk.art.chk", &F);
+          BasicBlock *Loop = BasicBlock::Create(CA, "nk.art.loop", &F);
+          BasicBlock *Cont = BasicBlock::Create(CA, "nk.art.cont", &F);
+          BasicBlock *Bad = BasicBlock::Create(CA, "nk.art.bad", &F);
+          BasicBlock *Ok = BasicBlock::Create(CA, "nk.art.ok", &F);
+
+          IRBuilder<> BA(EntryA);
+          BA.CreateBr(Chk);
+
+          IRBuilder<> BC(Chk);
+          Value *LoV = BC.CreateLoad(I64A, LoGV, "nk.lo");
+          Value *HiV = BC.CreateLoad(I64A, HiGV, "nk.hi");
+          Value *VmV = BC.CreateLoad(P0A, VmGV, "nk.vm");
+          Value *NoArt = BC.CreateICmpEQ(HiV, ConstantInt::get(I64A, 0));
+          Value *NoVm = BC.CreateICmpEQ(VmV, ConstantPointerNull::get(P0A));
+          BC.CreateCondBr(BC.CreateOr(NoArt, NoVm), Ok, Loop);
+
+          IRBuilder<> BL(Loop);
+          PHINode *Idx = BL.CreatePHI(I64A, 2, "nk.i");
+          Idx->addIncoming(ConstantInt::get(I64A, 0), Chk);
+          Value *Slot = BL.CreateGEP(P0A, VmV, Idx, "nk.slot");
+          Value *FnP = BL.CreateLoad(P0A, Slot, "nk.fn");
+          Value *FnI = BL.CreatePtrToInt(FnP, I64A);
+          Value *Below = BL.CreateICmpULT(FnI, LoV);
+          Value *Above = BL.CreateICmpUGT(FnI, HiV);
+          Value *Next = BL.CreateAdd(Idx, ConstantInt::get(I64A, 1), "nk.next");
+          Value *Last = BL.CreateICmpUGE(Next, ConstantInt::get(I64A, 8));
+          BL.CreateCondBr(BL.CreateOr(Below, Above), Bad, Cont);
+
+          IRBuilder<> BCo(Cont);
+          Idx->addIncoming(Next, Cont);
+          BCo.CreateCondBr(Last, Ok, Loop);
+
+          IRBuilder<> BB(Bad);
+          BB.CreateCall(PanicA.getFunctionType(), PanicA.getCallee());
+          BB.CreateUnreachable();
+
+          IRBuilder<> BO(Ok);
+          BO.CreateBr(Body);
+        }
+      }
       return true;
     }
     return false;
