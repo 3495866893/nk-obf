@@ -16,9 +16,25 @@ android {
         versionName = "1.2.1"
     }
 
+    // 固定签名：CI 每次跑的 debug keystore 都是新生成的，签名不一致会导致
+    // 新包装不上旧包（INSTALL_FAILED_UPDATE_INCOMPATIBLE），所以这里钉死一把
+    signingConfigs {
+        create("pinned") {
+            storeFile = file("../keystore/nkbuild.p12")
+            storeType = "PKCS12"
+            storePassword = "nkbuild2026"
+            keyAlias = "nkbuild"
+            keyPassword = "nkbuild2026"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("pinned")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("pinned")
         }
     }
     compileOptions {
