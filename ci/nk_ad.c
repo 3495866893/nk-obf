@@ -1091,6 +1091,119 @@ static void nk_tm_verify(void)
     }
 }
 
+static int nk_addr_exec(uint64_t a);   /* v11.5 定义，v11.6 深检里要用 */
+
+/* ================= v11.6 IR 级 ART 表校验（Pass 直接读写这三个符号） ================= */
+
+/* 为什么放在这里：Pass 会在**每个函数入口**生成一段 IR，
+ * 直接读这三个全局量，把 JavaVM 的函数表逐项与 [lo, hi] 比较，
+ * 任何一项越界就 call __nk_ad_panic()。这样校验点被混淆进调用方，
+ * 不像纯 C 函数那样容易被单点 nop 掉。 */
+unsigned long __nk_art_lo = 0;
+unsigned long __nk_art_hi = 0;
+void *volatile __nk_vm = 0;
+
+void __nk_ad_panic(void)
+{
+    nk_die_r("nk_ad: art jni table corrupted");
+}
+
+/* 扫 maps 求 libart.so 的加载区间（各段取 min lo / max hi），并拿到 JavaVM* */
+static void nk_art_bind(void)
+{
+    char *buf = (char *)malloc(262144);
+    if (buf) {
+        int n = nk_slurp("/proc/self/maps", buf, 262143);
+        if (n > 0) {
+            buf[n] = 0;
+            unsigned long lo = ~0UL, hi = 0;
+            char *p = buf;
+            while (p && *p) {
+                char *nl = strchr(p, '\n');
+                if (nl) *nl = 0;
+                if (strstr(p, "libart.so")) {
+                    unsigned long a = 0, b = 0;
+                    if (sscanf(p, "%lx-%lx", &a, &b) == 2) {
+                        if (a < lo) lo = a;
+                        if (b > hi) hi = b;
+                    }
+                }
+                if (!nl) break;
+                p = nl + 1;
+            }
+            if (hi > lo) { __nk_art_lo = lo; __nk_art_hi = hi; }
+        }
+        free(buf);
+    }
+    if (!__nk_vm) {
+        typedef long (*getvms_t)(void **, long, long *);
+        getvms_t g = (getvms_t)dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
+        if (g) {
+            void *vm = NULL;
+            long nvm = 0;
+            if (g(&vm, 1, &nvm) == 0 && vm && nvm >= 1) __nk_vm = vm;
+        }
+    }
+    nk_dbg("nk_ad[art] lo=%lx hi=%lx vm=%p\n", __nk_art_lo, __nk_art_hi, (void *)__nk_vm);
+}
+
+/* C 侧深检：JNIEnv 表前 64 项 + jmethodID 里的 ArtMethod 入口点 */
+void __nk_art_check(int deep)
+{
+    if (!__nk_art_lo || !__nk_vm) nk_art_bind();
+    if (!__nk_art_lo || !__nk_art_hi || !__nk_vm) return;      /* 非 ART 进程，放过 */
+    unsigned long lo = __nk_art_lo, hi = __nk_art_hi;
+
+    void **vt = *(void ***)__nk_vm;
+    if (!vt) return;
+    for (int i = 0; i < 8; i++) {                              /* JNIInvokeInterface 共 8 项 */
+        unsigned long f = (unsigned long)(uintptr_t)vt[i];
+        if (f < lo || f > hi) {
+            nk_dbg("nk_ad[art] JavaVM.vtable[%d]=%lx 越界 [%lx,%lx]\n", i, f, lo, hi);
+            __nk_ad_panic();
+        }
+    }
+    if (!deep) return;
+
+    typedef long (*getenv_t)(void *, void **, long);
+    getenv_t ge = (getenv_t)vt[3];                             /* GetEnv */
+    if (!ge) return;
+    void *env = NULL;
+    if (ge(__nk_vm, &env, 0x00010006L) != 0 || !env) return;
+    void **evt = *(void ***)env;
+    if (!evt) return;
+    for (int i = 0; i < 64; i++) {                             /* JNINativeInterface 头部 */
+        unsigned long f = (unsigned long)(uintptr_t)evt[i];
+        if (f < lo || f > hi) {
+            nk_dbg("nk_ad[art] JNIEnv.vtable[%d]=%lx 越界\n", i, f);
+            __nk_ad_panic();
+        }
+    }
+
+    /* ArtMethod 入口点：jmethodID 在 ART 里就是 ArtMethod*，
+     * 取 24/32/40 字节处的入口指针，必须落在可执行映射或 libart 内。 */
+    typedef void *(*findclass_t)(void *, const char *);
+    typedef void *(*getmid_t)(void *, void *, const char *, const char *);
+    findclass_t fc = (findclass_t)evt[6];                      /* FindClass */
+    getmid_t   gm = (getmid_t)evt[33];                         /* GetMethodID */
+    if (!fc || !gm) return;
+    void *cls = fc(env, "java/lang/Object");
+    if (!cls) return;
+    void *mid = gm(env, cls, "hashCode", "()I");
+    if (!mid) return;
+    uint64_t *w = (uint64_t *)mid;
+    for (int i = 3; i <= 5; i++) {
+        uint64_t v = w[i];
+        uint64_t a = v & ~7ULL;
+        if (a < 0x10000ULL) continue;                          /* 未编译，正常 */
+        Dl_info di;
+        if (dladdr((void *)a, &di) && di.dli_fbase) continue;
+        if (nk_addr_exec(a)) continue;
+        nk_dbg("nk_ad[art] ArtMethod.word[%d]=%p 越界\n", i, (void *)a);
+        __nk_ad_panic();
+    }
+}
+
 /* ================= v11.5 行为验证：不匹配指纹，验证「世界是否正常」 ================= */
 
 /* 某地址是否落在可执行映射里（现查 maps，稳妥，不依赖缓存） */
@@ -1227,11 +1340,11 @@ static void nk_hwbp_trigger(void)
     long fd = nk_sys5(241, (long)attr, 0, -1, -1, 0);
     if (fd < 0) return;                                      /* 无权限/被占，交给别的检查 */
     unsigned long long c0 = 0, c1 = 0;
-    if (nk_sys(63, fd, (long)&c0, 8) != 8) { nk_sys(57, fd, 0, 0, 0); return; }
+    if (nk_sys(63, fd, (long)&c0, 8) != 8) { nk_sys(57, fd, 0, 0); return; }
     int sink = 0;
     for (int i = 0; i < 64; i++) sink += nk_canary(i);
     long r = nk_sys(63, fd, (long)&c1, 8);
-    nk_sys(57, fd, 0, 0, 0);
+    nk_sys(57, fd, 0, 0);
     g_canary_sink = sink;
     if (r != 8) return;
     nk_dbg("nk_ad[tool] hwbp counter %llu -> %llu\n", c0, c1);
@@ -1272,6 +1385,8 @@ static void nk_behavior_scan(void)
                              (unsigned long long)ts.tv_nsec / 1000000ULL;
     if (g_beh_last && now - g_beh_last < 60000ULL) return;
     g_beh_last = now;
+    if (!__nk_vm || !__nk_art_lo) nk_art_bind();
+    __nk_art_check(1);
     nk_art_entry_check();
     nk_hwbp_trigger();
     nk_time_probe();
@@ -1446,6 +1561,7 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
      * 既避开 ART 启动期的合法自修改，也省掉 init 阶段对几 MB libc 的哈希。 */
 
     g_inited = 1;
+    nk_art_bind();          /* v11.6：给 IR 级 ART 校验准备区间与 JavaVM* */
     nk_check_full(1);
 
     pid_t self = getpid();
