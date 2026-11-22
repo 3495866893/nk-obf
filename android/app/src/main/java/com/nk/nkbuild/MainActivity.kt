@@ -805,6 +805,9 @@ private fun SetPage(
                     (if (st.acctText.isNotBlank()) " · " + st.acctText else ""),
                 color = TextDim, fontSize = 10.sp
             )
+            Spacer(Modifier.height(4.dp))
+            Text("卡密是一次性绑定的：绑过一次就只在「卡密加时」里用，日常登录走账号",
+                color = TextDim, fontSize = 10.sp)
             Spacer(Modifier.height(12.dp))
             var recharge by remember { mutableStateOf("") }
             Field("卡密加时（给账号充值）", recharge) { recharge = it }
@@ -814,8 +817,8 @@ private fun SetPage(
                 PrimaryButton(if (st.licBusy) "…" else "充值", !st.licBusy) {
                     vm.kamiRecharge(ctx, prefs, recharge.ifBlank { prefs.kami })
                 }
-                PrimaryButton(if (st.licBusy) "…" else "重新验证", !st.licBusy) {
-                    vm.licLogin(ctx, prefs, prefs.kami)
+                PrimaryButton(if (st.acctBusy) "…" else "刷新登录", !st.acctBusy) {
+                    vm.refreshLogin(ctx, prefs)
                 }
                 PrimaryButton("解绑", !st.licBusy) { vm.licUnbind(ctx, prefs) }
             }
@@ -872,7 +875,7 @@ private fun SetPage(
 
         GlassCard(haze) {
             SectionTitle("", "关于")
-            Text("NKBuild 手机版 v1.8.0（versionCode 16）\n" +
+            Text("NKBuild 手机版 v1.8.1（versionCode 17）\n" +
                 "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                 "构建：GitHub Actions · 产物：AArch64 PIE",
                 color = TextSub, fontSize = 11.sp)
