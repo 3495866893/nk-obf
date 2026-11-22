@@ -45,6 +45,7 @@ static uint64_t g_text_size = 0;
 /* v10.1：我们自己把文本 mprotect 成 RWX 之后，不能在下一轮 maps 检查里
  * 把自己当成『文本被改写成可写』的攻击者，否则每次都会自杀。 */
 static int g_text_rwx_self = 0;
+static int g_wlock_tried = 0;
 
 static long nk_sys(long n, long a, long b, long c);   /* fwd decl */
 static long nk_sys5(long n, long a, long b, long c, long d, long e)
@@ -703,6 +704,8 @@ static int nk_root_framework(void)
     };
     for (int i = 0; i < (int)(sizeof m / sizeof m[0]); i++)
         if (nk_sys(48, (long)m[i], 0, 0) == 0) return 1;
+    /* 框架被删但 /data/adb 仍在（升级/卸载残留）也算 root 环境，避免误杀。 */
+    if (nk_sys(48, (long)"/data/adb", 0, 0) == 0) return 1;
     return 0;
 }
 
@@ -809,7 +812,8 @@ static int nk_hwbp_slots(void)
         nk_dbg("nk_ad[tool] hwbp slot free\n");
         return 0;
     }
-    long e = (long)errno;
+    /* P1：nk_sys5 是内联 svc #0，不经过 libc，失败返回 -errno（errno 恒为 0） */
+    long e = -fd;
     nk_dbg("nk_ad[tool] perf_event_open -> %ld errno %ld\n", fd, e);
     if (e == 28 /*ENOSPC*/ || e == 16 /*EBUSY*/) return 1;
     return 0;
@@ -857,8 +861,14 @@ static int nk_uprobe_maps(void)
 static void nk_text_wlock(void)
 {
     if (!g_text_addr || !g_text_size) return;
-    if (g_text_rwx_self) return;              /* 只做一次 */
-    if (getenv("NK_AD_NO_WLOCK")) return;     /* 留一个调试开关 */
+    /* P1.5：默认不做。把 .text 改成 RWX 能挡内核在此装 uprobe（eDBG/stackplz 失效），
+     * 但同时等于替 inline hook 把门打开，对 Frida 是净负收益 —— 要防 eDBG 才显式开：
+     *   NK_AD_WLOCK=1
+     * 另外无论成败都只尝试一次，避免每轮白跑一次 mprotect。 */
+    if (g_wlock_tried) return;
+    g_wlock_tried = 1;
+    const char *wl = getenv("NK_AD_WLOCK");
+    if (!wl || wl[0] != '1') return;
     long pg = sysconf(_SC_PAGESIZE);
     if (pg <= 0) pg = 4096;
     uintptr_t base = (uintptr_t)g_text_addr & ~(uintptr_t)(pg - 1);
@@ -903,20 +913,30 @@ static int nk_anon_exec(void)
         char *nl = strchr(p, '\n');
         unsigned long a = 0, b = 0;
         char perm[8] = {0};
-        if (sscanf(p, "%lx-%lx %7s", &a, &b, perm) == 3 && perm[2] == 'x') {
-            char *q = p;
-            for (int k = 0; k < 5 && q; k++) {          /* 跳过 5 个字段到路径 */
-                q = strchr(q, ' ');
-                if (q) q++;
-            }
+        int nfield = 0;
+        if (sscanf(p, "%lx-%lx %7s %*s %*s %*s %n", &a, &b, perm, &nfield) >= 3 &&
+            perm[2] == 'x') {
+            /* maps 每行：addr perms offset dev inode pathname，字段之间可能有多个空格；
+             * 用 %n 取「inode 之后」的偏移，再手动跳过空白。 */
+            char *q = p + (nfield > 0 ? nfield : 0);
+            while (*q == ' ' || *q == '\t') q++;
             int self = g_text_addr && g_text_addr >= (uint64_t)a &&
                        g_text_addr < (uint64_t)b;
             if (!self && q) {
                 if (*q == '/') {                        /* 文件映射，正常 */
                     /* 继续 */
                 } else if (strncmp(q, "memfd:", 6) == 0) {
-                    nk_dbg("nk_ad[tool] memfd exec %s\n", q);
-                    hit = 1;
+                    /* P0：ART 的 JIT code cache 本身就是 memfd，名字带 jit：
+                     *   /memfd:jit-cache、/memfd:jit-cache-zygote、/memfd:jit-zygote-cache
+                     * 现代 App 启动几十毫秒内就出现，硬杀等于把自己杀掉。 */
+                    if (strstr(q, "jit-cache") || strstr(q, "jit-zygote") ||
+                        strstr(q, "jit_zygote") || strstr(q, "jit_cache") ||
+                        strstr(q, "jit")) {
+                        nk_dbg("nk_ad[tool] memfd exec 合法 JIT，放过: %s\n", q);
+                    } else {
+                        nk_dbg("nk_ad[tool] memfd exec %s\n", q);
+                        hit = 1;
+                    }
                 } else if (*q == '\n' || *q == 0) {      /* 完全没有路径 */
                     nk_dbg("nk_ad[tool] pathless exec %lx-%lx %s\n", a, b, perm);
                     nk_soft("pathless-exec");
@@ -972,11 +992,16 @@ static int     g_ntm = 0;
 static int nk_tm_cb(struct dl_phdr_info *info, size_t sz, void *data)
 {
     (void)sz; (void)data;
-    if (g_ntm >= 8 || g_inited) return 1;          /* 只收一次基线 */
+    /* 基线现在延后到「首次深检」时采集，那时 g_inited 已是 1，
+     * 所以这里只按容量截断，不能再判 g_inited。 */
+    if (g_ntm >= 8) return 1;
     const char *nm = info->dlpi_name ? info->dlpi_name : "";
-    int keep = (nm[0] == 0) || strstr(nm, "libc.so") || strstr(nm, "libart.so") ||
-               strstr(nm, "libc++.so") || strstr(nm, "libm.so") ||
-               strstr(nm, "libnativehelper") || strstr(nm, "libdl.so");
+    /* P0：只哈希「运行时不会自己改自己」的模块。
+     * libart.so 会被 ART 合法写入（JIT trampoline 回填、deopt 改入口、
+     * CPU 特性 patch、profile 引导重编译），全段哈希必然误杀；
+     * libc++.so / libnativehelper 同理（运行时补丁 + 内联 thunk）。 */
+    int keep = (nm[0] == 0) || strstr(nm, "libc.so") ||
+               strstr(nm, "libm.so") || strstr(nm, "libdl.so");
     if (!keep) return 0;
     for (int i = 0; i < info->dlpi_phnum; i++) {
         const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
@@ -994,6 +1019,8 @@ static int nk_tm_cb(struct dl_phdr_info *info, size_t sz, void *data)
     return 0;
 }
 
+static int g_tm_ready = 0;
+
 static void nk_tm_collect(void)
 {
     g_ntm = 0;
@@ -1003,6 +1030,13 @@ static void nk_tm_collect(void)
 
 static void nk_tm_verify(void)
 {
+    /* P0：基线延后到首次深检采集，避开 ART 启动期的合法自修改。 */
+    if (!g_tm_ready) {
+        nk_tm_collect();
+        g_tm_ready = 1;
+        nk_dbg("nk_ad[tool] 基线延后采样完成\n");
+        return;
+    }
     for (int i = 0; i < g_ntm; i++) {
         uint64_t h = nk_hash_mem((const unsigned char *)g_tm[i].a, g_tm[i].s);
         if (h != g_tm[i].h) {
@@ -1026,7 +1060,8 @@ static void nk_tool_scan(int early) {
         if (nk_anon_exec())  nk_die_r("nk_ad: exec mapping from memfd");
         if (!nk_svc_ok())    nk_die_r("nk_ad: svc #0 intercepted");
         int jt = nk_jni_table_ok();
-        if (jt == 0)         nk_die_r("nk_ad: JNI/ART table hooked");
+        /* P2：ART 会把入口指到 JIT 代码区或 libc helper，硬杀误报太高，降为软分。 */
+        if (jt == 0)         nk_soft("jni-table-out-of-module");
         if (nk_hwbp_slots()) nk_die_r("nk_ad: hw breakpoint slots occupied");
         nk_tm_verify();
         nk_text_wlock();
