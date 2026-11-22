@@ -36,6 +36,7 @@ data class UiState(
     val logs: List<String> = emptyList(),
     val files: List<SourceFile> = emptyList(),
     val dropped: Set<String> = emptySet(),
+    val jobs: List<JobRecord> = emptyList(),
     val project: String = "myproj",
     val outName: String = "lucifer",
     val passes: Set<String> = PassCatalog.DEFAULTS,
@@ -83,6 +84,7 @@ class BuildViewModel : ViewModel() {
     private var prefsRef: Prefs? = null
 
     fun restore(prefs: Prefs) {
+        _s.value = _s.value.copy(jobs = prefs.jobs())
         prefsRef = prefs
         _s.value = _s.value.copy(passes = prefs.passes, adb = prefs.antiDebug)
     }
@@ -299,6 +301,9 @@ class BuildViewModel : ViewModel() {
                 if (runId == 0L) throw RuntimeException("没等到新的 run（workflow 名字对吗？）")
                 log("run id = $runId")
                 prefs.runId = runId
+                prefs.addJob(runId, _s.value.project,
+                    _s.value.outName.ifBlank { "lucifer" }, startedAt)
+                _s.value = _s.value.copy(jobs = prefs.jobs())
                 BuildService.start(ctx, "云端编译中 · run $runId")
 
                 // ---- ④ 轮询 ----
@@ -364,6 +369,8 @@ class BuildViewModel : ViewModel() {
                     elapsed = (System.currentTimeMillis() - startedAt) / 1000)
                 log("⏱ 总用时 ${fmt(_s.value.elapsed)}")
                 log("产物：${art.absolutePath}")
+                prefs.markJobDone(runId, art.name)
+                _s.value = _s.value.copy(jobs = prefs.jobs())
                 prefs.clearJob()
                 if (uri != null) log("已存到 Download/NKBuild/${art.name}")
             } catch (e: Exception) {
@@ -488,6 +495,76 @@ class BuildViewModel : ViewModel() {
             ticker.cancel()
             BuildService.stop(ctx)
         }
+    }
+
+    /** 任务历史里点一下：按 run id 重新拉产物（下载被中断、或过几天想再要一份） */
+    fun redownload(ctx: Context, prefs: Prefs, rec: JobRecord) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val o = prefs.owner
+            val r = prefs.repo
+            val gh = Github(prefs.token)
+            try {
+                log("重新下载：${rec.proj} · run ${rec.runId}")
+                val info = gh.run(o, r, rec.runId)
+                val concl = info.optString("conclusion", "")
+                if (concl != "success") {
+                    log("!! 这个 run 的结论是 $concl，没有产物可下")
+                    return@launch
+                }
+                BuildService.start(ctx, "正在重新下载产物…")
+                val dir = File(ctx.filesDir, "out/${rec.proj}")
+                dir.mkdirs()
+                var saved: File? = null
+                for ((aid, name, expired) in gh.artifacts(o, r, rec.runId)) {
+                    if (expired) { log("$name 已过期（GitHub 只留 90 天）"); continue }
+                    if (name != "lucifer-obf" && name != "nk-toolchain") continue
+                    val bytes = gh.downloadArtifact(o, r, aid)
+                    unzipInto(dir, bytes, rec.out, ::log)?.let { saved = it }
+                }
+                val art = saved ?: run {
+                    log("!! 没找到产物（工件可能已过期）")
+                    return@launch
+                }
+                val uri = if (prefs.autoExport) exportToDownloads(ctx, art, art.name) else null
+                prefs.markJobDone(rec.runId, art.name)
+                _s.value = _s.value.copy(
+                    artifactPath = art.absolutePath,
+                    savedUri = uri?.toString(), savedName = art.name,
+                    jobs = prefs.jobs())
+                log("✅ 重新下载完成：${art.name}（${art.length()} 字节）" +
+                    if (uri != null) " → Download/NKBuild" else "")
+            } catch (e: Exception) {
+                log("!! 重新下载失败：${e.message}")
+            } finally {
+                BuildService.stop(ctx)
+            }
+        }
+    }
+
+    /** 任务历史右滑/点 ✕ 删掉一条 */
+    fun removeJob(prefs: Prefs, runId: Long) {
+        prefs.removeJob(runId)
+        _s.value = _s.value.copy(jobs = prefs.jobs())
+        log("已删除任务记录 run $runId")
+    }
+
+    /** 解开 artifact 里的产物条目；want 是期望的产物名（例如 hack） */
+    private fun unzipInto(dir: File, bytes: ByteArray, want: String,
+                           log: (String) -> Unit): File? {
+        var saved: File? = null
+        ZipInputStream(bytes.inputStream()).use { z ->
+            while (true) {
+                val e = z.nextEntry ?: break
+                if (e.isDirectory) continue
+                val base = e.name.substringAfterLast('/')
+                if (base.isBlank()) continue
+                val out = File(dir, base)
+                out.outputStream().use { o2 -> z.copyTo(o2) }
+                log("下载 $base（${out.length()} 字节）")
+                if (base == want || base.startsWith(want) || base == "lucifer") saved = out
+            }
+        }
+        return saved
     }
 
     fun cancel() {
