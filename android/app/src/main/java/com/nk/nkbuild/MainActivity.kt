@@ -783,8 +783,8 @@ private fun DrawScope.drawFatFish(
     // 背鳍
     val finPath = Path().apply {
         moveTo(cx - w * 0.10f, bodyTop + bodyH * 0.06f)
-        quadTo(cx + w * 0.02f, bodyTop - w * 0.16f + wig * 0.4f,
-            cx + w * 0.16f, bodyTop + bodyH * 0.10f)
+        lineTo(cx + w * 0.02f, bodyTop - w * 0.16f + wig * 0.4f)
+        lineTo(cx + w * 0.16f, bodyTop + bodyH * 0.10f)
         close()
     }
     drawPath(finPath, Color(0xFFFFCF6B).copy(alpha = alpha * 1.4f))
