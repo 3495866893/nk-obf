@@ -24,18 +24,21 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 
-val Accent = Color(0xFF7C5CFF)
-val Accent2 = Color(0xFFB39BFF)
-val TextMain = Color(0xFFF2F4FF)
-val TextSub = Color(0xFFA6ADCF)
-val TextDim = Color(0xFF6C7396)
+/* 皮肤取自 KernelSU 那套粉色皮肤：浅底 + 白卡 + 玫瑰色强调，不再是满屏紫渐变 */
 
-/** 真·液态玻璃卡片：hazeEffect 在 API31+ 用 RenderEffect 实时模糊背景 */
+val Accent = Color(0xFFD2557F)
+val Accent2 = Color(0xFFF08FB4)
+val TextMain = Color(0xFF2B2230)
+val TextSub = Color(0xFF6A6172)
+val TextDim = Color(0xFF9A93A1)
+val CardLine = Color(0x33FFFFFF)
+
+/** 卡片：白底半透明 + 白色描边（有 haze 时再叠一层实时模糊） */
 @Composable
 fun GlassCard(
     haze: HazeState?,
     modifier: Modifier = Modifier,
-    corner: Int = 22,
+    corner: Int = 20,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var m = modifier.clip(RoundedCornerShape(corner.dp))
@@ -44,16 +47,10 @@ fun GlassCard(
         m
             .background(
                 Brush.verticalGradient(
-                    listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.06f))
+                    listOf(Color(0xE6FFFFFF), Color(0xCCFFFFFF))
                 )
             )
-            .border(
-                width = 1.dp,
-                brush = Brush.verticalGradient(
-                    listOf(Color.White.copy(alpha = 0.30f), Color.White.copy(alpha = 0.08f))
-                ),
-                shape = RoundedCornerShape(corner.dp)
-            )
+            .border(1.dp, CardLine, RoundedCornerShape(corner.dp))
             .padding(16.dp),
         content = content
     )
@@ -63,15 +60,15 @@ fun GlassCard(
 fun SectionTitle(num: String, title: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (num.isNotEmpty()) {
-            Text(num, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(num, color = Accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             Spacer(Modifier.width(6.dp))
         }
-        Text(title, color = TextSub, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        Text(title, color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
     }
     Spacer(Modifier.height(10.dp))
 }
 
-/** 分段按钮：滑块用 spring 弹过去 */
+/** 分段按钮：滑块 spring 弹过去 */
 @Composable
 fun GlassSegmented(
     values: List<String>,
@@ -84,8 +81,8 @@ fun GlassSegmented(
             .fillMaxWidth()
             .height(44.dp)
             .clip(shape)
-            .background(Color.Black.copy(alpha = 0.30f))
-            .border(1.dp, Color.White.copy(alpha = 0.10f), shape)
+            .background(Color(0x33000000))
+            .border(1.dp, Color(0x22FFFFFF), shape)
             .padding(4.dp)
     ) {
         val target = index * (1f / values.size)
@@ -103,7 +100,7 @@ fun GlassSegmented(
                     .width(w / values.size)
                     .fillMaxHeight()
                     .clip(RoundedCornerShape(11.dp))
-                    .background(Brush.horizontalGradient(listOf(Color(0xFF8B6BFF), Color(0xFF6A48FF))))
+                    .background(Brush.horizontalGradient(listOf(Accent2, Accent)))
             )
         }
         Row(Modifier.fillMaxSize()) {
@@ -122,7 +119,7 @@ fun GlassSegmented(
     }
 }
 
-/** 玻璃开关 */
+/** 开关 */
 @Composable
 fun GlassSwitch(on: Boolean, onChange: (Boolean) -> Unit) {
     val pos by animateFloatAsState(
@@ -131,7 +128,7 @@ fun GlassSwitch(on: Boolean, onChange: (Boolean) -> Unit) {
         label = "knob"
     )
     val bg by animateColorAsState(
-        if (on) Accent else Color.White.copy(alpha = 0.16f), label = "bg")
+        if (on) Accent else Color(0xFFD6D0DA), label = "bg")
     Box(
         Modifier
             .width(54.dp).height(30.dp)
@@ -153,7 +150,7 @@ fun GlassSwitch(on: Boolean, onChange: (Boolean) -> Unit) {
     }
 }
 
-/** 主按钮：按下缩、悬停弹（用 spring 近似） */
+/** 主按钮 */
 @Composable
 fun PrimaryButton(text: String, enabled: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
@@ -166,8 +163,8 @@ fun PrimaryButton(text: String, enabled: Boolean, modifier: Modifier = Modifier,
             .height(46.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(
-                if (enabled) Brush.horizontalGradient(listOf(Color(0xFF8B6BFF), Color(0xFF6A48FF)))
-                else Brush.horizontalGradient(listOf(Color(0xFF3A3F5C), Color(0xFF2A2E45)))
+                if (enabled) Brush.horizontalGradient(listOf(Accent2, Accent))
+                else Brush.horizontalGradient(listOf(Color(0xFFEDE8F0), Color(0xFFE2DCE6)))
             )
             .clickable(enabled = enabled) {
                 pressed = true; onClick()
@@ -175,7 +172,8 @@ fun PrimaryButton(text: String, enabled: Boolean, modifier: Modifier = Modifier,
             .padding(horizontal = 18.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(text, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text(text, color = if (enabled) Color.White else TextDim,
+            fontWeight = FontWeight.Bold, fontSize = 14.sp)
     }
     LaunchedEffect(pressed) {
         if (pressed) {
