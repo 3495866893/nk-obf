@@ -8,7 +8,7 @@ NK is an IR-level code obfuscation plugin for **LLVM 21**. It is built as a shar
 
 The plugin rewrites LLVM IR — it never parses C or C++ text — so macro expansion, template instantiation, coding style and language standard do not affect it. A second, independent piece ships with it: the runtime watchdog `ci/nk_ad.c`, which is compiled separately and linked into the target binary. It is the only part of the product that runs at application startup.
 
-The repository is private (`3495866893/nk-obf`). It was previously named **Ensia** / **OLLVM-Next**, published as `ensia-plugin`; the rename to `NK` / `nk-obf` touched 95 files (`libEnsia → libNk`, `ENSIA → NK`, `ensia/ → nk/`, `build-ensia.sh → build-nk.sh`). The only remnant of the old naming is a compatibility alias: `ci/build-nk.sh` exports `NK=1 NK_CONFIG="$cfg"`, and the plugin still accepts the pre-rename `ENSIA` / `ENSIA_CONFIG` spellings.
+The repository is private (`3495866893/nk-obf`).
 
 ## The three product lines
 
