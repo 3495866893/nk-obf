@@ -603,7 +603,7 @@ static int nk_maps_hit(void) {
     return 0;
 }
 
-/* /proc/self/task/*/comm 逐个读（Frida 的 gum-js-loop / pool-frida 藏不住） */
+/* 逐个读 /proc/self/task 下每个 tid 的 comm（Frida 的 gum-js-loop / pool-frida 藏不住） */
 static int nk_comm_hit(void) {
     char dir[64], buf[4096];
     int n = nk_slurp("/proc/self/task", buf, 4095);
@@ -653,9 +653,9 @@ static int nk_frida_socket(void) {
             p++;
         }
     }
-    n = nk_slurp("/proc/net/unix", buf, 16383);
-    if (n > 0) {
-        buf[n] = 0;
+    int nu = nk_slurp("/proc/net/unix", buf, 16383);
+    if (nu > 0) {
+        buf[nu] = 0;
         if (strstr(buf, "@frida") || strstr(buf, "frida-server") ||
             strstr(buf, "re.frida.server")) {
             nk_dbg("nk_ad[tool] unix socket frida\n");
