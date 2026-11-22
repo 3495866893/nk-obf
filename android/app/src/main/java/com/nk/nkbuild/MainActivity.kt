@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -19,6 +20,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +40,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -68,7 +73,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            MaterialTheme(colorScheme = lightColorScheme(
+                primary = Color(0xFFD2557F), secondary = Color(0xFFF08FB4),
+                background = Color(0xFFF6EFF4), surface = Color(0xFFFFFFFF),
+                onPrimary = Color.White, onBackground = Color(0xFF2B2230),
+                onSurface = Color(0xFF2B2230))) {
                 App()
             }
         }
@@ -101,32 +110,9 @@ fun App(vm: BuildViewModel = viewModel()) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color(0xFF0A0B12))) {
-        // ---- 背景光斑（真正被玻璃模糊的就是它）----
-        val t by rememberInfiniteTransition(label = "bg").animateFloat(
-            initialValue = 0f, targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                tween(18000, easing = LinearEasing), RepeatMode.Reverse), label = "t")
-        Canvas(
-            if (haze != null) Modifier.fillMaxSize().hazeSource(state = haze)
-            else Modifier.fillMaxSize()
-        ) {
-            drawRect(Brush.radialGradient(
-                colors = listOf(Color(0xCC7C5CFF), Color(0x33241B60), Color.Transparent),
-                center = Offset(size.width * (0.2f + 0.08f * t), size.height * 0.12f),
-                radius = size.width * 0.85f))
-            drawRect(Brush.radialGradient(
-                colors = listOf(Color(0x992F6BFF), Color(0x2210206A), Color.Transparent),
-                center = Offset(size.width * (0.95f - 0.06f * t), size.height * 0.32f),
-                radius = size.width * 0.8f))
-            drawRect(Brush.radialGradient(
-                colors = listOf(Color(0x66FF5EA8), Color(0x228A1F5A), Color.Transparent),
-                center = Offset(size.width * 0.55f, size.height * (1.05f - 0.05f * t)),
-                radius = size.width * 0.9f))
-        }
-
-        // ---- 会游的蓝色大肥鱼（纯 Canvas 矢量，不占体积、任意分辨率都清晰）----
-        if (prefs.fish) FishBackground(haze)
+    Box(Modifier.fillMaxSize().background(Color(0xFFF6EFF4))) {
+        // ---- 皮肤背景：每切一页换一张（素材取自 KernelSU 那套粉色皮肤）----
+        SkinBackground(tab, prefs.skin, haze)
 
         Column(
             Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)
@@ -140,9 +126,9 @@ fun App(vm: BuildViewModel = viewModel()) {
                     Tab.OBF -> ObfPage(vm, st, haze)
                     Tab.PRE -> PrecheckPage(st, haze)
                     Tab.OUT -> OutPage(vm, st, haze)
-                    Tab.SET -> SetPage(prefs, blurOn, prefs.fish, haze,
+                    Tab.SET -> SetPage(prefs, blurOn, prefs.skin, haze,
                         onBlur = { on -> blurOn = on; prefs.blur = on },
-                        onFish = { on -> prefs.fish = on })
+                        onSkin = { on -> prefs.skin = on })
                 }
             }
         }
@@ -163,14 +149,17 @@ fun App(vm: BuildViewModel = viewModel()) {
 private fun Header(st: UiState) {
     Row(Modifier.fillMaxWidth().padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        Text("NKBUILD", color = Color.White, fontWeight = FontWeight.Black,
-            fontSize = 22.sp, letterSpacing = 2.sp)
-        Spacer(Modifier.width(8.dp))
-        Text("源码 → 云端混淆", color = TextDim, fontSize = 11.sp)
+        Mascot()
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text("NKBUILD", color = TextMain, fontWeight = FontWeight.Black,
+                fontSize = 20.sp, letterSpacing = 1.5.sp)
+            Text("源码 → 云端混淆", color = TextSub, fontSize = 10.sp)
+        }
         Spacer(Modifier.weight(1f))
         Box(
             Modifier.clip(RoundedCornerShape(14.dp))
-                .background(Color.White.copy(alpha = 0.08f))
+                .background(Color(0xCCFFFFFF))
                 .padding(horizontal = 10.dp, vertical = 6.dp)
         ) {
             Text(
@@ -277,7 +266,7 @@ private fun BuildPage(vm: BuildViewModel, st: UiState, haze: HazeState?, onPick:
             Row(verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(5.dp))
-                    .background(Color.White.copy(alpha = 0.10f))) {
+                    .background(Color(0x22000000))) {
                     Box(Modifier.fillMaxHeight()
                         .fillMaxWidth(st.progress.coerceIn(0f, 1f))
                         .clip(RoundedCornerShape(5.dp))
@@ -295,7 +284,7 @@ private fun BuildPage(vm: BuildViewModel, st: UiState, haze: HazeState?, onPick:
                 ) { vm.start(ctx, prefs) }
                 if (st.phase == Phase.RUNNING) {
                     Box(Modifier.height(46.dp).clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.10f))
+                        .background(Color(0x1F000000))
                         .clickable { vm.cancel() }.padding(horizontal = 16.dp),
                         contentAlignment = Alignment.Center
                     ) { Text("取消", color = TextMain, fontSize = 14.sp) }
@@ -428,9 +417,9 @@ private fun PassRow(p: PassDef, on: Boolean, onClick: () -> Unit) {
     ) {
         Box(
             Modifier.size(22.dp).clip(RoundedCornerShape(7.dp))
-                .background(if (on) Accent else Color.White.copy(alpha = 0.10f))
+                .background(if (on) Accent else Color(0xFFE2DCE6))
                 .border(1.dp,
-                    if (on) Color.Transparent else Color.White.copy(alpha = 0.22f),
+                    if (on) Color.Transparent else Color(0xFFC9C2CE),
                     RoundedCornerShape(7.dp)),
             contentAlignment = Alignment.Center
         ) { if (on) Text("✓", color = Color.White, fontSize = 12.sp) }
@@ -472,7 +461,7 @@ private fun OutPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PrimaryButton("安装 / 打开", true) { vm.openOrInstall(ctx) }
                     Box(Modifier.height(46.dp).clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.10f))
+                        .background(Color(0x14000000))
                         .clickable {
                             st.artifactPath?.let { p ->
                                 vm.exportToDownloads(ctx, java.io.File(p),
@@ -530,10 +519,10 @@ private fun OutPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
 private fun SetPage(
     prefs: Prefs,
     blurOn: Boolean,
-    fishOn: Boolean,
+    skinOn: Boolean,
     haze: HazeState?,
     onBlur: (Boolean) -> Unit,
-    onFish: (Boolean) -> Unit,
+    onSkin: (Boolean) -> Unit,
 ) {
     var token by remember { mutableStateOf(prefs.token) }
     var owner by remember { mutableStateOf(prefs.owner) }
@@ -597,17 +586,17 @@ private fun SetPage(
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("会游的蓝色大肥鱼背景", color = TextMain, fontSize = 13.sp)
+                    Text("皮肤背景（每页一张）", color = TextMain, fontSize = 13.sp)
                     Spacer(Modifier.height(4.dp))
-                    Text("矢量绘制 + 摆尾/吐泡动画，0 素材体积", color = TextDim, fontSize = 10.sp)
+                    Text("5 张开源皮肤图，切页交叉淡入", color = TextDim, fontSize = 10.sp)
                 }
-                GlassSwitch(fishOn) { onFish(it) }
+                GlassSwitch(skinOn) { onSkin(it) }
             }
         }
 
         GlassCard(haze) {
             SectionTitle("", "关于")
-            Text("NKBuild 手机版 v1.3（versionCode 5）\n" +
+            Text("NKBuild 手机版 v1.4（versionCode 6）\n" +
                 "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                 "构建：GitHub Actions · 产物：AArch64 PIE",
                 color = TextSub, fontSize = 11.sp)
@@ -631,9 +620,8 @@ private fun LiquidNav(
 
     Box(
         m.background(Brush.verticalGradient(
-            listOf(Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0.09f))))
-            .border(1.dp, Brush.verticalGradient(
-                listOf(Color.White.copy(alpha = 0.40f), Color.White.copy(alpha = 0.10f))), shape)
+            listOf(Color(0xF2FFFFFF), Color(0xE8FFF7FB)))
+            .border(1.dp, Color(0x40FFFFFF), shape)
             .padding(6.dp)
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -646,10 +634,8 @@ private fun LiquidNav(
             Box(
                 Modifier.offset(x = off).width(w / TABS.size).fillMaxHeight()
                     .clip(RoundedCornerShape(22.dp))
-                    .background(Brush.verticalGradient(
-                        listOf(Color.White.copy(alpha = 0.30f),
-                            Color.White.copy(alpha = 0.12f))))
-                    .border(1.dp, Color.White.copy(alpha = 0.38f), RoundedCornerShape(22.dp))
+                    .background(Brush.verticalGradient(listOf(Accent2, Accent)))
+                    .border(1.dp, Color(0x66FFFFFF), RoundedCornerShape(22.dp))
             )
             Row(Modifier.fillMaxSize()) {
                 TABS.forEach { t ->
@@ -681,152 +667,59 @@ private fun Field(label: String, value: String, onChange: (String) -> Unit) {
         value = value, onValueChange = onChange, singleLine = true,
         textStyle = androidx.compose.ui.text.TextStyle(color = TextMain, fontSize = 13.sp),
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-            .background(Color.White.copy(alpha = 0.08f))
+            .background(Color(0x14000000))
             .padding(horizontal = 10.dp, vertical = 10.dp),
         cursorBrush = Brush.verticalGradient(listOf(Accent, Accent))
     )
     Spacer(Modifier.height(10.dp))
 }
 
-/* --------------------------------------------------- 背景：会游的蓝色大肥鱼 */
+/* ------------------------------------------------------------ 皮肤背景 */
 
-/**
- * 纯 Canvas 画的蓝色大肥鱼：横向慢慢游 + 上下浮动 + 摆尾 + 眨眼 + 吐泡泡。
- * 不用任何图片素材（0 KB），任意分辨率都清晰，也不会被 aapt 压缩坏。
- */
+/** 每个页面一张图，切页交叉淡入。素材：KernelSU 那套粉色皮肤（开源） */
 @Composable
-private fun FishBackground(haze: HazeState?) {
-    val tr = rememberInfiniteTransition(label = "fish")
-
-    // 主鱼：一次完整的横向穿越 26 秒
-    val swim by tr.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(26000, easing = LinearEasing),
-            RepeatMode.Restart), label = "swim")
-    // 上下浮动
-    val bob by tr.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(3600, easing = LinearEasing),
-            RepeatMode.Reverse), label = "bob")
-    // 摆尾（快一点）
-    val tail by tr.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(620, easing = LinearEasing),
-            RepeatMode.Reverse), label = "tail")
-    // 眨眼：周期 5.4 秒，只有最后 6% 是闭眼
-    val blinkT by tr.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(5400, easing = LinearEasing),
-            RepeatMode.Restart), label = "blink")
-    // 小鱼苗更快，相位错开
-    val swim2 by tr.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(15000, easing = LinearEasing),
-            RepeatMode.Restart), label = "swim2")
-
-    Canvas(
-        if (haze != null) Modifier.fillMaxSize().hazeSource(state = haze)
-        else Modifier.fillMaxSize()
-    ) {
-        val w = size.width
-        val h = size.height
-        val blink = if (blinkT > 0.94f) abs(0.94f - blinkT) / 0.06f else 1f
-
-        // 主鱼：从右往左游（往右游更自然，这里用 0→1 从左边进）
-        val fw = w * 0.52f
-        val fx = -fw * 0.9f + (w + fw * 1.8f) * swim
-        val fy = h * 0.68f + sin(bob * 2f * PI).toFloat() * h * 0.028f
-        drawFatFish(fx, fy, fw, tail, blink, 0.42f)
-
-        // 两条小鱼苗（远近感：更小、更淡、更快）
-        val sw = w * 0.20f
-        val sx = -sw + (w + sw * 2f) * swim2
-        val sy = h * 0.30f + sin((bob * 1.7f) * 2f * PI).toFloat() * h * 0.02f
-        drawFatFish(sx, sy, sw, (tail + 0.5f) % 1f, 1f, 0.22f)
-
-        val sx2 = w + sw * 0.5f - ((w + sw * 2f) * swim2)
-        drawFatFish(sx2, h * 0.86f + sin((bob * 2.3f) * 2f * PI).toFloat() * h * 0.02f,
-            sw * 0.7f, tail, 1f, 0.16f)
+private fun SkinBackground(tab: Tab, on: Boolean, haze: HazeState?) {
+    val src = Modifier.fillMaxSize().let { if (haze != null) it.hazeSource(haze) else it }
+    Box(Modifier.fillMaxSize()) {
+        if (on) {
+            Crossfade(targetState = tab, animationSpec = tween(420), label = "skin") { t ->
+                Image(
+                    painter = painterResource(
+                        when (t) {
+                            Tab.BUILD -> R.drawable.bg_home
+                            Tab.OBF -> R.drawable.bg_kernel
+                            Tab.PRE -> R.drawable.bg_settings
+                            Tab.OUT -> R.drawable.bg_module
+                            Tab.SET -> R.drawable.bg_superuser
+                        }
+                    ),
+                    contentDescription = null,
+                    modifier = src,
+                    contentScale = ContentScale.Crop
+                )
+            }
+        } else {
+            Box(src.background(Brush.verticalGradient(
+                listOf(Color(0xFFF8EFF5), Color(0xFFEFE7F3)))))
+        }
+        // 薄白纱：保证任何一张图上卡片和文字都清楚
+        Box(Modifier.fillMaxSize().background(Color(0x4DFFFFFF)))
     }
 }
 
-/** 一条胖鱼：椭圆身体 + 三角尾 + 背鳍 + 眼睛 + 嘴 + 吐泡泡。 */
-private fun DrawScope.drawFatFish(
-    cx: Float,
-    cy: Float,
-    w: Float,
-    tailPhase: Float,
-    blink: Float,
-    alpha: Float,
-) {
-    val bodyTop = cy - w * 0.29f
-    val bodyH = w * 0.58f
-    val left = cx - w * 0.5f
-    val bodyBrush = Brush.linearGradient(
-        colors = listOf(Color(0xFF6FC0FF), Color(0xFF2E7BEE), Color(0xFF1B4FC4)),
-        start = Offset(left, bodyTop),
-        end = Offset(left + w, bodyTop + bodyH))
-    val edge = Color(0xFF0E2F80).copy(alpha = alpha * 0.9f)
-
-    // 尾巴（左右摆动）
-    val wig = sin(tailPhase * 2f * PI).toFloat() * w * 0.10f
-    val tailPath = Path().apply {
-        moveTo(left + w * 0.06f, cy)
-        lineTo(left - w * 0.26f, cy - w * 0.24f + wig)
-        lineTo(left - w * 0.18f, cy)
-        lineTo(left - w * 0.26f, cy + w * 0.24f + wig)
-        close()
-    }
-    drawPath(tailPath, Color(0xFFFFB347).copy(alpha = alpha * 1.5f))
-    drawPath(tailPath, edge, style = Stroke(width = w * 0.012f))
-
-    // 背鳍
-    val finPath = Path().apply {
-        moveTo(cx - w * 0.10f, bodyTop + bodyH * 0.06f)
-        lineTo(cx + w * 0.02f, bodyTop - w * 0.16f + wig * 0.4f)
-        lineTo(cx + w * 0.16f, bodyTop + bodyH * 0.10f)
-        close()
-    }
-    drawPath(finPath, Color(0xFFFFCF6B).copy(alpha = alpha * 1.4f))
-
-    // 身体
-    drawOval(bodyBrush, topLeft = Offset(left, bodyTop), size = Size(w, bodyH))
-    drawOval(edge.copy(alpha = alpha), topLeft = Offset(left, bodyTop),
-        size = Size(w, bodyH), style = Stroke(width = w * 0.012f))
-
-    // 肚皮高光
-    drawOval(Color.White.copy(alpha = alpha * 0.35f),
-        topLeft = Offset(left + w * 0.10f, bodyTop + bodyH * 0.52f),
-        size = Size(w * 0.55f, bodyH * 0.32f))
-
-    // 眼睛（blink = 0 时闭眼）
-    val eyeX = cx + w * 0.24f
-    val eyeY = cy - w * 0.07f
-    val r = w * 0.085f
-    drawCircle(Color.White.copy(alpha = alpha * 2.0f), r, Offset(eyeX, eyeY))
-    if (blink > 0.15f) {
-        drawCircle(Color(0xFF10205A).copy(alpha = alpha * 2.2f), r * 0.55f, Offset(eyeX, eyeY))
-        drawCircle(Color.White.copy(alpha = alpha * 3f), r * 0.20f,
-            Offset(eyeX - r * 0.22f, eyeY - r * 0.24f))
-    } else {
-        drawLine(edge, Offset(eyeX - r, eyeY), Offset(eyeX + r, eyeY),
-            strokeWidth = w * 0.016f)
-    }
-
-    // 嘴 + 腮红
-    drawArc(edge, startAngle = 20f, sweepAngle = 120f, useCenter = false,
-        topLeft = Offset(cx + w * 0.34f, cy - w * 0.02f),
-        size = Size(w * 0.12f, w * 0.10f), style = Stroke(width = w * 0.014f))
-    drawCircle(Color(0xFFFF8FB0).copy(alpha = alpha * 0.9f), w * 0.045f,
-        Offset(cx + w * 0.10f, cy + w * 0.10f))
-
-    // 泡泡
-    for (i in 0..2) {
-        val p = ((tailPhase + i * 0.33f) % 1f)
-        val br = w * (0.02f + 0.012f * i)
-        drawCircle(Color.White.copy(alpha = alpha * 0.5f * (1f - p)), br,
-            Offset(cx + w * 0.44f + w * 0.05f * i, cy - w * 0.05f - p * w * 0.45f),
-            style = Stroke(width = w * 0.006f))
+/** 小圆头像（卡通形象），放在顶栏标题左边 */
+@Composable
+private fun Mascot(size: Int = 38) {
+    Box(
+        Modifier.size(size.dp).clip(RoundedCornerShape((size / 2).dp))
+            .border(1.5.dp, Color(0x66FFFFFF), RoundedCornerShape((size / 2).dp))
+    ) {
+        Image(
+            painter = painterResource(R.drawable.mascot),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
     }
 }
 
