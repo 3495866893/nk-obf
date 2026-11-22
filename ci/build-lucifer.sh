@@ -93,7 +93,7 @@ BASE=(
   "-O2" "-fPIE" "-fstack-protector-strong" "-D_FORTIFY_SOURCE=2" "-DVK_USE_PLATFORM_ANDROID_KHR" "-DNDEBUG"
   "-fvisibility=hidden" "-ffunction-sections" "-fdata-sections" "-fno-ident"
   "-nostdlib++" "--ld-path=$LLD"
-  "-Wl,--gc-sections" "-Wl,--exclude-libs,ALL"
+  "-Wl,--no-gc-sections" "-Wl,--exclude-libs,ALL"
   "-Wl,-z,relro" "-Wl,-z,now" "-Wl,-z,noexecstack"
   "-Wl,--build-id=none" "-Wl,--strip-all"
 )
