@@ -90,6 +90,45 @@ class Prefs(ctx: Context) {
             .remove("job_eta").remove("job_start").apply()
     }
 
+    /* ---- 任务历史：每次派发都落一条，产物下载被中断时可以点着重下 ---- */
+
+    var jobsJson: String
+        get() = sp.getString("jobs", "[]") ?: "[]"
+        set(v) = sp.edit().putString("jobs", v).apply()
+
+    fun jobs(): List<JobRecord> = runCatching {
+        val arr = org.json.JSONArray(jobsJson)
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            JobRecord(o.optLong("run", 0L), o.optString("proj", "myproj"),
+                o.optString("out", "lucifer"), o.optLong("start", 0L),
+                o.optString("file", ""), o.optBoolean("done", false))
+        }
+    }.getOrDefault(emptyList())
+
+    fun saveJobs(list: List<JobRecord>) {
+        val arr = org.json.JSONArray()
+        list.take(30).forEach { j ->
+            arr.put(org.json.JSONObject().put("run", j.runId).put("proj", j.proj)
+                .put("out", j.out).put("start", j.startMs).put("file", j.file).put("done", j.done))
+        }
+        jobsJson = arr.toString()
+    }
+
+    /** 派发成功、拿到 run id 时记一条（同 run 去重，最新的排最前） */
+    fun addJob(runId: Long, proj: String, out: String, startMs: Long) {
+        val rest = jobs().filter { it.runId != runId }
+        saveJobs(listOf(JobRecord(runId, proj, out, startMs)) + rest)
+    }
+
+    fun markJobDone(runId: Long, file: String) {
+        saveJobs(jobs().map { if (it.runId == runId) it.copy(file = file, done = true) else it })
+    }
+
+    fun removeJob(runId: Long) {
+        saveJobs(jobs().filter { it.runId != runId })
+    }
+
     /** 皮肤背景：每切一页换一张图（默认开） */
     var skin: Boolean
         get() = sp.getBoolean("skin", true)
@@ -102,3 +141,13 @@ class Prefs(ctx: Context) {
         return risky.none { m.contains(it) }
     }
 }
+
+/** 一条任务历史：run id、工程名、产物名、派发时间、下载到的文件名 */
+data class JobRecord(
+    val runId: Long,
+    val proj: String,
+    val out: String,
+    val startMs: Long,
+    val file: String = "",
+    val done: Boolean = false,
+)
