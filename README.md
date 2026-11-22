@@ -14,10 +14,9 @@ NK 是一个基于 **LLVM 21** 的 **IR 级代码混淆插件**（`libNk.so`）�
 | 桌面端 GUI（Python） | [`tools/`](tools/) |
 | 手机端 GUI（Kotlin） | [`android/`](android/) |
 | 文档 | [中文](docs/zh/index.md) · [English](docs/en/index.md) |
+| 部署到自己的仓库（保姆级） | [中文](docs/zh/DEPLOY.md) · [English](docs/en/DEPLOY.md) |
 
-## 流水线
 
-![流水线](docs/figs/flow_zh.png)
 
 ## 下载
 
@@ -65,3 +64,13 @@ MIT，见 [`LICENSE`](LICENSE)。
 ## 版本
 
 当前发布 **v1.0**。历史演进（含每个 bug 的根因与修法）见 [CHANGELOG](docs/zh/CHANGELOG.md)。
+
+## Contributors
+
+| 谁 | 做了什么 |
+|---|---|
+| **DeepSeek** | 模型与工程协作：插件修复（`.L_v` TLS、COMDAT、SIGILL）、CI 流水线、`nk_ad.c` 看门狗、双端 GUI、本套文档 |
+| **Xs** | 本项目常驻执行者（猫娘形态），负责把每条指令落到可运行的东西上 |
+| 上游 | **OLLVM-Next**（AGPL-3.0）以及 Hikari 血脉 —— 没有它们就没有 `libNk.so` |
+
+想加自己：部署完成后 [[改这里]](../README.md) 即可（本表纯手写）。
