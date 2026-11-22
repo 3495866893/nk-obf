@@ -39,7 +39,8 @@ enabled = false
 enabled = false
 
 [passes.anti_debugging]
-enabled = false
+enabled = true
+probability = 100
 
 [passes.mba]
 enabled = false
