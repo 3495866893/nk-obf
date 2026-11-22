@@ -121,7 +121,9 @@ fun App(vm: BuildViewModel = viewModel()) {
             Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)
         ) {
             Header(st)
-            Box(Modifier.weight(1f)) {
+            // 底部留出悬浮导航栏的高度（68dp 胶囊 + 12dp 外边距 + 余量），
+            // 否则最后一张卡片会滑到玻璃条下面去
+            Box(Modifier.weight(1f).padding(bottom = 96.dp)) {
                 when (tab) {
                     Tab.BUILD -> BuildPage(vm, st, haze) { pickTree.launch(null) }
                     Tab.OBF -> ObfPage(vm, st, haze)
