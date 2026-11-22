@@ -84,13 +84,21 @@ jobs:
             echo "依赖齐全，跳过 apt"
           fi
           sudo mkdir -p $WORK && sudo chown $(id -u):$(id -g) $WORK
-          # 8 GB swap：17 个 TU（含 15 MB 的 heiti_ttf）一起上时容易把 agent 一起 OOM 掉
+          # Ubuntu 22.04+ 默认开 systemd-oomd：内存压力一大就把整个 session SIGTERM，
+          # 表现恰好是 "runner has received a shutdown signal" + exit 143。先停掉它。
+          sudo systemctl stop systemd-oomd systemd-oomd.socket 2>/dev/null || true
+          sudo systemctl disable systemd-oomd 2>/dev/null || true
+          sudo systemctl mask systemd-oomd.socket 2>/dev/null || true
+          # 16 GB swap：imgui.cpp 这种大 TU 在 flattening/indirect 下峰值能到 10 GB+
           if [ ! -f /swapfile ]; then
-            sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+            sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
             sudo chmod 600 /swapfile
             sudo mkswap /swapfile >/dev/null
             sudo swapon /swapfile || echo "!! swap 挂载失败（不影响，只是少一层保险）"
           fi
+          # 压测时不要因为 swap 抖动被内核 OOM 挑中
+          cat /proc/sys/vm/overcommit_memory || true
+          echo 1 | sudo tee /proc/sys/vm/overcommit_memory >/dev/null || true
           free -m
           df -h /
           echo "deps 用时 $(( $(date +%s) - start )) 秒"
@@ -371,6 +379,7 @@ jobs:
           retention-days: 7
 
       - name: build lucifer
+        timeout-minutes: 120
         env:
           NK_AD: ${{ inputs.anti_debug == 'false' && '0' || '1' }}
         run: |
