@@ -152,6 +152,15 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     fsz=$(stat -c%s "$f" 2>/dev/null || echo 0)
     fopt="${NKO:--O2}"
     if [ "$fsz" -gt 300000 ]; then fopt="-O1"; fi
+    # 大 TU 换成轻量配置（只加密字符串 + 指令替换 + 反调试），
+    # flattening/bcf/indirect 在几万行函数上会把内存吃爆 → runner SIGTERM 143
+    LIGHT="$PWD/ensia/config/presets/nk-light.toml"
+    if [ "$fsz" -gt 200000 ] && [ -f "$LIGHT" ] && [ "$preset" != "custom" ]; then
+      export ENSIA_CONFIG="$LIGHT"
+      echo "   → 大 TU：切轻量配置 nk-light.toml（无 flattening/bcf/indirect）"
+    else
+      export ENSIA_CONFIG="$cfg"
+    fi
     echo "  [$i/$n] 编译 $f（$(numfmt --to=iec "$fsz" 2>/dev/null || echo "$fsz")B，优化级别 $fopt）"
     t0=$(date +%s)
     # shellcheck disable=SC2086
