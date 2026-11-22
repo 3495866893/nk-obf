@@ -10,15 +10,7 @@ anti_dump = true
 force_content = [".*"]
 
 [passes.constant_encryption]
-enabled = true
-iterations = 2
-share_count = 6
-feistel = false
-globalize = true
-globalize_prob = 100
-substitute_xor = true
-substitute_xor_prob = 100
-skip_value = ["^0x0$"]
+enabled = false
 
 [passes.substitution]
 enabled = true
@@ -26,14 +18,7 @@ probability = 60
 iterations = 1
 
 [passes.bcf]
-enabled = true
-probability = 60
-iterations = 1
-complexity = 6
-entropy_chain = false
-junk_asm = false
-nested = false
-create_func = false
+enabled = false
 
 [passes.split_blocks]
 enabled = true
@@ -41,13 +26,10 @@ splits = 3
 stack_confusion = false
 
 [passes.indirect_branch]
-enabled = true
-use_stack = true
-enc_jump_target = true
+enabled = false
 
 [passes.flattening]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.anti_debugging]
 enabled = true
