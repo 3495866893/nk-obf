@@ -55,6 +55,11 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("autoExport", true)
         set(v) = sp.edit().putBoolean("autoExport", v).apply()
 
+    /** 背景：会游的蓝色大肥鱼（纯 Canvas 动画，默认开） */
+    var fish: Boolean
+        get() = sp.getBoolean("fish", true)
+        set(v) = sp.edit().putBoolean("fish", v).apply()
+
     private fun defaultBlur(): Boolean {
         if (android.os.Build.VERSION.SDK_INT < 31) return false
         val m = (android.os.Build.MANUFACTURER + android.os.Build.BRAND).lowercase()
