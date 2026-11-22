@@ -84,6 +84,14 @@ jobs:
             echo "依赖齐全，跳过 apt"
           fi
           sudo mkdir -p $WORK && sudo chown $(id -u):$(id -g) $WORK
+          # 8 GB swap：17 个 TU（含 15 MB 的 heiti_ttf）一起上时容易把 agent 一起 OOM 掉
+          if [ ! -f /swapfile ]; then
+            sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile >/dev/null
+            sudo swapon /swapfile || echo "!! swap 挂载失败（不影响，只是少一层保险）"
+          fi
+          free -m
           df -h /
           echo "deps 用时 $(( $(date +%s) - start )) 秒"
 
@@ -383,8 +391,31 @@ jobs:
           export OUT_NAME="${{ github.event.inputs.out_name || 'lucifer' }}"
           export CFG_OVERRIDE="${{ github.event.inputs.cfg_override || '' }}"
           export CFG_ONLY="${{ github.event.inputs.cfg_only || '' }}"
-          bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" lucifer 2>&1 | tail -80
-          test -f lucifer || { echo "!! lucifer 未生成"; exit 1; }
+          # 资源曲线：万一又被 SIGTERM，最后时刻的内存/磁盘还在
+          ( while true; do
+              printf '%s ' "$(date +%T)"
+              free -m | awk '/^Mem:/{printf "mem_avail=%sMB ", $7}'
+              df -m /tmp | awk 'NR==2{printf "tmp_free=%sMB\n", $4}'
+              sleep 10
+            done ) > /tmp/nk_res.log 2>&1 &
+          MON=$!
+          set +e
+          # 不要用 tail：它只在 EOF 才吐，进程被 SIGTERM 时一行都留不下
+          bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" lucifer 2>&1 \
+            | stdbuf -oL tee /tmp/nk_build.log
+          RC=${PIPESTATUS[0]}
+          kill $MON 2>/dev/null || true
+          set -e
+          if [ "$RC" != "0" ] || [ ! -f lucifer ]; then
+            echo "!! 编译失败 rc=$RC（$(test -f lucifer && echo 有产物 || echo 无产物)）"
+            echo "---- 最后 25 行编译输出 ----"
+            tail -25 /tmp/nk_build.log || true
+            echo "---- 资源曲线（每 10 秒，最后 12 条）----"
+            tail -12 /tmp/nk_res.log || true
+            echo "---- 错误摘要 ----"
+            grep -E 'error:|!!|Killed|Cannot allocate|No space' /tmp/nk_err.txt 2>/dev/null | tail -15 || true
+            exit 1
+          fi
 
       - name: build multi (cfg_list)
         if: ${{ github.event.inputs.cfg_list != '' }}
