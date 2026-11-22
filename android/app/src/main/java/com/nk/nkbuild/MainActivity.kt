@@ -619,8 +619,9 @@ private fun LiquidNav(
     if (haze != null) m = m.hazeEffect(state = haze)
 
     Box(
-        m.background(Brush.verticalGradient(
-            listOf(Color(0xF2FFFFFF), Color(0xE8FFF7FB)))
+        m.background(
+            Brush.verticalGradient(listOf(Color(0xF2FFFFFF), Color(0xE8FFF7FB)))
+        )
             .border(1.dp, Color(0x40FFFFFF), shape)
             .padding(6.dp)
     ) {
