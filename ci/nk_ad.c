@@ -88,13 +88,20 @@ static void nk_die_r(const char *why) {
     (void)why;
     return;   /* 关闭反调试：任何判定都不生效 */
 #endif
-    if (getenv("NK_AD_DEBUG")) {
-        // 直连 write(2, ...)，避免调试输出本身被 hook
-        int n = (int)strlen(why);
-        long r = nk_sys(64, 2, (long)why, n);
-        (void)r;
-        const char *nl = "\n";
-        nk_sys(64, 2, (long)nl, 1);
+    {
+        /* 退出原因无论调试开关都留痕：写 stderr + 追加 nk_ad.log，
+         * 这样用户看得见「为什么 97」，也方便远程定位。 */
+        char line[256];
+        int ln = snprintf(line, sizeof line, "nk_ad[die] reason=%s\n", why);
+        if (ln > 0) {
+            nk_sys(64, 2, (long)line, ln);
+            long fd = nk_sys(56, (long)"/data/local/tmp/nk_ad.log",
+                             0x441 /* O_WRONLY|O_CREAT|O_APPEND */, 0644);
+            if (fd >= 0) {
+                nk_sys(64, fd, (long)line, ln);
+                nk_sys(57, fd, 0, 0);
+            }
+        }
     }
     _exit(NK_EXIT);
 }
@@ -584,18 +591,30 @@ static int nk_emu_task(void) {
     int cnt = 0;
     for (long i = 0; i < n; i++) if (buf[i] == '\n') cnt++;
     nk_dbg("nk_ad[emu] task entries=%d\n", cnt);
-    if (cnt <= 1) nk_soft("task-invisible");
+    /* 单线程是原生程序最正常的状态，只记日志不进分数 */
+    if (cnt <= 1) nk_soft_tool("single-thread");
     return 0;
 }
 
 /* ---- 12. maps 里必须有 [stack]；有 vDSO 就必须有 [vdso] ---- */
 static int nk_emu_maps(void) {
-    char buf[16384];
-    int n = nk_slurp("/proc/self/maps", buf, (int)sizeof buf - 1);
-    if (n <= 0) return 0;
+    /* 缓冲必须够大：25 MB 二进制 + Vulkan/EGL/字体映射加起来轻易超过 16 KB，
+     * 缓冲小了就永远读不到 [stack]/[vdso]，等于给真机白送两个假软分。 */
+    const int CAP = 262144;
+    char *buf = (char *)malloc(CAP);
+    if (!buf) return 0;
+    int n = nk_slurp("/proc/self/maps", buf, CAP - 1);
+    if (n <= 0) { free(buf); return 0; }
     buf[n] = 0;
-    if (!strstr(buf, "[stack]")) nk_soft("no-stack");
-    if (!strstr(buf, "[vdso]"))  nk_soft("no-vdso");
+    int full = (n >= CAP - 1);
+    int has_stack = (strstr(buf, "[stack]") != NULL);
+    int has_vdso  = (strstr(buf, "[vdso]") != NULL);
+    nk_dbg("nk_ad[emu] maps %d B full=%d stack=%d vdso=%d\n", n, full, has_stack, has_vdso);
+    if (!full) {                      /* 只读到一部分就不下结论 */
+        if (!has_stack) nk_soft("no-stack");
+        if (!has_vdso)  nk_soft("no-vdso");
+    }
+    free(buf);
     return 0;
 }
 
