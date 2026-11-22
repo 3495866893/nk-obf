@@ -407,7 +407,7 @@ jobs:
           export CFG_OVERRIDE="${{ github.event.inputs.cfg_override || '' }}"
           export CFG_ONLY="${{ github.event.inputs.cfg_only || '' }}"
           # 资源曲线：万一又被 SIGTERM，最后时刻的内存/磁盘还在
-          ( while true; do
+          ( set +x; while true; do
               printf '%s ' "$(date +%T)"
               free -m | awk '/^Mem:/{printf "mem_avail=%sMB ", $7}'
               df -m /tmp | awk 'NR==2{printf "tmp_free=%sMB\n", $4}'
