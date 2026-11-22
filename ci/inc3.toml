@@ -18,8 +18,8 @@ probability = 0
 iterations = 1
 
 [passes.bcf]
-enabled = true
-probability = 60
+enabled = false
+probability = 0
 iterations = 1
 complexity = 6
 entropy_chain = false
@@ -36,7 +36,7 @@ stack_confusion = false
 enabled = false
 
 [passes.flattening]
-enabled = false
+enabled = true
 
 [passes.anti_debugging]
 enabled = false
