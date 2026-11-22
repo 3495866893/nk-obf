@@ -122,6 +122,11 @@ class Github(private val token: String) {
         }
     }
 
+    /** 某个 workflow 最近的若干次 run（GitHub 按时间倒序返回） */
+    fun runs(o: String, r: String, wf: String, per: Int = 10): org.json.JSONArray =
+        JSONObject(req("/repos/$o/$r/actions/workflows/$wf/runs?per_page=$per"))
+            .optJSONArray("workflow_runs") ?: org.json.JSONArray()
+
     fun run(o: String, r: String, id: Long): JSONObject =
         JSONObject(req("/repos/$o/$r/actions/runs/$id"))
 
