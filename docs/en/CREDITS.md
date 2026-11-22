@@ -91,3 +91,8 @@ Licenses are quoted from the version pinned in this repository; check the upstre
 ## License
 
 MIT, see `LICENSE` in the repository root. Third-party components keep their own licenses.
+
+## Licensing (important)
+
+`src/`, `ci/` and `kit.tar.gz` derive from **OLLVM-Next** (upstream AGPL-3.0) and are therefore distributed under AGPL-3.0; redistributing modifications (including as a network service) requires publishing the corresponding source.
+`tools/`, `android/` and `docs/` are written for this project and are MIT-licensed. See the root `LICENSE`.
