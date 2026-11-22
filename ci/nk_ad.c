@@ -1,4 +1,4 @@
-// nk_ad.c v7 —— Ensia 反调试强化模块（arm64 / Android，纯用户态）
+// nk_ad.c v8 —— Ensia 反调试强化模块（arm64 / Android，纯用户态）
 // v7 新增「模拟执行检测」：build.prop / 设备节点 / cpuinfo / auxv(vdso) / statfs(/proc)
 //    / uname 一致性 / 无效系统调用语义 / cntvbr 与 CLOCK_MONOTONIC 比例 / SIGSEGV 投递
 //    / 进程名回读 / 线程可见性。硬证据直接 _exit(97)，软证据只记日志（fail-open）。
@@ -558,6 +558,198 @@ static int nk_emu_maps(void) {
     return 0;
 }
 
+
+/* ================= 调试工具指纹检测（v8） =================
+ * 覆盖：Frida（含 phantom-frida 打过补丁的残余特征）、Xposed/LSPosed/Zygisk、
+ *       ptrace/IDA、eBPF uprobe(edbg/stackplz) 的断点改写、QBDI/Unicorn 痕迹。
+ * 注意：本机是 KernelSU（/data/adb 合法存在），所有 root 相关只记软分。
+ */
+
+/* maps 里不能出现的模块名（hard） */
+static const char *g_bad_maps[] = {
+    "frida-agent", "frida-gadget", "libgum", "gum-js-loop", "frida-server",
+    "linjector", "re.frida", "lsposed", "libxposed", "xposedbridge",
+    "zygisk_lsposed", "riru_", "edbg", "stackplz", "qbdi", "libqbdi",
+    "unicorntrace", "libunicorn", "substrate", "libhoudini_frida",
+};
+
+/* 线程名（Frida 运行时线程 + 常见注入器） */
+static const char *g_bad_comm[] = {
+    "gum-js-loop", "gmain", "gdbus", "pool-frida", "frida", "linjector",
+    "artseek", "qbdi", "edbg",
+};
+
+static int nk_maps_hit(void) {
+    char *buf = (char *)malloc(262144);
+    if (!buf) return 0;
+    int n = nk_slurp("/proc/self/maps", buf, 262143);
+    if (n <= 0) { free(buf); return 0; }
+    buf[n] = 0;
+    for (int i = 0; i < (int)(sizeof g_bad_maps / sizeof g_bad_maps[0]); i++) {
+        char *p = strstr(buf, g_bad_maps[i]);
+        if (p) {
+            /* 取出整行做日志 */
+            char line[256];
+            int k = 0;
+            while (p > buf && p[-1] != '\n') p--;
+            while (*p && *p != '\n' && k < (int)sizeof line - 1) line[k++] = *p++;
+            line[k] = 0;
+            nk_dbg("nk_ad[tool] maps hit %s | %s\n", g_bad_maps[i], line);
+            free(buf);
+            return 1;
+        }
+    }
+    free(buf);
+    return 0;
+}
+
+/* /proc/self/task/*/comm 逐个读（Frida 的 gum-js-loop / pool-frida 藏不住） */
+static int nk_comm_hit(void) {
+    char dir[64], buf[4096];
+    int n = nk_slurp("/proc/self/task", buf, 4095);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    char *p = buf;
+    while (p && *p) {
+        char *nl = strchr(p, '\n');
+        if (nl) *nl = 0;
+        if (*p && strcmp(p, ".") && strcmp(p, "..")) {
+            char path[96], name[64];
+            snprintf(path, sizeof path, "/proc/self/task/%s/comm", p);
+            int m = nk_slurp(path, name, 63);
+            if (m > 0) {
+                name[m] = 0;
+                for (int i = 0; i < (int)(sizeof g_bad_comm / sizeof g_bad_comm[0]); i++)
+                    if (strstr(name, g_bad_comm[i])) {
+                        nk_dbg("nk_ad[tool] task comm=%s (tid %s)\n", name, p);
+                        return 1;
+                    }
+            }
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    (void)dir;
+    return 0;
+}
+
+/* Frida 默认端口 / D-Bus 抽象 socket */
+static int nk_frida_socket(void) {
+    static const char *ports[] = {"69A2", "69A3", "69AC"};   /* 27042 / 27043 / 27052 */
+    static const char *netf[] = {"/proc/net/tcp", "/proc/net/tcp6"};
+    char buf[16384];
+    for (int f = 0; f < 2; f++) {
+        int n = nk_slurp(netf[f], buf, 16383);
+        if (n <= 0) continue;
+        buf[n] = 0;
+        char *p = buf;
+        while ((p = strchr(p, ':')) != NULL) {
+            /* local_address 形如 0100007F:69A2，冒号后面就是端口 */
+            for (int i = 0; i < 3; i++) {
+                if (strncmp(p + 1, ports[i], 4) == 0 && p[5] == ' ') {
+                    nk_dbg("nk_ad[tool] %s listening :%s\n", netf[f], ports[i]);
+                    return 1;
+                }
+            }
+            p++;
+        }
+    }
+    n = nk_slurp("/proc/net/unix", buf, 16383);
+    if (n > 0) {
+        buf[n] = 0;
+        if (strstr(buf, "@frida") || strstr(buf, "frida-server") ||
+            strstr(buf, "re.frida.server")) {
+            nk_dbg("nk_ad[tool] unix socket frida\n");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* 常见落盘位置（phantom-frida 会改名，这里只查默认名 + gadget） */
+static int nk_frida_files(void) {
+    static const char *f[] = {
+        "/data/local/tmp/frida-server", "/data/local/tmp/re.frida.server",
+        "/data/local/tmp/frida-gadget.so", "/data/local/tmp/libgadget.so",
+        "/data/local/tmp/libfrida-gadget.so", "/data/local/tmp/hluda",
+        "/data/adb/lspd", "/data/adb/zygisk_lsposed", "/data/adb/riru",
+    };
+    for (int i = 0; i < (int)(sizeof f / sizeof f[0]); i++)
+        if (nk_sys(48, (long)f[i], 0, 0) == 0) {
+            nk_dbg("nk_ad[tool] file %s\n", f[i]);
+            return 1;
+        }
+    return 0;
+}
+
+/* ptrace/IDA：status 里 State: t（被跟踪停止）+ TracerPid + /proc/self/stat 第 3 域 */
+static int nk_trace_state(void) {
+    char st[4096];
+    int n = nk_slurp("/proc/self/status", st, 4095);
+    if (n > 0) {
+        st[n] = 0;
+        char *p = strstr(st, "State:");
+        if (p && (p[7] == 't' || p[7] == 'T')) {
+            nk_dbg("nk_ad[tool] status State: t\n");
+            return 1;
+        }
+    }
+    char s2[512];
+    n = nk_slurp("/proc/self/stat", s2, 511);
+    if (n > 0) {
+        s2[n] = 0;
+        char *p = strrchr(s2, ')');            /* comm 可能带空格，从右括号后找 */
+        if (p && p[1] == ' ' && (p[2] == 't' || p[2] == 'T')) {
+            nk_dbg("nk_ad[tool] stat state=t\n");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* eBPF uprobe（edbg / stackplz）会在函数序言写 BRK；扫自己 .text 头 8KB */
+static int nk_uprobe_brk(void) {
+    if (!g_text_addr || g_text_size < 4096) return 0;
+    const unsigned char *p = (const unsigned char *)g_text_addr;
+    int hits = 0;
+    for (int i = 0; i + 4 <= 8192 && i + 4 <= (int)g_text_size; i += 4) {
+        unsigned w = (unsigned)p[i] | ((unsigned)p[i + 1] << 8) |
+                     ((unsigned)p[i + 2] << 16) | ((unsigned)p[i + 3] << 24);
+        if ((w & 0xFFE0001Fu) == 0xD4200000u) hits++;
+    }
+    if (hits > 0) {
+        nk_dbg("nk_ad[tool] BRK in .text head: %d\n", hits);
+        /* 我们自己的产物正常也为 0；>0 说明有 uprobe/断点被写进代码 */
+        return 1;
+    }
+    return 0;
+}
+
+/* 硬件断点/单步的侧信道：连续两次读 cntvct 的执行间隔若出现异常尖峰，
+ * 说明有 perf_event 断点在打（只记软分，避免误杀） */
+static void nk_hwbp_hiccup(void) {
+    unsigned long long frq = 0, a = 0, b = 0;
+    __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(frq));
+    if (!frq) return;
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(a));
+    for (volatile int i = 0; i < 2000; i++) { }     /* ~几微秒的紧循环 */
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(b));
+    double us = (double)(b - a) * 1e6 / (double)frq;
+    nk_dbg("nk_ad[tool] tightloop=%.2fus\n", us);
+    if (us > 2000.0) nk_soft("hwbp-hiccup");
+}
+
+static void nk_tool_scan(int early) {
+    if (nk_maps_hit())     nk_die_r("nk_ad: frida/xposed module in maps");
+    if (nk_frida_socket()) nk_die_r("nk_ad: frida socket");
+    if (nk_frida_files())  nk_die_r("nk_ad: injector artifacts");
+    if (nk_comm_hit())     nk_die_r("nk_ad: injected thread name");
+    if (nk_trace_state())  nk_die_r("nk_ad: traced state");
+    if (!early) {
+        if (nk_uprobe_brk()) nk_die_r("nk_ad: BRK patched into .text (uprobe)");
+        nk_hwbp_hiccup();
+    }
+}
+
 static unsigned long long g_emu_last_deep;
 
 static unsigned long long nk_now_ms(void) {
@@ -596,6 +788,7 @@ static void nk_check_full(int early) {
     nk_dbg("nk_ad[chk] early=%d wd=%d\n", early, (int)g_wd_pid);
 
     nk_emu_scan(early);
+    nk_tool_scan(early);
 
     if (nk_any_thread_traced()) nk_die_r("nk_ad: thread traced");
 
