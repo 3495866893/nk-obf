@@ -793,7 +793,7 @@ private fun SetPage(
         GlassCard(haze) {
             SectionTitle("", "关于")
             Text("NKBuild 手机版 v1.8.1（versionCode 18）\n" +
-                "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
+                "Nk = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                 "构建：GitHub Actions · 产物：AArch64 PIE",
                 color = TextSub, fontSize = 11.sp)
         }

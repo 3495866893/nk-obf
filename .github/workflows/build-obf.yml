@@ -16,7 +16,7 @@ on:
         description: 'defense.c 强度 0-3'
         default: '3'
       config_file:
-        description: 'Ensia TOML（反调试开关）'
+        description: 'Nk TOML（反调试开关）'
         default: 'ci/tuned.toml'
       cfg_list:
         description: '一次跑多份配置，格式 name:toml 空格分隔'
@@ -103,7 +103,7 @@ jobs:
           df -h /
           echo "deps 用时 $(( $(date +%s) - start )) 秒"
 
-      - name: ensia kit fingerprint
+      - name: nk kit fingerprint
         id: kit
         run: |
           set -eux
@@ -111,13 +111,13 @@ jobs:
           echo "sha=$H" >> "$GITHUB_OUTPUT"
           echo "kit 指纹: $H"
 
-      - name: restore ensia plugin (cache)
+      - name: restore nk plugin (cache)
         id: plugin
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
-          NAME="ensia-plugin-${{ steps.kit.outputs.sha }}"
+          NAME="nk-plugin-${{ steps.kit.outputs.sha }}"
           echo "目标缓存名: $NAME"
           AID=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
                   --jq "[.artifacts[] | select((.name==\"$NAME\") and (.expired|not))]
@@ -133,11 +133,11 @@ jobs:
             if gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$AID/zip" \
                  > "$WORK/plugdl/p.zip" 2>/dev/null && [ -s "$WORK/plugdl/p.zip" ] \
                && unzip -o -q "$WORK/plugdl/p.zip" -d "$WORK/plugdl" \
-               && [ -f "$WORK/plugdl/ensia-build.tar.zst" ]; then
-              rm -rf "$WORK/ensia-build"; mkdir -p "$WORK/ensia-build"
-              if zstd -d -c "$WORK/plugdl/ensia-build.tar.zst" | tar -xf - -C "$WORK"; then
-                if [ -f "$WORK/ensia-build/libEnsia.so" ]; then
-                  echo "插件已从缓存恢复: $(stat -c%s "$WORK/ensia-build/libEnsia.so") 字节"
+               && [ -f "$WORK/plugdl/nk-build.tar.zst" ]; then
+              rm -rf "$WORK/nk-build"; mkdir -p "$WORK/nk-build"
+              if zstd -d -c "$WORK/plugdl/nk-build.tar.zst" | tar -xf - -C "$WORK"; then
+                if [ -f "$WORK/nk-build/libNk.so" ]; then
+                  echo "插件已从缓存恢复: $(stat -c%s "$WORK/nk-build/libNk.so") 字节"
                   echo "hit=true" >> "$GITHUB_OUTPUT"
                   exit 0
                 fi
@@ -269,30 +269,30 @@ jobs:
           gh release upload llvm-build-21.1.8 "$WORK/llvm-build.tar.zst" \
             --repo "$GITHUB_REPOSITORY" --clobber || true
 
-      - name: unpack ensia kit
+      - name: unpack nk kit
         run: |
           set -eux
           tar -xzf kit.tar.gz
-          ls ensia/src | head -3
+          ls nk/src | head -3
 
-      - name: build ensia plugin
+      - name: build nk plugin
         if: steps.plugin.outputs.hit != 'true'
         run: |
           set -eux
-          bash ci/build-ensia.sh ensia/src $WORK/ensia-build $WORK/llvm-build $WORK/llvm-src 2>&1 | tail -30
+          bash ci/build-nk.sh nk/src $WORK/nk-build $WORK/llvm-build $WORK/llvm-src 2>&1 | tail -30
 
-      - name: pack ensia plugin
+      - name: pack nk plugin
         if: steps.plugin.outputs.hit != 'true'
         run: |
           set -eux
-          ls -l "$WORK/ensia-build/libEnsia.so"
-          tar -I 'zstd -19 -T0' -cf "$WORK/ensia-build.tar.zst" -C "$WORK" ensia-build
-          ls -lh "$WORK/ensia-build.tar.zst"
+          ls -l "$WORK/nk-build/libNk.so"
+          tar -I 'zstd -19 -T0' -cf "$WORK/nk-build.tar.zst" -C "$WORK" nk-build
+          ls -lh "$WORK/nk-build.tar.zst"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ensia-plugin-${{ steps.kit.outputs.sha }}
-          path: /mnt/work/ensia-build.tar.zst
+          name: nk-plugin-${{ steps.kit.outputs.sha }}
+          path: /mnt/work/nk-build.tar.zst
           retention-days: 3
 
       - name: restore ndk (cache)
@@ -347,12 +347,12 @@ jobs:
           set -eux
           export LD_LIBRARY_PATH=$WORK/llvm-build/lib
           TC=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64
-          PLUGIN=$(find $WORK/ensia-build -name "*.so" | head -1)
-          [ -n "$PLUGIN" ] || { echo "!! 没找到插件"; ls -R $WORK/ensia-build | head -20; exit 1; }
+          PLUGIN=$(find $WORK/nk-build -name "*.so" | head -1)
+          [ -n "$PLUGIN" ] || { echo "!! 没找到插件"; ls -R $WORK/nk-build | head -20; exit 1; }
           echo "插件: $PLUGIN"
           printf '#include <stdio.h>\nint main(void){printf("%%s\\n","marker-plain-string");return 0;}\n' > /tmp/h.c
-          export ENSIA=1 ENSIA_PRESET=max
-          export ENSIA_CONFIG=$PWD/ci/tuned.toml
+          export NK=1 NK_PRESET=max
+          export NK_CONFIG=$PWD/ci/tuned.toml
           timeout 240 $WORK/llvm-build/bin/clang --target=aarch64-linux-android21 \
             --sysroot=$TC/sysroot --ld-path=$TC/bin/ld.lld \
             -fpass-plugin=$PLUGIN -O2 -nostdlib++ -o /tmp/h /tmp/h.c 2>&1 | tail -15 || true
@@ -381,14 +381,14 @@ jobs:
           FIRST=$(echo "${{ github.event.inputs.presets || 'max mid' }}" | awk '{print $1}')
           [ -n "$FIRST" ] || FIRST=max
           if [ -f "$CFG" ]; then
-            cp "$CFG" "ensia/config/presets/$FIRST.toml"
+            cp "$CFG" "nk/config/presets/$FIRST.toml"
             echo "使用配置: $CFG -> presets/$FIRST.toml"
           fi
           # 大 TU 用的轻量配置：imgui.cpp 这种 7 万行文件在 flattening/bcf 下会把
           # runner 内存吃光（实测 avail 只剩 150MB），整个 job 被 SIGTERM(143)。
           if [ -f ci/ui-jni-light.toml ]; then
-            cp ci/ui-jni-light.toml ensia/config/presets/nk-light.toml
-            [ -f ci/nk-nofold.toml ] && cp ci/nk-nofold.toml ensia/config/presets/nk-nofold.toml && echo "轻量/无平坦化配置 -> presets/nk-light.toml, nk-nofold.toml"
+            cp ci/ui-jni-light.toml nk/config/presets/nk-light.toml
+            [ -f ci/nk-nofold.toml ] && cp ci/nk-nofold.toml nk/config/presets/nk-nofold.toml && echo "轻量/无平坦化配置 -> presets/nk-light.toml, nk-nofold.toml"
           fi
           export SRC_DIR="${{ github.event.inputs.src_dir || 'proj' }}"
           export SRC_FILES="${{ github.event.inputs.src_files || 'mian.cpp defense.c' }}"
@@ -407,7 +407,7 @@ jobs:
           MON=$!
           set +e
           # 不要用 tail：它只在 EOF 才吐，进程被 SIGTERM 时一行都留不下
-          bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" lucifer 2>&1 \
+          bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/nk-build" lucifer 2>&1 \
             | stdbuf -oL tee /tmp/nk_build.log
           RC=${PIPESTATUS[0]}
           kill $MON 2>/dev/null || true
@@ -438,7 +438,7 @@ jobs:
             case "$CFG" in ci/*) CFG_ONLY="$CFG" ;; *) CFG_ONLY="ci/$CFG" ;; esac
             echo "==================== $NAME  <-  $CFG_ONLY"
             CFG_ONLY="$CFG_ONLY" OUT_NAME="$NAME" \
-              bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/ensia-build" "$NAME" 2>&1 | tail -25
+              bash ci/build-lucifer.sh "$NDK_DIR" "$WORK/nk-build" "$NAME" 2>&1 | tail -25
             if [ -f "$NAME" ]; then
               ls -l "$NAME"
             else
@@ -452,7 +452,7 @@ jobs:
           set -eux
           mkdir -p nk-toolchain/bin
           {
-            echo "Pkg.Desc = NK-Ollvm toolchain (self-built LLVM $LLVM_VER + Ensia plugin)"
+            echo "Pkg.Desc = NK-Ollvm toolchain (self-built LLVM $LLVM_VER + Nk plugin)"
             echo "Pkg.Revision = $LLVM_VER"
             echo "Pkg.Ollvm = NK-Ollvm"
             echo "Pkg.Maintainer.QQ = 3495866893"
@@ -463,7 +463,7 @@ jobs:
           {
             echo '#!/bin/sh'
             echo 'echo "------------------------------------------------"'
-            echo 'echo "        NK-Ollvm toolchain  (LLVM 21 + Ensia)"'
+            echo 'echo "        NK-Ollvm toolchain  (LLVM 21 + Nk)"'
             echo 'echo "  QQ: 3495866893"'
             echo 'echo "  TG: https://t.me/nkhoook"'
             echo 'echo "  Bilibili: 小白鱼游戏"'

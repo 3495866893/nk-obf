@@ -16,7 +16,7 @@ class Prefs(ctx: Context) {
         set(v) = sp.edit().putString("owner", v).apply()
 
     var repo: String
-        get() = sp.getString("repo", "ensia-plugin") ?: "ensia-plugin"
+        get() = sp.getString("repo", "nk-plugin") ?: "nk-plugin"
         set(v) = sp.edit().putString("repo", v).apply()
 
     var branch: String
@@ -40,7 +40,7 @@ class Prefs(ctx: Context) {
         }
         set(v) = sp.edit().putString("passes", v.joinToString(",")).apply()
 
-    /** Ensia IR 级反调试 + nk_ad 运行时看门狗总开关 */
+    /** Nk IR 级反调试 + nk_ad 运行时看门狗总开关 */
     var antiDebug: Boolean
         get() = sp.getBoolean("antiDebug", true)
         set(v) = sp.edit().putBoolean("antiDebug", v).apply()

@@ -1,7 +1,7 @@
 package com.nk.nkbuild
 
 /**
- * Ensia pass 目录（与桌面版 NKBuild 的 PASS_SPEC 保持一致）。
+ * Nk pass 目录（与桌面版 NKBuild 的 PASS_SPEC 保持一致）。
  * 手机端不再只给「轻量 / 标准」两档，而是 16 个 pass 逐个勾选，
  * 勾完在本地生成 TOML，上传到仓库 ci/ui-<工程名>.toml 后再 dispatch。
  */

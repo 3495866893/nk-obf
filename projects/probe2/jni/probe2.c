@@ -1,4 +1,4 @@
-// probe2.c —— 复刻 Ensia 的 "violent exit" 序列，单独验证它在真机上会不会被外部 SIGKILL
+// probe2.c —— 复刻 Nk 的 "violent exit" 序列，单独验证它在真机上会不会被外部 SIGKILL
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
@@ -27,7 +27,7 @@ int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "info";
 
     if (!strcmp(mode, "abort")) {
-        printf("mode=abort：调用 Ensia 同款 prctl+exit_group(101)\n");
+        printf("mode=abort：调用 Nk 同款 prctl+exit_group(101)\n");
         fflush(stdout);
         nk_exit_101();
         printf("!! exit_group 居然返回了\n");

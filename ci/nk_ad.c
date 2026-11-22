@@ -1,4 +1,4 @@
-// nk_ad.c v8 —— Ensia 反调试强化模块（arm64 / Android，纯用户态）
+// nk_ad.c v8 —— Nk 反调试强化模块（arm64 / Android，纯用户态）
 // v7 新增「模拟执行检测」：build.prop / 设备节点 / cpuinfo / auxv(vdso) / statfs(/proc)
 //    / uname 一致性 / 无效系统调用语义 / cntvbr 与 CLOCK_MONOTONIC 比例 / SIGSEGV 投递
 //    / 进程名回读 / 线程可见性。硬证据直接 _exit(97)，软证据只记日志（fail-open）。

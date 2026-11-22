@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
         printf("status: 打不开 /proc/self/status (errno=%d)\n", errno);
     }
 
-    // 2) cntvct 计时（复刻 Ensia 的 128 nop 检测）
+    // 2) cntvct 计时（复刻 Nk 的 128 nop 检测）
     for (int round = 0; round < 3; round++) {
         uint64_t a = rd_cntvct();
         for (int i = 0; i < 128; i++) __asm__ __volatile__("nop");
@@ -43,12 +43,12 @@ int main(int argc, char **argv) {
                (unsigned long long)(b - a));
     }
 
-    // 3) ptrace(PTRACE_TRACEME) —— Ensia 的核心判定：必须返回 0
+    // 3) ptrace(PTRACE_TRACEME) —— Nk 的核心判定：必须返回 0
     errno = 0;
     long r = ptrace(PTRACE_TRACEME, 0, NULL, NULL);
     int e = errno;
     printf("ptrace_TRACEME=%ld errno=%d (%s)  %s\n", r, e, strerror(e),
-           r == 0 ? "-> 通过" : "-> Ensia 会在此处 abort!");
+           r == 0 ? "-> 通过" : "-> Nk 会在此处 abort!");
 
     // 4) dumpable / 附加能力
     errno = 0;

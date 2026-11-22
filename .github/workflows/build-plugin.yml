@@ -30,19 +30,19 @@ jobs:
         run: |
           mkdir -p kit
           tar -xzf kit.tar.gz -C kit
-          chmod +x kit/ensia/oneclick/*.sh
+          chmod +x kit/nk/oneclick/*.sh
 
-      - name: build libEnsia.so (aarch64 android)
+      - name: build libNk.so (aarch64 android)
         run: |
-          bash kit/ensia/oneclick/build-plugin-android-cross.sh \
+          bash kit/nk/oneclick/build-plugin-android-cross.sh \
             --sysroot "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" \
-            --src "$PWD/kit/ensia/src" \
-            --api 21 --jobs 4 --out "$PWD/libEnsia.so"
-          readelf -h libEnsia.so | grep -E 'Machine|Type'
-          readelf --dyn-syms -W libEnsia.so | grep -c llvmGetPassPluginInfo || true
+            --src "$PWD/kit/nk/src" \
+            --api 21 --jobs 4 --out "$PWD/libNk.so"
+          readelf -h libNk.so | grep -E 'Machine|Type'
+          readelf --dyn-syms -W libNk.so | grep -c llvmGetPassPluginInfo || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libEnsia
-          path: libEnsia.so
+          name: libNk
+          path: libNk.so
           if-no-files-found: error

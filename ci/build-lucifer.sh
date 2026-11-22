@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 通用：用自建 clang + Ensia 插件把任意项目交叉编译成 aarch64（Android）
+# 通用：用自建 clang + Nk 插件把任意项目交叉编译成 aarch64（Android）
 # 用法: bash ci/build-lucifer.sh <NDK_DIR> [PLUGIN_DIR|PLUGIN_SO] [OUT]
 set -uo pipefail
 NDK_DIR="${1:?NDK_DIR}"
@@ -58,7 +58,7 @@ echo "头文件路径 (${#INCS[@]}): ${INCS[*]:-无}"
 # "Undefined temporary symbol .L_vXXXX" 的汇编错误（已实测）。
 #
 # NK_AD=0 时不再“删掉这个 .o”，而是用 -DNK_AD_OFF 编成空实现：
-#   Ensia 的 anti_debugging pass 会在每个函数入口注入 call __nk_ad_check()，
+#   Nk 的 anti_debugging pass 会在每个函数入口注入 call __nk_ad_check()，
 #   一旦关掉该 pass，实测产物在静态初始化阶段 100% CPU 死循环（0 字节输出）。
 #   所以 pass 永远开着，"关闭反调试"只把实现换成空函数。
 if [ -f "$PWD/ci/nk_ad.c" ]; then
@@ -79,7 +79,7 @@ echo "源文件: ${SRCS[*]}"
 
 PLUGINS=()
 if [ -n "$PLUGIN_ARG" ] && [ -d "$PLUGIN_ARG" ]; then
-  for c in "$PLUGIN_ARG/libEnsia.so" "$PLUGIN_ARG/libEnsia-linked.so"; do
+  for c in "$PLUGIN_ARG/libNk.so" "$PLUGIN_ARG/libNk-linked.so"; do
     [ -f "$c" ] && PLUGINS+=("$c")
   done
 elif [ -n "$PLUGIN_ARG" ] && [ -f "$PLUGIN_ARG" ]; then
@@ -123,11 +123,11 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
   local preset="$1" cfg="$2" plugin="$3" out="$4"
   echo "== 尝试 preset=${preset:-plain} plugin=${plugin:-none}"
   local extra=()
-  unset ENSIA
+  unset NK
   if [ -n "$plugin" ] && [ -n "$cfg" ] && [ -f "$cfg" ]; then
-    export ENSIA=1 ENSIA_CONFIG="$cfg"
+    export NK=1 NK_CONFIG="$cfg"
     if [ "$preset" != "custom" ]; then
-      export ENSIA_PRESET="${preset}"
+      export NK_PRESET="${preset}"
     fi
     extra=("-fpass-plugin=$plugin")
   fi
@@ -162,16 +162,16 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     if [ "$fsz" -gt 300000 ] || [ "$ppsz" -gt 1500000 ]; then fopt="-O1"; fi
     # 大 TU 换成轻量配置（只加密字符串 + 指令替换 + 反调试），
     # flattening/bcf/indirect 在这种 TU 上会把内存吃爆 → runner SIGTERM 143
-    NOFOLD="$PWD/ensia/config/presets/nk-nofold.toml"    # 8 pass 减 flattening
-    LIGHT="$PWD/ensia/config/presets/nk-light.toml"      # 兜底：极重文件才用
+    NOFOLD="$PWD/nk/config/presets/nk-nofold.toml"    # 8 pass 减 flattening
+    LIGHT="$PWD/nk/config/presets/nk-light.toml"      # 兜底：极重文件才用
     if { [ "$fsz" -gt 200000 ] || [ "$ppsz" -gt 800000 ]; } && [ -f "$NOFOLD" ]; then
-      export ENSIA_CONFIG="$NOFOLD"
+      export NK_CONFIG="$NOFOLD"
       echo "   → 大 TU（预处理 ${ppsz}B）：跳过 flattening，其余 7 个 pass 照常"
     elif { [ "$fsz" -gt 200000 ] || [ "$ppsz" -gt 800000 ]; } && [ -f "$LIGHT" ]; then
-      export ENSIA_CONFIG="$LIGHT"
+      export NK_CONFIG="$LIGHT"
       echo "   → 大 TU（预处理 ${ppsz}B）：退回 nk-light.toml（只 3 个 pass）"
     else
-      export ENSIA_CONFIG="$cfg"
+      export NK_CONFIG="$cfg"
     fi
     echo "  [$i/$n] 编译 $f（源 $(numfmt --to=iec "$fsz" 2>/dev/null || echo "$fsz")B / 预处理 $(numfmt --to=iec "$ppsz" 2>/dev/null || echo "$ppsz")B，优化级别 $fopt）"
     t0=$(date +%s)
@@ -287,8 +287,8 @@ if [ "${PRESETS:-max mid}" != "none" ]; then
   for plug in "${PLUGINS[@]:-}"; do
     [ -n "${plug:-}" ] || continue
     for p in ${PRESETS:-max mid}; do
-      cfg="$PWD/ensia/config/presets/$p.toml"
-      [ -f "$cfg" ] || cfg="$PWD/ensia/config/presets/max-all.toml"
+      cfg="$PWD/nk/config/presets/$p.toml"
+      [ -f "$cfg" ] || cfg="$PWD/nk/config/presets/max-all.toml"
       if try "$p" "$cfg" "$plug" "$OUT.$p"; then mv "$OUT.$p" "$OUT"; exit 0; fi
     done
   done

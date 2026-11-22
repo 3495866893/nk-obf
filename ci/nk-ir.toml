@@ -53,7 +53,7 @@ enc_jump_target = true
 [passes.flattening]
 enabled = true
 
-# ===== 反调试 / 反Hook（Ensia IR 级，纯插件实现，不依赖 defense.c）=====
+# ===== 反调试 / 反Hook（Nk IR 级，纯插件实现，不依赖 defense.c）=====
 [passes.anti_debugging]
 enabled = true
 probability = 100

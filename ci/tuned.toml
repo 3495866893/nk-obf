@@ -2,8 +2,8 @@
 # max-all.toml —— 所有功能全开 + 全部参数顶到上限
 # ------------------------------------------------------------------------------
 # 用法（Android.mk）：
-#   -mllvm -ensia-config=$(ENSIA_DIR)/config/presets/max-all.toml
-#   显式给 -ensia-config 会自动打开总开关，不需要再写 -mllvm -ensia。
+#   -mllvm -nk-config=$(NK_DIR)/config/presets/max-all.toml
+#   显式给 -nk-config 会自动打开总开关，不需要再写 -mllvm -nk。
 #
 # ⚠ 代价：体积 5–10×、编译时间 2–4×、真机启动与运行变慢；
 #   -fco（函数调用混淆）在 Android 上依赖 dlopen，最容易出问题；
