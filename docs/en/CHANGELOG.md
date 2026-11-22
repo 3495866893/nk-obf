@@ -8,10 +8,10 @@
 
 ## Phase 0 · The starting point: upload source, get a hardened binary back
 
-The first request: a desktop GUI — pick a project folder, upload it to GitHub, dispatch an Actions workflow, and download an aarch64 binary obfuscated by **Ensia** (the early codename of NK), with obfuscation and anti-debug selectable.
+The first request: a desktop GUI — pick a project folder, upload it to GitHub, dispatch an Actions workflow, and download an aarch64 binary obfuscated by **the early-codename plugin** (later renamed NK), with obfuscation and anti-debug selectable.
 
 - Built `tools/NKBuild.py`: a four-card customtkinter window (source / project & output / obfuscation toggles / run & log), plus a `Github` class doing blob → tree → commit → dispatch → poll run → download artifact.
-- Obfuscation side: an LLVM 21 pass plugin (`libEnsia.so` at the time) loaded through `-fpass-plugin` into NDK r29's clang, configured by `ci/*.toml`.
+- Obfuscation side: an LLVM 21 pass plugin (`lib<codenames>.so` at the time) loaded through `-fpass-plugin` into NDK r29's clang, configured by `ci/*.toml`.
 - First round of speed work: 17.6 min → 1.8 min (apt checks made on-demand: 7.5 min → 0.02 min; smoke test skipped by default: 4 min → 0; plugin and clang cached).
 
 ## Phase 1 · Anti-debug made the binary exit silently at startup
@@ -41,7 +41,7 @@ From "the pass injects detection" to **pass injects call sites + a C module hold
 ## Phase 4 · Frida and the Actions quota
 
 - Tried to install frida-server for a real detection test: the wheel on hand was `win_arm64` (unusable on this AMD64 host), and frida-server needs root — the attached device had changed to an unrooted vivo.
-- Discovered the Actions storage was full: 139 artifacts / 5.8 GB (`llvm-build` 225 MB × 17). Purged to 225 MB and rewrote the cleanup workflow to keep `llvm-build`, `ndk-*-cache`, `ensia-plugin-*` and only prune above 300 MB total.
+- Discovered the Actions storage was full: 139 artifacts / 5.8 GB (`llvm-build` 225 MB × 17). Purged to 225 MB and rewrote the cleanup workflow to keep `llvm-build`, `ndk-*-cache`, `<old-name>-plugin-*` and only prune above 300 MB total.
 
 ## Phase 5 · The workspace was deleted, everything rebuilt
 
@@ -120,7 +120,7 @@ Driven by the three review documents supplied by the owner:
 
 - **Full rename**: early codename → `NK`. Kit directory `nk/` (95 files), output `libNk.so`, script `ci/build-nk.sh`, environment variables `NK` / `NK_CONFIG`, repository `nk-obf`.
 - Docs: `docs/zh/` and `docs/en/` with eight pages each (index / FEATURES / USAGE / ARCHITECTURE / COMPATIBILITY / CHANGELOG / RELEASES / CREDITS), plus bilingual `README.md` / `README.en.md` and a step-by-step `DEPLOY.md`.
-- Two subagents proofread every page, then a script re-audited them: balanced code fences, no skipped heading levels, every relative link resolvable, zero hits for the old codename, no mojibake, no TODOs.
+- Two subagents proofread every page, then a script re-audited them: balanced code fences, no skipped heading levels, every relative link resolvable, zero hits for the old codename, no mojibake, no leftover placeholders.
 - **License correction**: `src/`, `ci/` and `kit.tar.gz` derive from **OLLVM-Next (AGPL-3.0)**, so the previous MIT license was wrong; it is now "plugin AGPL-3.0 + both GUIs and docs MIT", with a licensing section in both `CREDITS.md` files.
 - Released `v1.0`: `NKBuild-mobile-1.0-kami.apk` + `NKBuild-1.0-win64.exe`; the phone shows `v1.0 (versionCode 20)` and the about page renders `NK / OLLVM-NEXT / 新一代混淆` in large type.
 - Pre-public audit: **no real PAT anywhere in the repo** (only `ghp_xxxx…` placeholders in the deploy guide); the private client project was removed; the sample signing password and XL test keys are called out in `CREDITS` as sample values to replace.
