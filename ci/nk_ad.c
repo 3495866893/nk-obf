@@ -232,7 +232,9 @@ static int nk_hooked_libc(void) {
     return 0;
 }
 
-static int nk_any_thread_traced(void) {
+static int nk_any_thread_traced(void)
+{
+    if (getenv("NK_AD_ALLOW_DEBUG")) return 0;
     int fd = nk_open_ro("/proc/self/task");
     if (fd < 0) return 0;
     char dbuf[4096];
@@ -257,7 +259,7 @@ static int nk_any_thread_traced(void) {
                     }
                 }
             }
-            if (reclen == 0) break;
+            if (reclen < 24) break;   /* P3：畸形记录直接放弃，防死循环 */
             off += reclen;
         }
     }
@@ -299,7 +301,8 @@ static int nk_text_cb(struct dl_phdr_info *info, size_t sz, void *data) {
  *     线程不可见、/proc/self/maps 缺 [stack]。软证据 ≥3 项也杀。
  */
 
-static int g_emu_score = 0;
+static int g_emu_score = 0;     /* 只装「真·模拟器证据」，>=3 判死 */
+static int g_tool_score = 0;    /* 只装「工具指纹 / 环境信息」，永远不判死，仅日志 */
 /* JNI 表检查的软分只记一次：真机上这条可能稳定误报（JIT 指针），
  * 而 worker 每 1.5s 一次深检，若每次加分，4~6 秒就撞上 g_emu_score>=3 自杀。 */
 static int g_jni_soft_done = 0;
@@ -316,6 +319,14 @@ static int nk_emu_on(void) {
 static void nk_soft(const char *tag) {
     g_emu_score++;
     nk_dbg("nk_ad[emu] soft %s (score=%d)\n", tag, g_emu_score);
+}
+
+/* v11.2 P2：工具指纹类软分单独计数，绝不参与判死。
+ * 之前 xposed-dir-in-rooted 走 nk_soft，root 设备（KernelSU/Magisk + LSPosed）
+ * 每次深检都命中 → 1.5s 一次 → 4~6 秒自己把自己杀了。 */
+static void nk_soft_tool(const char *tag) {
+    g_tool_score++;
+    nk_dbg("nk_ad[tool] soft %s (tool=%d, 仅日志)\n", tag, g_tool_score);
 }
 
 /* ---- 1. build.prop：qemu / SDK 型号 / goldfish 硬件 ---- */
@@ -733,7 +744,7 @@ static int nk_frida_files(void) {
         if (nk_sys(48, (long)soft[i], 0, 0) == 0) {
             if (rooted) {
                 nk_dbg("nk_ad[tool] %s（环境自带 root，记软分）\n", soft[i]);
-                nk_soft("xposed-dir-in-rooted");
+                nk_soft_tool("xposed-dir-in-rooted");   /* P0：环境信息，不参与判死 */
             } else {
                 nk_dbg("nk_ad[tool] file %s\n", soft[i]);
                 return 1;
@@ -743,7 +754,11 @@ static int nk_frida_files(void) {
 }
 
 /* ptrace/IDA：status 里 State: t（被跟踪停止）+ TracerPid + /proc/self/stat 第 3 域 */
-static int nk_trace_state(void) {
+static int nk_trace_state(void)
+{
+    /* 开发期：NK_AD_ALLOW_DEBUG=1 放过 JDWP / Android Studio 附加，
+     * 免得调试器一挂上就被判死 97。线上不要设这个变量。 */
+    if (getenv("NK_AD_ALLOW_DEBUG")) return 0;
     char st[4096];
     int n = nk_slurp("/proc/self/status", st, 4095);
     if (n > 0) {
@@ -881,7 +896,7 @@ static void nk_text_wlock(void)
     int r = mprotect((void *)base, len, PROT_READ | PROT_WRITE | PROT_EXEC);
     if (r == 0) g_text_rwx_self = 1;
     nk_dbg("nk_ad[tool] mprotect 文本 RWX -> %d\n", r);
-    if (r == 0) nk_soft("text-rwx-blocks-uprobe");
+    if (r == 0) nk_soft_tool("text-rwx-blocks-uprobe");   /* 这是自己的行为，不算证据 */
 }
 
 
@@ -896,9 +911,22 @@ static long nk_raw_getpid(void)
     return x0;
 }
 
+/* v11.2 P2：单个 getpid 只能抓「完全不转发」的 hook；
+ * 加 getppid / gettid 交叉验证，QTrace 这类「记录 + 转发」的包装会露馅。 */
+static long nk_raw_sys(long nr)
+{
+    register long x8 __asm__("x8") = nr;
+    register long x0 __asm__("x0");
+    __asm__ __volatile__("svc #0" : "=r"(x0) : "r"(x8) : "memory");
+    return x0;
+}
+
 static int nk_svc_ok(void)
 {
-    return nk_raw_getpid() == (long)getpid();
+    if (nk_raw_getpid() != (long)getpid()) return 0;
+    if (nk_raw_sys(173) != (long)getppid()) return 0;   /* getppid */
+    if (nk_raw_sys(178) != syscall(178)) return 0;      /* gettid（API21 无 gettid() 声明） */
+    return 1;
 }
 
 /* 2)/7) 匿名可执行映射 / memfd 加载：Frida gadget、linjector 落地的典型形态。
@@ -947,7 +975,7 @@ static int nk_anon_exec(void)
                     }
                 } else if (*q == '\n' || *q == 0) {      /* 完全没有路径 */
                     nk_dbg("nk_ad[tool] pathless exec %lx-%lx %s\n", a, b, perm);
-                    nk_soft("pathless-exec");
+                    nk_soft_tool("pathless-exec");      /* P1：GPU/JIT 变体可能合法，只日志 */
                 }
             }
         }
@@ -1039,15 +1067,17 @@ static void nk_tm_collect(void)
 
 static void nk_tm_verify(void)
 {
-    /* P0：基线延后到首次深检采集，避开 ART 启动期的合法自修改。 */
+    /* P0：基线延后到首次深检采集，避开 ART 启动期的合法自修改。
+     * v11.2：采完不再 return，当轮立刻 verify 一次（把漏检窗口从 1.5s 收到 0）。 */
+    int first = 0;
     if (__atomic_load_n(&g_tm_ready, __ATOMIC_ACQUIRE) == 0 &&
         __atomic_exchange_n(&g_tm_ready, 1, __ATOMIC_ACQ_REL) == 0) {
         nk_tm_collect();
         __atomic_store_n(&g_tm_ready, 2, __ATOMIC_RELEASE);
-        nk_dbg("nk_ad[tool] 基线延后采样完成\n");
-        return;
+        first = 1;
+        nk_dbg("nk_ad[tool] 基线延后采样完成，立即校验一次\n");
     }
-    if (__atomic_load_n(&g_tm_ready, __ATOMIC_ACQUIRE) != 2) return;
+    if (!first && __atomic_load_n(&g_tm_ready, __ATOMIC_ACQUIRE) != 2) return;
     for (int i = 0; i < g_ntm; i++) {
         uint64_t h = nk_hash_mem((const unsigned char *)g_tm[i].a, g_tm[i].s);
         if (h != g_tm[i].h) {
@@ -1074,7 +1104,7 @@ static void nk_tool_scan(int early) {
         /* P2：ART 会把入口指到 JIT 代码区或 libc helper，硬杀误报太高，降为软分。 */
         if (jt == 0 && !g_jni_soft_done) {     /* 只记一次，不参与累积判死 */
             g_jni_soft_done = 1;
-            nk_soft("jni-table-out-of-module");
+            nk_soft_tool("jni-table-out-of-module");
         }
         if (nk_hwbp_slots()) nk_die_r("nk_ad: hw breakpoint slots occupied");
         nk_tm_verify();
