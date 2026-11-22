@@ -738,7 +738,60 @@ static void nk_hwbp_hiccup(void) {
     if (us > 2000.0) nk_soft("hwbp-hiccup");
 }
 
+
+/* v9：uprobe 痕迹 —— [uprobes] 条目 + 自身文本 VMA 可写（eDBG/eBPF 打桩前置条件） */
+static int nk_uprobe_maps(void)
+{
+    char *buf = (char *)malloc(262144);
+    if (!buf) return 0;
+    int n = nk_slurp("/proc/self/maps", buf, 262143);
+    if (n <= 0) { free(buf); return 0; }
+    buf[n] = 0;
+    if (strstr(buf, "[uprobes]")) {
+        nk_dbg("nk_ad[tool] maps 里出现 [uprobes]\n");
+        free(buf);
+        return 1;
+    }
+    if (g_text_addr) {
+        char *p = buf;
+        while (p && *p) {
+            unsigned long a = 0, b = 0;
+            char perm[8] = {0};
+            if (sscanf(p, "%lx-%lx %7s", &a, &b, perm) == 3 &&
+                g_text_addr >= (uint64_t)a && g_text_addr < (uint64_t)b) {
+                if (perm[1] == 'w') {
+                    nk_dbg("nk_ad[tool] 自身文本可写: %s\n", perm);
+                    free(buf);
+                    return 1;
+                }
+                break;
+            }
+            p = strchr(p, '\n');
+            if (p) p++;
+        }
+    }
+    free(buf);
+    return 0;
+}
+
+/* v9：主动阻断 —— 文本可写时内核会拒绝注册 uprobe。
+ * Android 上 SELinux 大多直接拒绝 mprotect，成功与否都只记日志。 */
+static void nk_text_wlock(void)
+{
+    if (!g_text_addr || !g_text_size) return;
+    long pg = sysconf(_SC_PAGESIZE);
+    if (pg <= 0) pg = 4096;
+    uintptr_t base = (uintptr_t)g_text_addr & ~(uintptr_t)(pg - 1);
+    uintptr_t end = ((uintptr_t)g_text_addr + g_text_size + (uintptr_t)pg - 1) & ~(uintptr_t)(pg - 1);
+    size_t len = (size_t)(end - base);
+    if (len > (size_t)(4u << 20)) len = (size_t)(4u << 20);
+    int r = mprotect((void *)base, len, PROT_READ | PROT_WRITE | PROT_EXEC);
+    nk_dbg("nk_ad[tool] mprotect 文本 RWX -> %d\n", r);
+    if (r == 0) nk_soft("text-rwx-blocks-uprobe");
+}
+
 static void nk_tool_scan(int early) {
+    if (nk_uprobe_maps())  nk_die_r("nk_ad: text writable / [uprobes]");
     if (nk_maps_hit())     nk_die_r("nk_ad: frida/xposed module in maps");
     if (nk_frida_socket()) nk_die_r("nk_ad: frida socket");
     if (nk_frida_files())  nk_die_r("nk_ad: injector artifacts");
@@ -747,6 +800,7 @@ static void nk_tool_scan(int early) {
     if (!early) {
         if (nk_uprobe_brk()) nk_die_r("nk_ad: BRK patched into .text (uprobe)");
         nk_hwbp_hiccup();
+        nk_text_wlock();
     }
 }
 
