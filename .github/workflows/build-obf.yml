@@ -290,6 +290,7 @@ jobs:
           ls -lh "$WORK/nk-build.tar.zst"
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: nk-plugin-${{ steps.kit.outputs.sha }}
           path: /mnt/work/nk-build.tar.zst
@@ -486,7 +487,24 @@ jobs:
             echo "old fingerprints: $(strings lucifer | grep -Eic 'TUSI|clang version' || true)"
           fi
 
+      - name: publish binary to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          TAG=nk-builds
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "NK builds" --notes "自动产出的混淆产物；Release 资产不占 Actions 存储配额。" || true
+          fi
+          for f in lucifer lucifer-* nk-toolchain.tar.gz; do
+            [ -f "$f" ] || continue
+            echo "上传 $f ($(stat -c%s "$f") B)"
+            gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber || true
+          done
+
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: lucifer-obf
           path: |
@@ -496,6 +514,7 @@ jobs:
           retention-days: 3
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: nk-toolchain
           path: nk-toolchain.tar.gz
