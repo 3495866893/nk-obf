@@ -119,6 +119,43 @@ brand() {
     && echo "已追加 NK 标识: $f"
 }
 
+# ---- NK_VENDOR_GUARD -------------------------------------------------------
+# 有些项目把 .c 直接 #include 进头文件（典型：res/pz.h 里 #include "cJSON.c"），
+# 上传时只带了 .h，clang 就死在 `fatal error: 'cJSON.c' file not found`。
+# 这里在编译前逐个核对 `#include "xxx.c"`，缺的先从 ci/vendor 补，补不到就报人话。
+nk_vendor_guard() {
+  local srcdir="$1" vendor="$2"
+  [ -d "$srcdir" ] || return 0
+  local missing="" inc base dst
+  while IFS= read -r inc; do
+    [ -z "$inc" ] && continue
+    base="$(basename "$inc")"
+    if find "$srcdir" -name "$base" -print -quit 2>/dev/null | grep -q .; then
+      continue
+    fi
+    if [ -f "$vendor/$base" ]; then
+      dst="$srcdir/$inc"
+      case "$inc" in /*) dst="$inc" ;; esac
+      mkdir -p "$(dirname "$dst")" 2>/dev/null || true
+      if cp "$vendor/$base" "$dst" 2>/dev/null; then
+        echo "   [vendored] 缺 $base → 已从 ci/vendor 补到 $inc"
+        continue
+      fi
+    fi
+    missing="$missing $base"
+  done < <(grep -rhoE '#[[:space:]]*include[[:space:]]*"[^"]+\.(c|cc|cpp)"' "$srcdir" 2>/dev/null \
+           | sed -E 's/.*"([^"]+)".*/\1/' | sort -u)
+
+  if [ -n "$missing" ]; then
+    echo "!! 缺少被 #include 的源文件：$missing"
+    echo "!! 这些 .c/.cpp 是被头文件直接 include 的（不是单独编译单元），但目录里没有；"
+    echo "!! 把它们放回工程（或放进 ci/vendor/）再编译。"
+    return 3
+  fi
+  return 0
+}
+# ---------------------------------------------------------------------------
+
 try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
   local preset="$1" cfg="$2" plugin="$3" out="$4"
   echo "== 尝试 preset=${preset:-plain} plugin=${plugin:-none}"
@@ -263,6 +300,12 @@ if [ -n "${CFG_ONLY:-}" ] && [ -f "${CFG_ONLY:-}" ]; then
   for plug in "${PLUGINS[@]:-}"; do
     [ -n "${plug:-}" ] || continue
     echo "== 只用配置: $CFG_ONLY（IR 级 pass 按 TOML 生效）"
+nk_vendor_guard "$PWD/$SRC_DIR" "$PWD/ci/vendor"
+if [ $? -ne 0 ]; then
+  echo "!! 源码不完整：先补齐被 #include 的 .c 文件（见上）"
+  exit 1
+fi
+
     if try "custom" "$CFG_ONLY" "$plug" "$OUT.cfg"; then
       mv "$OUT.cfg" "$OUT"; exit 0
     fi
