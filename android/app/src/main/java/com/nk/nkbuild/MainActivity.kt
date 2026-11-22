@@ -101,9 +101,7 @@ fun App(vm: BuildViewModel = viewModel()) {
         vm.restore(prefs)
         // 上次切后台/被杀掉的任务：按 run id 接上
         vm.resume(ctx, prefs)
-        // 先按上次的账号静默登录（已激活就直接进主界面）
-        vm.acctAuto(ctx, prefs)
-        // 只有账号这条路走不通时，才拿存下来的卡密兜底复验
+        // 用本机存过的卡密自动复验一次（没有就停在卡密门）
         vm.licAuto(ctx, prefs)
     }
 
@@ -163,92 +161,18 @@ fun App(vm: BuildViewModel = viewModel()) {
             )
         }
 
-        // 流程：先账号登录/注册 → 账号未激活就卡密充值 → 才进主界面
-        if (!st.acctOk) {
-            EntryGate(
-                st,
-                onAcct = { reg, u, pw ->
-                    if (reg) vm.acctReg(ctx, prefs, u, pw) else vm.acctLogon(ctx, prefs, u, pw)
-                },
-                onKami = { km -> vm.kamiRecharge(ctx, prefs, km) },
-                onBack = { vm.acctBack() },
-            )
+        // 纯卡密登录：没验证过就整屏挡住
+        if (!st.licOk) {
+            KamiGate(st) { km -> vm.licLogin(ctx, prefs, km) }
         }
     }
 }
 
 /* ------------------------------------------------------------- 卡密门 */
 
+/** 卡密门：只认卡密（账号体系已去掉） */
 @Composable
-private fun EntryGate(
-    st: UiState,
-    onAcct: (Boolean, String, String) -> Unit,
-    onKami: (String) -> Unit,
-    onBack: () -> Unit,
-) {
-    if (st.acctNeedCharge) ChargeGate(st, onKami, onBack)
-    else AccountGate(st, onAcct)
-}
-
-/** 第一屏：登录 / 注册（只认账号，不再一上来就要卡密） */
-@Composable
-private fun AccountGate(st: UiState, onAcct: (Boolean, String, String) -> Unit) {
-    var user by remember { mutableStateOf(st.acctUser) }
-    var pass by remember { mutableStateOf("") }
-    var reg by remember { mutableStateOf(false) }
-
-    Box(
-        Modifier.fillMaxSize().background(Color(0xF7F2EFF4)),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 22.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            GlassCard(null) {
-                SectionTitle("👤", if (reg) "注册账号" else "登录账号")
-                Text(
-                    if (reg) "注册完账号是未激活状态，下一步用卡密开通"
-                    else "登录后如果没开通，会让你用卡密充值",
-                    color = TextSub, fontSize = 11.sp
-                )
-                Spacer(Modifier.height(14.dp))
-                Field("账号", user) { user = it }
-                Field("密码", pass) { pass = it }
-                Spacer(Modifier.height(16.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    PrimaryButton(
-                        when {
-                            st.acctBusy -> "…"
-                            reg -> "注册"
-                            else -> "登录"
-                        },
-                        !st.acctBusy
-                    ) { onAcct(reg, user, pass) }
-
-                    Text(
-                        if (reg) "已有账号？去登录" else "没有账号？去注册",
-                        color = Accent, fontSize = 12.sp,
-                        modifier = Modifier.clickable { reg = !reg }
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    st.acctText.ifBlank { "账号会绑定本机设备码（markcode）" },
-                    color = if (st.acctText.contains("成功")) Color(0xFF2E9E6B) else TextDim,
-                    fontSize = 11.sp
-                )
-            }
-        }
-    }
-}
-
-/** 第二屏：账号未激活 → 卡密充值开通 */
-@Composable
-private fun ChargeGate(st: UiState, onKami: (String) -> Unit, onBack: () -> Unit) {
+private fun KamiGate(st: UiState, onLogin: (String) -> Unit) {
     var km by remember { mutableStateOf("") }
 
     Box(
@@ -260,14 +184,8 @@ private fun ChargeGate(st: UiState, onKami: (String) -> Unit, onBack: () -> Unit
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             GlassCard(null) {
-                SectionTitle("💳", "卡密充值")
-                Text(
-                    "账号：" + st.acctUser.ifBlank { "?" } + " · 未激活",
-                    color = TextMain, fontSize = 13.sp
-                )
-                Spacer(Modifier.height(4.dp))
-                Text("输入卡密给这个账号加时长，充值成功就进主界面",
-                    color = TextSub, fontSize = 11.sp)
+                SectionTitle("🔑", "卡密登录")
+                Text("NKBuild 需要 XL 云验证授权", color = TextSub, fontSize = 11.sp)
                 Spacer(Modifier.height(14.dp))
                 Field("卡密", km) { km = it }
                 Spacer(Modifier.height(16.dp))
@@ -275,14 +193,20 @@ private fun ChargeGate(st: UiState, onKami: (String) -> Unit, onBack: () -> Unit
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    PrimaryButton(if (st.licBusy) "充值中…" else "充值", !st.licBusy) {
-                        onKami(km)
+                    PrimaryButton(if (st.licBusy) "验证中…" else "登录", !st.licBusy) {
+                        onLogin(km)
                     }
-                    Text("换个账号", color = Accent, fontSize = 12.sp,
-                        modifier = Modifier.clickable { onBack() })
+                    if (st.licText.isNotBlank()) {
+                        Text(
+                            st.licText,
+                            color = if (st.licOk) Color(0xFF2E9E6B) else Color(0xFFE0556B),
+                            fontSize = 12.sp
+                        )
+                    }
                 }
                 Spacer(Modifier.height(10.dp))
-                Text(st.licText, color = TextDim, fontSize = 11.sp)
+                Text("卡密绑定本机设备码；换机请在设置页解绑",
+                    color = TextDim, fontSize = 10.sp)
             }
         }
     }
@@ -801,32 +725,25 @@ private fun SetPage(
             Text(st.licText, color = TextMain, fontSize = 13.sp)
             Spacer(Modifier.height(4.dp))
             Text(
-                "账号：" + st.acctUser.ifBlank { prefs.acctUser.ifBlank { "未登录" } } +
-                    (if (st.acctText.isNotBlank()) " · " + st.acctText else ""),
+                "到期时间：" + vm.expiryText(prefs.licVip) +
+                    " · 卡密 " + (prefs.kami.ifBlank { "—" }),
                 color = TextDim, fontSize = 10.sp
             )
-            Spacer(Modifier.height(4.dp))
-            Text("卡密是一次性绑定的：绑过一次就只在「卡密加时」里用，日常登录走账号",
-                color = TextDim, fontSize = 10.sp)
             Spacer(Modifier.height(12.dp))
             var recharge by remember { mutableStateOf("") }
-            Field("卡密加时（给账号充值）", recharge) { recharge = it }
+            Field("卡密", recharge) { recharge = it }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 PrimaryButton(if (st.licBusy) "…" else "充值", !st.licBusy) {
                     vm.kamiRecharge(ctx, prefs, recharge.ifBlank { prefs.kami })
                 }
-                PrimaryButton(if (st.acctBusy) "…" else "刷新登录", !st.acctBusy) {
-                    vm.refreshLogin(ctx, prefs)
+                PrimaryButton(if (st.licBusy) "…" else "重新验证", !st.licBusy) {
+                    vm.licLogin(ctx, prefs, prefs.kami)
                 }
                 PrimaryButton("解绑", !st.licBusy) { vm.licUnbind(ctx, prefs) }
             }
-            if (prefs.acctUser.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text("退出账号", color = Accent, fontSize = 11.sp,
-                    modifier = Modifier.clickable { vm.acctOut(prefs) })
-            }
+
         }
 
         GlassCard(haze) {
@@ -875,7 +792,7 @@ private fun SetPage(
 
         GlassCard(haze) {
             SectionTitle("", "关于")
-            Text("NKBuild 手机版 v1.8.1（versionCode 17）\n" +
+            Text("NKBuild 手机版 v1.8.1（versionCode 18）\n" +
                 "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                 "构建：GitHub Actions · 产物：AArch64 PIE",
                 color = TextSub, fontSize = 11.sp)
