@@ -440,11 +440,11 @@ This project is licensed under the **AGPL-3.0**. It includes code and concepts c
 
 ## **Sponsorship & Funding Policy**
 
-We welcome sponsorships supporting open-source compiler security research. Please review our [Sponsorship Policy](./sponsor.md) for details on fund allocation, contribution options via Open Collective, and corporate tiers.
+We welcome sponsorships supporting open-source compiler security research. Please review our Sponsorship Policy for details on fund allocation, contribution options via Open Collective, and corporate tiers.
 - **Open Collective:** [https://opencollective.com/apich-organization](https://opencollective.com/apich-organization)
 
 ---
 
 ## **Code of Conduct & Security**
 
-Please consult [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) and [SECURITY.md](./SECURITY.md) for vulnerability reporting guidelines and ethical standards.
+Please consult CODE_OF_CONDUCT.md and SECURITY.md for vulnerability reporting guidelines and ethical standards.
