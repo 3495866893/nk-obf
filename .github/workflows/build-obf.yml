@@ -397,7 +397,7 @@ jobs:
           # runner 内存吃光（实测 avail 只剩 150MB），整个 job 被 SIGTERM(143)。
           if [ -f ci/ui-jni-light.toml ]; then
             cp ci/ui-jni-light.toml ensia/config/presets/nk-light.toml
-            echo "轻量配置 -> presets/nk-light.toml"
+            [ -f ci/nk-nofold.toml ] && cp ci/nk-nofold.toml ensia/config/presets/nk-nofold.toml && echo "轻量/无平坦化配置 -> presets/nk-light.toml, nk-nofold.toml"
           fi
           export SRC_DIR="${{ github.event.inputs.src_dir || 'proj' }}"
           export SRC_FILES="${{ github.event.inputs.src_files || 'mian.cpp defense.c' }}"
