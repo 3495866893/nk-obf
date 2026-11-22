@@ -90,7 +90,7 @@ fi
 BASE=(
   "--target=aarch64-linux-android21" "--sysroot=$SYS"
   "-resource-dir=$TC/lib/clang/21"
-  "-O2" "-fPIE" "-fstack-protector-strong" "-D_FORTIFY_SOURCE=2" "-DVK_USE_PLATFORM_ANDROID_KHR" "-DNDEBUG"
+  "-O2" "-fPIE" "-fstack-protector-strong" "-D_FORTIFY_SOURCE=2" "-DVK_USE_PLATFORM_ANDROID_KHR" "-DNDEBUG" "-fno-asynchronous-unwind-tables" "-fno-unwind-tables"
   "-fvisibility=hidden" "-ffunction-sections" "-fdata-sections" "-fno-ident"
   "-nostdlib++" "--ld-path=$LLD"
   "-Wl,--no-gc-sections" "-Wl,--exclude-libs,ALL"
@@ -182,7 +182,7 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     if [ $((i % 4)) = "0" ]; then rm -rf /tmp/nk_o_*.d /tmp/nk_o_*.i /tmp/nk_o_*.s; fi
   done
   echo "  [链接] ${#objs[@]} 个 .o -> $out"
-  timeout 1800 "$CLANG" "${CF[@]}" "${NKO:--O2}" "--ld-path=$LLD" "${extra[@]}" "${LIBS[@]}" \
+  timeout 1800 "$CLANG" "${CF[@]}" "${NKO:--O2}" "--ld-path=$LLD" "-Wl,--noinhibit-exec" "${extra[@]}" "${LIBS[@]}" \
     -o "$out" "${objs[@]}" -lEGL -lGLESv2 -lGLESv3 -landroid -llog 2>&1 \
     | tee -a /tmp/nk_err.txt | tail -30
   rc=${PIPESTATUS[0]}
