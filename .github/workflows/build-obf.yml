@@ -292,9 +292,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ensia-plugin-${{ steps.kit.outputs.sha }}
-          retention-days: 3
           path: /mnt/work/ensia-build.tar.zst
-          retention-days: 30
+          retention-days: 3
 
       - name: restore ndk (cache)
         id: ndk
