@@ -393,6 +393,12 @@ jobs:
             cp "$CFG" "ensia/config/presets/$FIRST.toml"
             echo "使用配置: $CFG -> presets/$FIRST.toml"
           fi
+          # 大 TU 用的轻量配置：imgui.cpp 这种 7 万行文件在 flattening/bcf 下会把
+          # runner 内存吃光（实测 avail 只剩 150MB），整个 job 被 SIGTERM(143)。
+          if [ -f ci/ui-jni-light.toml ]; then
+            cp ci/ui-jni-light.toml ensia/config/presets/nk-light.toml
+            echo "轻量配置 -> presets/nk-light.toml"
+          fi
           export SRC_DIR="${{ github.event.inputs.src_dir || 'proj' }}"
           export SRC_FILES="${{ github.event.inputs.src_files || 'mian.cpp defense.c' }}"
           export PRESETS="${{ github.event.inputs.presets || 'max mid' }}"
