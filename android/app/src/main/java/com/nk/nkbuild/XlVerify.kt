@@ -85,13 +85,19 @@ object XlVerify {
         if (check.isNotEmpty() && !check.equals(want, ignoreCase = true)) {
             return Result(false, "响应校验不通过（check 不符）")
         }
-        var vip = json.optLong("vip", 0L)
-        if (vip <= 0) vip = json.optLong("endtime", 0L)
-        if (vip <= 0) vip = json.optLong("expire", 0L)
-        if (vip <= 0) vip = json.optLong("expiretime", 0L)
+        // 服务器把到期时间放在 msg 里，而且可能是字符串（"4102243200"），
+        // 顶层只有 code/msg/time/check —— 之前只读顶层，所以永远当成「永久」
+        val node = json.optJSONObject("msg") ?: json
+        var vip = pickTime(node, "vip")
+        if (vip <= 0) vip = pickTime(node, "endtime")
+        if (vip <= 0) vip = pickTime(node, "expire")
+        if (vip <= 0) vip = pickTime(node, "expiretime")
+        if (vip <= 0) vip = pickTime(json, "vip")
+        if (vip <= 0) vip = pickTime(json, "endtime")
         if (vip > 0 && vip < t) return Result(false, "卡密已过期", vip, fmtDate(vip), 200)
-        return Result(true, if (vip > 0) "已授权 · ${fmtDate(vip)}" else "已授权 · 永久", vip,
-            if (vip > 0) fmtDate(vip) else "", 200)
+        val exp = if (vip > 0) fmtDate(vip) else ""
+        return Result(true, if (vip > 0) "已授权 · 到期 $exp" else "已授权 · 永久（服务器没给到期时间）",
+            vip, exp, 200)
     }
 
     fun unbind(ctx: Context, kami: String): Result {
@@ -238,8 +244,15 @@ object XlVerify {
         return null
     }
 
+    /** 从 JSON 里抠时间戳：字符串 / 数字都认，另外兼容毫秒级 */
+    private fun pickTime(o: org.json.JSONObject, key: String): Long {
+        val raw = o.optString(key, "")
+        val n = (raw.toLongOrNull() ?: o.optLong(key, 0L))
+        return if (n > 100000000000L) n / 1000L else n
+    }
+
     private fun fmtDate(sec: Long): String {
-        val f = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+        val f = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
         return f.format(java.util.Date(sec * 1000L))
     }
 
