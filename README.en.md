@@ -15,6 +15,10 @@ NK is an **IR-level obfuscation pass plugin** for **LLVM 21** (`libNk.so`) that,
 | Android GUI (Kotlin) | [`android/`](android/) |
 | Documentation | [English](docs/en/index.md) · [中文](docs/zh/index.md) |
 
+## Pipeline
+
+![Pipeline](docs/figs/flow_en.png)
+
 ## Downloads
 
 | Artifact | Location | Size |
