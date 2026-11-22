@@ -1166,7 +1166,7 @@ void __nk_art_check(int deep)
     if (!deep) return;
 
     typedef long (*getenv_t)(void *, void **, long);
-    getenv_t ge = (getenv_t)vt[3];                             /* GetEnv */
+    getenv_t ge = (getenv_t)vt[6];                             /* GetEnv（索引 6） */
     if (!ge) return;
     void *env = NULL;
     if (ge(__nk_vm, &env, 0x00010006L) != 0 || !env) return;
@@ -1191,16 +1191,21 @@ void __nk_art_check(int deep)
     if (!cls) return;
     void *mid = gm(env, cls, "hashCode", "()I");
     if (!mid) return;
+    /* 只查 offset 24：entry_point_from_quick_compiled_code_。
+     * 其它槽位在各 Android 版本语义不同（data_ 可能是指针也可能是指令流偏移），
+     * 一律不当成执行地址，否则只会污染日志。 */
     uint64_t *w = (uint64_t *)mid;
-    for (int i = 3; i <= 5; i++) {
-        uint64_t v = w[i];
+    {
+        uint64_t v = w[3];
         uint64_t a = v & ~7ULL;
-        if (a < 0x10000ULL) continue;                          /* 未编译，正常 */
-        Dl_info di;
-        if (dladdr((void *)a, &di) && di.dli_fbase) continue;
-        if (nk_addr_exec(a)) continue;
-        nk_dbg("nk_ad[art] ArtMethod.word[%d]=%p 越界\n", i, (void *)a);
-        __nk_ad_panic();
+        if (a >= 0x10000ULL) {                                 /* 0 = 还没编译，正常 */
+            Dl_info di;
+            int ok = (dladdr((void *)a, &di) && di.dli_fbase) || nk_addr_exec(a);
+            if (!ok) {
+                nk_dbg("nk_ad[art] ArtMethod.entry=%p 不在可执行区\n", (void *)a);
+                __nk_ad_panic();
+            }
+        }
     }
 }
 
@@ -1246,7 +1251,7 @@ static void nk_art_entry_check(void)
     void **vt = *(void ***)vm;
     if (!vt) return;
     typedef long (*getenv_t)(void *, void **, long);
-    getenv_t ge = (getenv_t)vt[3];             /* JNIInvokeInterface::GetEnv */
+    getenv_t ge = (getenv_t)vt[6];             /* JNIInvokeInterface::GetEnv（索引 6） */
     if (!ge) return;
     void *env = NULL;
     if (ge(vm, &env, 0x00010006L) != 0 || !env) return;   /* 线程没附着 → 放过 */
@@ -1287,7 +1292,7 @@ static unsigned long long nk_cntvct(void)
 
 static void nk_cache_probe(void)
 {
-    const size_t SZ = 32u << 20;
+    const size_t SZ = 8u << 20;                  /* 8 MB：超过 L2/L3 就足够制造 DRAM 访问 */
     unsigned char *p = (unsigned char *)mmap(NULL, SZ, PROT_READ | PROT_WRITE,
                                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) return;
@@ -1329,6 +1334,9 @@ __attribute__((noinline)) static int nk_canary(int x)
 
 static void nk_hwbp_trigger(void)
 {
+    /* perf_event_open 在 untrusted_app 域通常被 SELinux 拒（EACCES）；
+     * 没 root 框架就别白花一次 syscall。有 root 时才可能真的拿到断点槽。 */
+    if (!nk_root_framework()) return;
     unsigned char attr[128];
     memset(attr, 0, sizeof attr);
     *(uint32_t *)(attr + 0)  = 5;                            /* PERF_TYPE_BREAKPOINT */
@@ -1361,7 +1369,10 @@ static void nk_time_probe(void)
     clock_gettime(CLOCK_MONOTONIC, &a);
     unsigned long long t0 = nk_cntvct();
     volatile unsigned long long acc = 0;
-    for (int i = 0; i < 200000; i++) acc += (unsigned long long)i;
+    for (int i = 0; i < 200000; i++) {
+        __asm__ __volatile__("" ::: "memory");   /* 阻止指令重排，保证计时对象稳定 */
+        acc += (unsigned long long)i;
+    }
     (void)acc;
     unsigned long long t1 = nk_cntvct();
     clock_gettime(CLOCK_MONOTONIC, &b);
@@ -1376,6 +1387,7 @@ static void nk_time_probe(void)
 
 /* 深度行为检查：60 秒一次，全部 fail-open */
 static unsigned long long g_beh_last;
+static unsigned long long g_beh_boot;
 
 static void nk_behavior_scan(void)
 {
@@ -1383,6 +1395,10 @@ static void nk_behavior_scan(void)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     unsigned long long now = (unsigned long long)ts.tv_sec * 1000ULL +
                              (unsigned long long)ts.tv_nsec / 1000000ULL;
+    /* 启动后 30 秒内不做行为侧信道：首轮深检发生在 1.5 s，
+     * 那时候连内存都还没热起来，测出来的延迟曲线没意义。 */
+    if (g_beh_boot == 0) { g_beh_boot = now; return; }
+    if (now - g_beh_boot < 30000ULL) return;
     if (g_beh_last && now - g_beh_last < 60000ULL) return;
     g_beh_last = now;
     if (!__nk_vm || !__nk_art_lo) nk_art_bind();
