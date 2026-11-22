@@ -47,7 +47,7 @@ fun GlassCard(
         m
             .background(
                 Brush.verticalGradient(
-                    listOf(Color(0xE6FFFFFF), Color(0xCCFFFFFF))
+                    listOf(Color(0xF2FFFFFF), Color(0xE8FFFFFF))
                 )
             )
             .border(1.dp, CardLine, RoundedCornerShape(corner.dp))
