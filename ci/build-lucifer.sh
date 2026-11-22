@@ -132,9 +132,44 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     extra=("-fpass-plugin=$plugin")
   fi
   rm -f "$out".s /tmp/nk_err.txt
-  timeout 1800 "$CLANG" "${BASE[@]}" "${extra[@]}" -save-temps=obj "${LIBS[@]}" \
-    -o "$out" "${SRCS[@]}" -lEGL -lGLESv2 -lGLESv3 -landroid -llog 2>&1 \
-    | tee /tmp/nk_err.txt | tail -40
+  # 逐文件编译：一次把 17 个 TU 丢给 clang 时，一次 SIGTERM 就全线失忆。
+  # 逐文件能看到停在哪一个、内存/磁盘在哪一步爆掉。
+  local CF=() a
+  for a in "${BASE[@]}"; do
+    case "$a" in
+      -Wl,*|--ld-path=*) ;;   # 连接期参数，编译期不用（否则每个文件刷一堆 unused 警告）
+      *) CF+=("$a") ;;
+    esac
+  done
+  local objs=() o n i t0 rc
+  n=${#SRCS[@]}
+  i=0
+  for f in "${SRCS[@]}"; do
+    i=$((i + 1))
+    o="/tmp/nk_o_$$_${i}_$(basename "${f%.*}").o"
+    echo "  [$i/$n] 编译 $f"
+    t0=$(date +%s)
+    # shellcheck disable=SC2086
+    timeout 1800 "$CLANG" "${CF[@]}" "${extra[@]}" ${NK_DIAG:+-save-temps=obj} \
+      -c "$f" -o "$o" 2>&1 \
+      | tee -a /tmp/nk_err.txt | stdbuf -oL -eL sed -u 's/^/     /'
+    rc=${PIPESTATUS[0]}
+    echo "     rc=$rc 耗时 $(( $(date +%s) - t0 ))s · 可用内存 $(free -m | awk '/^Mem:/{print $7}')MB · /tmp 剩余 $(df -m /tmp | awk 'NR==2{print $4}')MB"
+    if [ "$rc" != "0" ] || [ ! -f "$o" ]; then
+      echo "  !! 这个文件编译失败: $f"
+      return 1
+    fi
+    objs+=("$o")
+    # 每 4 个文件清一次中间产物，防止 15 MB 级头文件把磁盘吃光
+    if [ $((i % 4)) = "0" ]; then rm -rf /tmp/nk_o_*.d /tmp/nk_o_*.i /tmp/nk_o_*.s; fi
+  done
+  echo "  [链接] ${#objs[@]} 个 .o -> $out"
+  timeout 1800 "$CLANG" "${CF[@]}" "${extra[@]}" "${LIBS[@]}" \
+    -o "$out" "${objs[@]}" -lEGL -lGLESv2 -lGLESv3 -landroid -llog 2>&1 \
+    | tee -a /tmp/nk_err.txt | tail -30
+  rc=${PIPESTATUS[0]}
+  rm -f "${objs[@]}" 2>/dev/null || true
+  echo "  链接 rc=$rc"
   if [ -f "$out" ]; then
     brand "$out"
     echo "成功: $out ($(stat -c%s "$out") 字节)"
