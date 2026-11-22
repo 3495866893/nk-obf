@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 部署 / 环境问题（先看这份）
+    url: https://github.com/3495866893/nk-obf/blob/main/docs/zh/DEPLOY.md
+    about: 保姆级部署教程：token 权限、五个字段怎么填、首次建 clang 缓存要多久
+  - name: Deployment guide (English)
+    url: https://github.com/3495866893/nk-obf/blob/main/docs/en/DEPLOY.md
+    about: Token scopes, the five settings fields, and the first cold build

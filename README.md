@@ -71,7 +71,14 @@ gh workflow run build-obf.yml -R <owner>/nk-obf \
 
 ## 许可
 
-MIT，见 [`LICENSE`](LICENSE)。
+这个仓库**分段授权**：
+
+| 路径 | 授权 |
+|---|---|
+| `src/` `ci/` `kit.tar.gz` | **AGPL-3.0**（派生自 OLLVM-Next，网络提供服务也要开源） |
+| `tools/` `android/` `docs/` `projects/` | **MIT** |
+
+`LICENSE` 是 AGPL-3.0 官方全文，`LICENSE-MIT` 是 MIT 全文，逐条解释见 [LICENSE-NOTICE.md](LICENSE-NOTICE.md)。
 
 ## 版本
 

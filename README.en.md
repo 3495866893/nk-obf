@@ -69,7 +69,15 @@ Experimental passes `mba` / `chaos_state_machine` / `vector_obfuscation` / `func
 
 ## License
 
-MIT, see [`LICENSE`](LICENSE).
+Split licensing:
+
+| Path | License |
+|---|---|
+| `src/` `ci/` `kit.tar.gz` | **AGPL-3.0** (derived from OLLVM-Next; network use counts as distribution) |
+| `tools/` `android/` `docs/` `projects/` | **MIT** |
+
+`LICENSE` holds the verbatim AGPL-3.0 text, `LICENSE-MIT` the MIT text; the per-directory
+explanation lives in [LICENSE-NOTICE.md](LICENSE-NOTICE.md).
 
 ## Version
 
