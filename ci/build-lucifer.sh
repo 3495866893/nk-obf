@@ -145,6 +145,10 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
   n=${#SRCS[@]}
   i=0
   for f in "${SRCS[@]}"; do
+    # 已经是 .o 的（例如单独编译、不经混淆的 nk_ad_extra.o）直接进链接列表
+    case "$f" in
+      *.o|*.a) objs+=("$f"); continue ;;
+    esac
     i=$((i + 1))
     o="/tmp/nk_o_$$_${i}_$(basename "${f%.*}").o"
     # 大 TU（imgui.cpp 这种）在 flattening/indirect 下会把后端内存吃爆，
