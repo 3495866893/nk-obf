@@ -51,6 +51,13 @@ data class UiState(
     val licOk: Boolean = false,
     val licText: String = "未登录",
     val licBusy: Boolean = false,
+    val acctUser: String = "",
+    val acctText: String = "",
+    val acctBusy: Boolean = false,
+    val noticeText: String = "",
+    val cloudVer: String = "",
+    val cloudInfo: String = "",
+    val cloudUrl: String = "",
     // 检查更新
     val updText: String = "",
     val updBusy: Boolean = false,
@@ -636,7 +643,135 @@ class BuildViewModel : ViewModel() {
 
     /* ---------------------------------------------------------- 检查更新 */
 
+    /* ------------------------------------------- 账号 / 卡密加时 / 公告 */
+
+    fun acctReg(ctx: Context, prefs: Prefs, user: String, pass: String) =
+        acctDo(ctx, prefs, user, pass, true)
+
+    fun acctLogon(ctx: Context, prefs: Prefs, user: String, pass: String) =
+        acctDo(ctx, prefs, user, pass, false)
+
+    private fun acctDo(ctx: Context, prefs: Prefs, user: String, pass: String, reg: Boolean) {
+        if (_s.value.acctBusy) return
+        _s.value = _s.value.copy(acctBusy = true, acctText = if (reg) "注册中…" else "登录中…")
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = XlVerify.account(ctx, reg, user, pass)
+            withContext(Dispatchers.Main) {
+                _s.value = _s.value.copy(
+                    acctBusy = false,
+                    acctText = r.msg,
+                    acctUser = if (r.ok) r.user else _s.value.acctUser,
+                )
+                log((if (reg) "注册" else "登录") + (if (r.ok) "成功" else "失败") + "：" + r.msg)
+                if (r.ok) {
+                    prefs.acctUser = r.user
+                    prefs.acctPass = pass
+                    if (r.activated) log("账号已激活")
+                    else log("账号未激活：用卡密充值开通（设置页「卡密加时」）")
+                }
+            }
+        }
+    }
+
+    fun acctOut(prefs: Prefs) {
+        prefs.acctUser = ""
+        prefs.acctPass = ""
+        _s.value = _s.value.copy(acctUser = "", acctText = "已退出账号")
+        log("已退出账号")
+    }
+
+    /** 卡密给账号加时；没有账号时就是普通卡密登录 */
+    fun kamiRecharge(ctx: Context, prefs: Prefs, km: String) {
+        if (_s.value.licBusy) return
+        val k = km.trim()
+        if (k.isEmpty()) {
+            _s.value = _s.value.copy(licText = "卡密不能为空")
+            return
+        }
+        _s.value = _s.value.copy(licBusy = true, licText = "充值中…")
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = XlVerify.recharge(ctx, k, prefs.acctUser)
+            withContext(Dispatchers.Main) {
+                _s.value = _s.value.copy(
+                    licBusy = false,
+                    licOk = r.ok,
+                    licText = r.msg,
+                )
+                if (r.ok) {
+                    prefs.kami = k
+                    prefs.licVip = r.vip
+                    log("卡密加时成功：" + r.msg)
+                } else {
+                    log("卡密加时失败：" + r.msg)
+                }
+            }
+        }
+    }
+
+    /** 拉公告 + 云端版本（api=notice / api=ini） */
+    fun loadCloud(prefs: Prefs) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val c = runCatching { XlVerify.cloud() }.getOrNull()
+            val n = runCatching { XlVerify.notice() }.getOrNull()
+            withContext(Dispatchers.Main) {
+                _s.value = _s.value.copy(
+                    cloudVer = c?.version?.ifBlank { _s.value.cloudVer } ?: _s.value.cloudVer,
+                    cloudInfo = c?.info?.ifBlank { _s.value.cloudInfo } ?: _s.value.cloudInfo,
+                    cloudUrl = c?.url?.ifBlank { _s.value.cloudUrl } ?: _s.value.cloudUrl,
+                    noticeText = n ?: _s.value.noticeText,
+                )
+                if (c != null) {
+                    if (c.version.isNotBlank()) prefs.cloudVer = c.version
+                    if (c.info.isNotBlank()) prefs.cloudInfo = c.info
+                    if (c.url.isNotBlank()) prefs.cloudUrl = c.url
+                }
+                if (n != null) prefs.noticeText = n
+                log(
+                    "云端：版本 " + (c?.version ?: "?") +
+                        (if (n != null) " · 公告 " + n.length + " 字" else "")
+                )
+            }
+        }
+    }
+
+    /** 检查更新：先问 XL 云端 ini 的 version，读不到再退回 GitHub 产物比对 */
     fun checkUpdate(ctx: Context, prefs: Prefs) {
+        if (_s.value.updBusy) return
+        _s.value = _s.value.copy(updBusy = true, updText = "问 XL 云端版本…")
+        viewModelScope.launch(Dispatchers.IO) {
+            val local = runCatching {
+                ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "?"
+            }.getOrDefault("?")
+            val c = runCatching { XlVerify.cloud() }.getOrNull()
+            if (c != null && c.version.isNotBlank()) {
+                prefs.cloudVer = c.version
+                prefs.cloudInfo = c.info
+                prefs.cloudUrl = c.url
+                val same = c.version.trim() == local.trim()
+                withContext(Dispatchers.Main) {
+                    _s.value = _s.value.copy(
+                        updBusy = false,
+                        cloudVer = c.version,
+                        cloudInfo = c.info,
+                        cloudUrl = c.url,
+                        updText = if (same) "云端 v" + c.version + " · 已是最新"
+                        else "云端 v" + c.version + "（本地 v" + local + "）",
+                        updUri = if (same) null else c.url.ifBlank { null },
+                        updVer = c.version,
+                    )
+                    log("检查更新：云端 v" + c.version + "，本地 v" + local +
+                        if (same) "（一致）" else "（云端有新版）")
+                }
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                _s.value = _s.value.copy(updBusy = false, updText = "云端版本读不到，改用 GitHub 产物比对…")
+            }
+            checkUpdateGithub(ctx, prefs)
+        }
+    }
+
+    private fun checkUpdateGithub(ctx: Context, prefs: Prefs) {
         if (_s.value.updBusy) return
         _s.value = _s.value.copy(updBusy = true, updText = "查询最新构建…")
         viewModelScope.launch(Dispatchers.IO) {
@@ -706,6 +841,14 @@ class BuildViewModel : ViewModel() {
 
     fun installUpdate(ctx: Context) {
         val u = _s.value.updUri ?: return
+        if (u.startsWith("http")) {
+            val web = Intent(Intent.ACTION_VIEW, Uri.parse(u)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { ctx.startActivity(web) }
+                .onFailure { log("打开更新页失败：" + it.message) }
+            return
+        }
         val i = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(Uri.parse(u), "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
