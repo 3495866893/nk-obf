@@ -406,7 +406,7 @@ jobs:
               free -m | awk '/^Mem:/{printf "mem_avail=%sMB ", $7}'
               df -m /tmp | awk 'NR==2{printf "tmp_free=%sMB\n", $4}'
               sleep 10
-            done ) > /tmp/nk_res.log 2>&1 &
+            done ) 2>&1 | tee -a /tmp/nk_res.log &
           MON=$!
           set +e
           # 不要用 tail：它只在 EOF 才吐，进程被 SIGTERM 时一行都留不下
