@@ -96,7 +96,11 @@ fun App(vm: BuildViewModel = viewModel()) {
     }
     var tab by remember { mutableStateOf(if (prefs.token.isBlank()) Tab.SET else Tab.BUILD) }
 
-    LaunchedEffect(Unit) { vm.restore(prefs) }
+    LaunchedEffect(Unit) {
+        vm.restore(prefs)
+        // 上次切后台/被杀掉的任务：按 run id 接上
+        vm.resume(ctx, prefs)
+    }
 
     val pickTree = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
