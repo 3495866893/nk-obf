@@ -148,7 +148,13 @@ fun App(vm: BuildViewModel = viewModel()) {
 
         // 没有授权就整屏挡住（下面照常渲染，只是点不到）
         if (!st.licOk) {
-            LicenseGate(st) { km -> vm.licLogin(ctx, prefs, km) }
+            LicenseGate(
+                st,
+                onKami = { km -> vm.licLogin(ctx, prefs, km) },
+                onAcct = { reg, u, pw ->
+                    if (reg) vm.acctReg(ctx, prefs, u, pw) else vm.acctLogon(ctx, prefs, u, pw)
+                },
+            )
         }
     }
 }
@@ -156,8 +162,16 @@ fun App(vm: BuildViewModel = viewModel()) {
 /* ------------------------------------------------------------- 卡密门 */
 
 @Composable
-private fun LicenseGate(st: UiState, onLogin: (String) -> Unit) {
+private fun LicenseGate(
+    st: UiState,
+    onKami: (String) -> Unit,
+    onAcct: (Boolean, String, String) -> Unit,
+) {
+    var mode by remember { mutableStateOf(0) }        // 0 = 卡密，1 = 账号
     var km by remember { mutableStateOf("") }
+    var user by remember { mutableStateOf(st.acctUser) }
+    var pass by remember { mutableStateOf("") }
+
     Box(
         Modifier.fillMaxSize().background(Color(0xF7F2EFF4)),
         contentAlignment = Alignment.Center
@@ -167,27 +181,67 @@ private fun LicenseGate(st: UiState, onLogin: (String) -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             GlassCard(null) {
-                SectionTitle("🔒", "卡密登录")
-                Text("NKBuild 需要 XL 云验证授权后才能编译", color = TextSub, fontSize = 12.sp)
+                SectionTitle("🔒", if (mode == 0) "卡密登录" else "账号登录 / 注册")
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GateTab("卡密", mode == 0) { mode = 0 }
+                    GateTab("账号", mode == 1) { mode = 1 }
+                }
                 Spacer(Modifier.height(14.dp))
-                Field("卡密", km) { km = it }
+
+                if (mode == 0) {
+                    Field("卡密", km) { km = it }
+                    Spacer(Modifier.height(6.dp))
+                    Text("没有卡密就切到「账号」注册，再用卡密给账号加时开通",
+                        color = TextDim, fontSize = 10.sp)
+                } else {
+                    Field("账号", user) { user = it }
+                    Field("密码", pass) { pass = it }
+                    Spacer(Modifier.height(6.dp))
+                    Text("注册后账号是未激活状态，用卡密充值即开通",
+                        color = TextDim, fontSize = 10.sp)
+                }
+
                 Spacer(Modifier.height(14.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    PrimaryButton(if (st.licBusy) "验证中…" else "登录", !st.licBusy) { onLogin(km) }
-                    Text(
-                        st.licText,
-                        color = if (st.licText.startsWith("已授权")) Color(0xFF3DDC97) else TextDim,
-                        fontSize = 12.sp
-                    )
+                    if (mode == 0) {
+                        PrimaryButton(if (st.licBusy) "验证中…" else "登录", !st.licBusy) {
+                            onKami(km)
+                        }
+                    } else {
+                        PrimaryButton(if (st.acctBusy) "…" else "登录", !st.acctBusy) {
+                            onAcct(false, user, pass)
+                        }
+                        PrimaryButton(if (st.acctBusy) "…" else "注册", !st.acctBusy) {
+                            onAcct(true, user, pass)
+                        }
+                    }
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("卡密绑定本机设备码，可在设置页解绑后换机",
-                    color = TextDim, fontSize = 10.sp)
+                val tip = if (mode == 0) st.licText else st.acctText.ifBlank { "未登录" }
+                Text(
+                    tip,
+                    color = if (tip.startsWith("已") || tip.contains("成功")) Color(0xFF2E9E6B) else TextDim,
+                    fontSize = 12.sp
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun GateTab(label: String, on: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (on) Color(0x33D2557F) else Color(0x11000000))
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 7.dp)
+    ) {
+        Text(label, color = if (on) Accent else TextSub, fontSize = 12.sp)
     }
 }
 
@@ -635,6 +689,8 @@ private fun SetPage(
     var autoExport by remember { mutableStateOf(prefs.autoExport) }
     var savedTip by remember { mutableStateOf("") }
 
+    LaunchedEffect(Unit) { vm.loadCloud(prefs) }
+
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -679,19 +735,44 @@ private fun SetPage(
         }
 
         GlassCard(haze) {
-            SectionTitle("🔒", "授权")
-            Column(Modifier.weight(1f)) {
-                Text(st.licText, color = TextMain, fontSize = 13.sp)
-                Spacer(Modifier.height(4.dp))
-                Text("XL 云验证 · 卡密绑定本机设备码", color = TextDim, fontSize = 10.sp)
-            }
+            SectionTitle("🔒", "授权 / 账号")
+            Text(st.licText, color = TextMain, fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "账号：" + st.acctUser.ifBlank { prefs.acctUser.ifBlank { "未登录" } } +
+                    (if (st.acctText.isNotBlank()) " · " + st.acctText else ""),
+                color = TextDim, fontSize = 10.sp
+            )
+            Spacer(Modifier.height(12.dp))
+            var recharge by remember { mutableStateOf("") }
+            Field("卡密加时（给账号充值）", recharge) { recharge = it }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically) {
+                PrimaryButton(if (st.licBusy) "…" else "充值", !st.licBusy) {
+                    vm.kamiRecharge(ctx, prefs, recharge.ifBlank { prefs.kami })
+                }
                 PrimaryButton(if (st.licBusy) "…" else "重新验证", !st.licBusy) {
                     vm.licLogin(ctx, prefs, prefs.kami)
                 }
                 PrimaryButton("解绑", !st.licBusy) { vm.licUnbind(ctx, prefs) }
+            }
+            if (prefs.acctUser.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text("退出账号", color = Accent, fontSize = 11.sp,
+                    modifier = Modifier.clickable { vm.acctOut(prefs) })
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("📢", "公告")
+            Text(st.noticeText.ifBlank { "点下面按钮从 XL 云端拉公告与版本号" },
+                color = TextSub, fontSize = 11.sp)
+            Spacer(Modifier.height(10.dp))
+            PrimaryButton("刷新公告 / 云端版本", true) { vm.loadCloud(prefs) }
+            if (st.cloudInfo.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(st.cloudInfo, color = TextDim, fontSize = 10.sp)
             }
         }
 
@@ -700,13 +781,16 @@ private fun SetPage(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (st.updText.isBlank()) "从 GitHub 拉最新一次成功构建的 APK"
+                        if (st.updText.isBlank())
+                            "云端版本 " + st.cloudVer.ifBlank { prefs.cloudVer.ifBlank { "?" } } +
+                                " · 本地 v1.7.0"
                         else st.updText,
                         color = if (st.updText.startsWith("检查失败")) Color(0xFFE0556B) else TextMain,
                         fontSize = 13.sp
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text("比对 versionCode，比本机新才提示安装", color = TextDim, fontSize = 10.sp)
+                    Text("版本号取自 XL 云端 api=ini；云端更新页在 app_update_url",
+                        color = TextDim, fontSize = 10.sp)
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -716,14 +800,17 @@ private fun SetPage(
                     vm.checkUpdate(ctx, prefs)
                 }
                 if (st.updUri != null) {
-                    PrimaryButton("安装 v" + st.updVer, true) { vm.installUpdate(ctx) }
+                    val isWeb = st.updUri!!.startsWith("http")
+                    PrimaryButton(if (isWeb) "打开更新页" else "安装 v" + st.updVer, true) {
+                        vm.installUpdate(ctx)
+                    }
                 }
             }
         }
 
         GlassCard(haze) {
             SectionTitle("", "关于")
-            Text("NKBuild 手机版 v1.6.0（versionCode 14）\n" +
+            Text("NKBuild 手机版 v1.7.0（versionCode 15）\n" +
                 "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                 "构建：GitHub Actions · 产物：AArch64 PIE",
                 color = TextSub, fontSize = 11.sp)
