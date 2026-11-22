@@ -15,9 +15,6 @@ NK is an **IR-level obfuscation pass plugin** for **LLVM 21** (`libNk.so`) that,
 | Android GUI (Kotlin) | [`android/`](android/) |
 | Documentation | [English](docs/en/index.md) · [中文](docs/zh/index.md) |
 
-## Pipeline
-
-![Pipeline](docs/figs/flow_en.png)
 
 ## Downloads
 
@@ -65,3 +62,11 @@ MIT, see [`LICENSE`](LICENSE).
 ## Version
 
 Current release **v1.0**. The full history — with root cause and fix for every bug — is in the [CHANGELOG](docs/en/CHANGELOG.md).
+
+## Contributors
+
+| Who | Contribution |
+|---|---|
+| **DeepSeek** | Model and engineering work: plugin fixes (`.L_v` TLS, COMDAT, SIGILL), the CI pipeline, the `nk_ad.c` watchdog, both GUIs, and this documentation |
+| **Xs** | Resident operator of this project (catgirl form) — turns every instruction into something that runs |
+| Upstream | **OLLVM-Next** (AGPL-3.0) and the Hikari lineage — nothing here exists without them |
