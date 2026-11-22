@@ -51,6 +51,8 @@ data class UiState(
     val licOk: Boolean = false,
     val licText: String = "未登录",
     val licBusy: Boolean = false,
+    val acctOk: Boolean = false,
+    val acctNeedCharge: Boolean = false,
     val acctUser: String = "",
     val acctText: String = "",
     val acctBusy: Boolean = false,
@@ -58,6 +60,9 @@ data class UiState(
     val cloudVer: String = "",
     val cloudInfo: String = "",
     val cloudUrl: String = "",
+    val toast: String = "",
+    val toastOk: Boolean = true,
+    val toastId: Long = 0L,
     // 检查更新
     val updText: String = "",
     val updBusy: Boolean = false,
@@ -587,6 +592,33 @@ class BuildViewModel : ViewModel() {
     /* ---------------------------------------------------------- 授权（XL 云验证） */
 
     /** 启动时用上次保存的卡密自动验一次 */
+    /** 启动时静默复用上次的账号（有密码才试） */
+    fun acctAuto(ctx: Context, prefs: Prefs) {
+        val u = prefs.acctUser
+        val p = prefs.acctPass
+        if (u.isBlank() || p.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = XlVerify.account(ctx, false, u, p)
+            withContext(Dispatchers.Main) {
+                if (r.ok) {
+                    _s.value = _s.value.copy(
+                        acctOk = true, acctNeedCharge = false, acctUser = r.user,
+                        acctText = "已登录",
+                    )
+                    log("账号自动登录：" + r.user)
+                } else if (r.msg.contains("未激活")) {
+                    _s.value = _s.value.copy(
+                        acctOk = false, acctNeedCharge = true, acctUser = u,
+                        acctText = "待充值",
+                    )
+                } else {
+                    _s.value = _s.value.copy(acctUser = u, acctText = r.msg)
+                    log("账号自动登录失败：" + r.msg)
+                }
+            }
+        }
+    }
+
     fun licAuto(ctx: Context, prefs: Prefs) {
         val km = prefs.kami
         if (km.isBlank()) {
@@ -609,10 +641,13 @@ class BuildViewModel : ViewModel() {
                 if (r.ok) {
                     prefs.kami = km.trim()
                     prefs.licVip = r.vip
-                    _s.value = _s.value.copy(licBusy = false, licOk = true, licText = r.msg)
+                    _s.value = _s.value.copy(licBusy = false, licOk = true, acctOk = true,
+                    acctNeedCharge = false, licText = r.msg)
+                toast("卡密验证通过", true)
                     if (!quiet) log("授权：" + r.msg)
                 } else {
                     _s.value = _s.value.copy(licBusy = false, licOk = false, licText = r.msg)
+                toast("卡密验证失败：" + r.msg, false)
                     log("授权失败：" + r.msg)
                 }
             }
@@ -632,6 +667,7 @@ class BuildViewModel : ViewModel() {
                 if (r.ok) {
                     prefs.kami = ""
                     _s.value = _s.value.copy(licBusy = false, licOk = false, licText = "已解绑")
+                toast("已解绑本机", true)
                     log("授权已解绑")
                 } else {
                     _s.value = _s.value.copy(licBusy = false, licText = r.msg)
@@ -642,6 +678,17 @@ class BuildViewModel : ViewModel() {
     }
 
     /* ---------------------------------------------------------- 检查更新 */
+
+    /* --------------------------------------------------- 顶部小提示 */
+
+    private fun toast(msg: String, ok: Boolean) {
+        _s.value = _s.value.copy(toast = msg, toastOk = ok,
+            toastId = System.currentTimeMillis())
+    }
+
+    fun clearToast() {
+        if (_s.value.toast.isNotBlank()) _s.value = _s.value.copy(toast = "")
+    }
 
     /* ------------------------------------------- 账号 / 卡密加时 / 公告 */
 
@@ -666,11 +713,25 @@ class BuildViewModel : ViewModel() {
                 if (r.ok) {
                     prefs.acctUser = r.user
                     prefs.acctPass = pass
-                    if (r.activated) log("账号已激活")
-                    else log("账号未激活：用卡密充值开通（设置页「卡密加时」）")
+                    if (r.activated) {
+                        _s.value = _s.value.copy(acctOk = true, acctNeedCharge = false)
+                        toast("登录成功 · 欢迎回来", true)
+                        log("账号已激活，进入主界面")
+                    } else {
+                        _s.value = _s.value.copy(acctOk = false, acctNeedCharge = true)
+                        toast("账号未激活，先用卡密充值", false)
+                        log("账号未激活：转到卡密充值页")
+                    }
+                } else {
+                    toast(r.msg, false)
                 }
             }
         }
+    }
+
+    /** 充值页里「换个账号」：退回登录页 */
+    fun acctBack() {
+        _s.value = _s.value.copy(acctNeedCharge = false, acctOk = false, acctText = "")
     }
 
     fun acctOut(prefs: Prefs) {
@@ -700,8 +761,11 @@ class BuildViewModel : ViewModel() {
                 if (r.ok) {
                     prefs.kami = k
                     prefs.licVip = r.vip
+                    _s.value = _s.value.copy(acctOk = true, acctNeedCharge = false)
+                    toast("充值成功 · 已开通", true)
                     log("卡密加时成功：" + r.msg)
                 } else {
+                    toast("充值失败：" + r.msg, false)
                     log("卡密加时失败：" + r.msg)
                 }
             }
