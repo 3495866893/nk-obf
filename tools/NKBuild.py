@@ -283,10 +283,13 @@ def _ask(prompt, default=""):
 def setup_wizard():
     cfg = load_cfg()
     print("==== NKBuild 首次运行初始化 ====")
-    cfg["owner"] = _ask("GitHub 用户名/组织", cfg.get("owner") or "3495866893")
-    cfg["repo"] = _ask("仓库名", cfg.get("repo") or "nk-obf")
-    cfg["branch"] = _ask("分支", cfg.get("branch") or "main")
-    cfg["workflow"] = _ask("工作流文件", cfg.get("workflow") or "build-obf.yml")
+    cfg["owner"] = _ask("GitHub 用户名/组织（Token 属于谁，例 3495866893）",
+                        cfg.get("owner") or "3495866893")
+    cfg["repo"] = _ask("仓库名（只填名字，不带用户名，例 nk-obf）",
+                       cfg.get("repo") or "nk-obf")
+    cfg["branch"] = _ask("分支（一般是 main）", cfg.get("branch") or "main")
+    cfg["workflow"] = _ask("工作流文件（.github/workflows/ 下的文件名，例 build-obf.yml）",
+                           cfg.get("workflow") or "build-obf.yml")
     tok = _ask("Token（classic，勾 repo+workflow）", "")
     if tok:
         cfg["token"] = tok
@@ -331,6 +334,65 @@ class App(ctk.CTk if ctk else object):
         self._build_ui()
         self.after(120, self._drain)
         self.after(200, self._tick)
+
+    # ---------------- 仓库设置弹窗 ----------------
+    def open_settings(self):
+        """五个字段各带一行保姆级提示，改完直接写回 config.json。"""
+        if getattr(self, "_set_win", None) and self._set_win.winfo_exists():
+            self._set_win.focus()
+            return
+        win = ctk.CTkToplevel(self)
+        self._set_win = win
+        win.title("仓库设置 · 该填什么")
+        win.geometry("620x560")
+        win.configure(fg_color=BG)
+        win.transient(self)
+
+        hint = [
+            ("GitHub Token", "token", "ghp_ 开头那串。GitHub → Settings → Developer settings → "
+                                      "Personal access tokens → Tokens (classic) → 勾 repo + workflow"),
+            ("用户名 / 组织", "owner", "Token 属于谁就填谁，例如 3495866893（头像菜单里能看到）"),
+            ("仓库", "repo", "只填仓库名，不带用户名。github.com/3495866893/nk-obf 就填 nk-obf"),
+            ("分支", "branch", "默认分支，一般是 main（也可能是 master）"),
+            ("工作流文件", "workflow", "仓库 .github/workflows/ 下的文件名，例如 build-obf.yml"),
+        ]
+        vars_ = {}
+        for label, key, tip in hint:
+            ctk.CTkLabel(win, text=label, text_color=TEXT, anchor="w",
+                         font=ctk.CTkFont(family=FONT_UI, size=12, weight="bold")
+                         ).pack(fill="x", padx=18, pady=(12, 2))
+            v = tk.StringVar(value=str(self.cfg.get(key) or ""))
+            vars_[key] = v
+            ctk.CTkEntry(win, textvariable=v, fg_color=CARD_ALT, border_width=0, height=32,
+                         font=ctk.CTkFont(family=FONT_MONO, size=12)
+                         ).pack(fill="x", padx=18)
+            ctk.CTkLabel(win, text=tip, text_color=SUBTLE, anchor="w", justify="left",
+                         wraplength=560,
+                         font=ctk.CTkFont(family=FONT_UI, size=10)
+                         ).pack(fill="x", padx=18, pady=(2, 0))
+
+        def save():
+            for k, v in vars_.items():
+                self.cfg[k] = v.get().strip()
+            if not self.cfg.get("branch"):
+                self.cfg["branch"] = "main"
+            if not self.cfg.get("workflow"):
+                self.cfg["workflow"] = "build-obf.yml"
+            save_cfg(self.cfg)
+            self.logline("已保存仓库设置：%s/%s · 分支 %s · 工作流 %s"
+                         % (self.cfg["owner"], self.cfg["repo"],
+                            self.cfg["branch"], self.cfg["workflow"]))
+            win.destroy()
+
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(fill="x", padx=18, pady=16)
+        ctk.CTkButton(bar, text="保存", width=110, height=34, corner_radius=9,
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      font=ctk.CTkFont(family=FONT_UI, size=13), command=save
+                      ).pack(side="left")
+        ctk.CTkLabel(bar, text="配置写在 %APPDATA%\\NKBuild\\config.json，只在本机",
+                     text_color=SUBTLE,
+                     font=ctk.CTkFont(family=FONT_UI, size=10)).pack(side="left", padx=(12, 0))
 
     # ---------------- 授权（XL 云验证） ----------------
     def _build_license_bar(self):
@@ -452,11 +514,23 @@ class App(ctk.CTk if ctk else object):
     def _build_ui(self):
         head = ctk.CTkFrame(self, fg_color="transparent")
         head.pack(fill="x", padx=18, pady=(14, 6))
-        ctk.CTkLabel(head, text="NKBuild", text_color=TEXT,
-                     font=ctk.CTkFont(family=FONT_UI, size=22, weight="bold")
+        brand = ctk.CTkFrame(head, fg_color="transparent")
+        brand.pack(side="left")
+        ctk.CTkLabel(brand, text="NK", text_color=ACCENT,
+                     font=ctk.CTkFont(family=FONT_UI, size=34, weight="bold")
                      ).pack(side="left")
-        ctk.CTkLabel(head, text="  源码 → 云端混淆编译", text_color=SUBTLE,
-                     font=ctk.CTkFont(family=FONT_UI, size=12)).pack(side="left")
+        col = ctk.CTkFrame(brand, fg_color="transparent")
+        col.pack(side="left", padx=(10, 0))
+        ctk.CTkLabel(col, text="OLLVM-NEXT", text_color=TEXT,
+                     font=ctk.CTkFont(family=FONT_UI, size=15, weight="bold")
+                     ).pack(anchor="w")
+        ctk.CTkLabel(col, text="新一代混淆 · 源码 → 云端编译", text_color=ACCENT_HOVER,
+                     font=ctk.CTkFont(family=FONT_UI, size=11)
+                     ).pack(anchor="w")
+        ctk.CTkButton(head, text="⚙ 仓库设置", width=96, height=30, corner_radius=9,
+                      fg_color=CARD_ALT, hover_color="#2b3354",
+                      font=ctk.CTkFont(family=FONT_UI, size=12),
+                      command=self.open_settings).pack(side="left", padx=(16, 0))
         self.dot = ctk.CTkLabel(head, text="● 待机", text_color=SUBTLE,
                                 font=ctk.CTkFont(family=FONT_UI, size=12))
         self.dot.pack(side="right")
