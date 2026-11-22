@@ -374,7 +374,7 @@ class BuildViewModel : ViewModel() {
     private suspend fun attach(
         ctx: Context, prefs: Prefs, runId: Long, proj: String, out: String, eta: Long
     ) {
-        val ticker = launch {
+        val ticker = viewModelScope.launch {
             while (_s.value.phase == Phase.RUNNING) {
                 delay(500)
                 _s.value = _s.value.copy(
