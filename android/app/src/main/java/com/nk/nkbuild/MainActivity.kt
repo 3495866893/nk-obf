@@ -101,7 +101,9 @@ fun App(vm: BuildViewModel = viewModel()) {
         vm.restore(prefs)
         // 上次切后台/被杀掉的任务：按 run id 接上
         vm.resume(ctx, prefs)
-        // 用存下来的卡密自动复验一次（没有就显示卡密门）
+        // 先按上次的账号静默登录（已激活就直接进主界面）
+        vm.acctAuto(ctx, prefs)
+        // 只有账号这条路走不通时，才拿存下来的卡密兜底复验
         vm.licAuto(ctx, prefs)
     }
 
@@ -146,14 +148,30 @@ fun App(vm: BuildViewModel = viewModel()) {
                 .padding(horizontal = 18.dp, vertical = 12.dp)
         )
 
-        // 没有授权就整屏挡住（下面照常渲染，只是点不到）
-        if (!st.licOk) {
-            LicenseGate(
+        // 顶部小提示（成功/失败都在左上角冒一下，2.5 秒自己消失）
+        LaunchedEffect(st.toastId) {
+            if (st.toastId > 0L) {
+                kotlinx.coroutines.delay(2500)
+                vm.clearToast()
+            }
+        }
+        if (st.toast.isNotBlank()) {
+            ToastPill(
+                st.toast, st.toastOk,
+                Modifier.align(Alignment.TopStart).statusBarsPadding()
+                    .padding(start = 14.dp, top = 8.dp)
+            )
+        }
+
+        // 流程：先账号登录/注册 → 账号未激活就卡密充值 → 才进主界面
+        if (!st.acctOk) {
+            EntryGate(
                 st,
-                onKami = { km -> vm.licLogin(ctx, prefs, km) },
                 onAcct = { reg, u, pw ->
                     if (reg) vm.acctReg(ctx, prefs, u, pw) else vm.acctLogon(ctx, prefs, u, pw)
                 },
+                onKami = { km -> vm.kamiRecharge(ctx, prefs, km) },
+                onBack = { vm.acctBack() },
             )
         }
     }
@@ -162,15 +180,22 @@ fun App(vm: BuildViewModel = viewModel()) {
 /* ------------------------------------------------------------- 卡密门 */
 
 @Composable
-private fun LicenseGate(
+private fun EntryGate(
     st: UiState,
-    onKami: (String) -> Unit,
     onAcct: (Boolean, String, String) -> Unit,
+    onKami: (String) -> Unit,
+    onBack: () -> Unit,
 ) {
-    var mode by remember { mutableStateOf(0) }        // 0 = 卡密，1 = 账号
-    var km by remember { mutableStateOf("") }
+    if (st.acctNeedCharge) ChargeGate(st, onKami, onBack)
+    else AccountGate(st, onAcct)
+}
+
+/** 第一屏：登录 / 注册（只认账号，不再一上来就要卡密） */
+@Composable
+private fun AccountGate(st: UiState, onAcct: (Boolean, String, String) -> Unit) {
     var user by remember { mutableStateOf(st.acctUser) }
     var pass by remember { mutableStateOf("") }
+    var reg by remember { mutableStateOf(false) }
 
     Box(
         Modifier.fillMaxSize().background(Color(0xF7F2EFF4)),
@@ -181,67 +206,104 @@ private fun LicenseGate(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             GlassCard(null) {
-                SectionTitle("🔒", if (mode == 0) "卡密登录" else "账号登录 / 注册")
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GateTab("卡密", mode == 0) { mode = 0 }
-                    GateTab("账号", mode == 1) { mode = 1 }
-                }
+                SectionTitle("👤", if (reg) "注册账号" else "登录账号")
+                Text(
+                    if (reg) "注册完账号是未激活状态，下一步用卡密开通"
+                    else "登录后如果没开通，会让你用卡密充值",
+                    color = TextSub, fontSize = 11.sp
+                )
                 Spacer(Modifier.height(14.dp))
-
-                if (mode == 0) {
-                    Field("卡密", km) { km = it }
-                    Spacer(Modifier.height(6.dp))
-                    Text("没有卡密就切到「账号」注册，再用卡密给账号加时开通",
-                        color = TextDim, fontSize = 10.sp)
-                } else {
-                    Field("账号", user) { user = it }
-                    Field("密码", pass) { pass = it }
-                    Spacer(Modifier.height(6.dp))
-                    Text("注册后账号是未激活状态，用卡密充值即开通",
-                        color = TextDim, fontSize = 10.sp)
-                }
-
-                Spacer(Modifier.height(14.dp))
+                Field("账号", user) { user = it }
+                Field("密码", pass) { pass = it }
+                Spacer(Modifier.height(16.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    if (mode == 0) {
-                        PrimaryButton(if (st.licBusy) "验证中…" else "登录", !st.licBusy) {
-                            onKami(km)
-                        }
-                    } else {
-                        PrimaryButton(if (st.acctBusy) "…" else "登录", !st.acctBusy) {
-                            onAcct(false, user, pass)
-                        }
-                        PrimaryButton(if (st.acctBusy) "…" else "注册", !st.acctBusy) {
-                            onAcct(true, user, pass)
-                        }
-                    }
+                    PrimaryButton(
+                        when {
+                            st.acctBusy -> "…"
+                            reg -> "注册"
+                            else -> "登录"
+                        },
+                        !st.acctBusy
+                    ) { onAcct(reg, user, pass) }
+
+                    Text(
+                        if (reg) "已有账号？去登录" else "没有账号？去注册",
+                        color = Accent, fontSize = 12.sp,
+                        modifier = Modifier.clickable { reg = !reg }
+                    )
                 }
                 Spacer(Modifier.height(10.dp))
-                val tip = if (mode == 0) st.licText else st.acctText.ifBlank { "未登录" }
                 Text(
-                    tip,
-                    color = if (tip.startsWith("已") || tip.contains("成功")) Color(0xFF2E9E6B) else TextDim,
-                    fontSize = 12.sp
+                    st.acctText.ifBlank { "账号会绑定本机设备码（markcode）" },
+                    color = if (st.acctText.contains("成功")) Color(0xFF2E9E6B) else TextDim,
+                    fontSize = 11.sp
                 )
             }
         }
     }
 }
 
+/** 第二屏：账号未激活 → 卡密充值开通 */
 @Composable
-private fun GateTab(label: String, on: Boolean, onClick: () -> Unit) {
+private fun ChargeGate(st: UiState, onKami: (String) -> Unit, onBack: () -> Unit) {
+    var km by remember { mutableStateOf("") }
+
     Box(
-        Modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (on) Color(0x33D2557F) else Color(0x11000000))
-            .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 7.dp)
+        Modifier.fillMaxSize().background(Color(0xF7F2EFF4)),
+        contentAlignment = Alignment.Center
     ) {
-        Text(label, color = if (on) Accent else TextSub, fontSize = 12.sp)
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            GlassCard(null) {
+                SectionTitle("💳", "卡密充值")
+                Text(
+                    "账号：" + st.acctUser.ifBlank { "?" } + " · 未激活",
+                    color = TextMain, fontSize = 13.sp
+                )
+                Spacer(Modifier.height(4.dp))
+                Text("输入卡密给这个账号加时长，充值成功就进主界面",
+                    color = TextSub, fontSize = 11.sp)
+                Spacer(Modifier.height(14.dp))
+                Field("卡密", km) { km = it }
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    PrimaryButton(if (st.licBusy) "充值中…" else "充值", !st.licBusy) {
+                        onKami(km)
+                    }
+                    Text("换个账号", color = Accent, fontSize = 12.sp,
+                        modifier = Modifier.clickable { onBack() })
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(st.licText, color = TextDim, fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+/** 左上角小提示条 */
+@Composable
+private fun ToastPill(msg: String, ok: Boolean, modifier: Modifier) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0xF2FFFFFF))
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            Modifier.size(8.dp).clip(RoundedCornerShape(4.dp))
+                .background(if (ok) Color(0xFF34C77B) else Color(0xFFE0556B))
+        )
+        Text(msg, color = TextMain, fontSize = 12.sp)
     }
 }
 
@@ -810,7 +872,7 @@ private fun SetPage(
 
         GlassCard(haze) {
             SectionTitle("", "关于")
-            Text("NKBuild 手机版 v1.7.0（versionCode 15）\n" +
+            Text("NKBuild 手机版 v1.8.0（versionCode 16）\n" +
                 "Ensia = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                 "构建：GitHub Actions · 产物：AArch64 PIE",
                 color = TextSub, fontSize = 11.sp)
