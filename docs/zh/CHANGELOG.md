@@ -1,151 +1,138 @@
-# 变更记录 · 从第一行代码到 v1.0
+# 变更记录 · 从第一次对话到现在
 
-本篇按时间顺序记录 NK 从「插件跑不起来」到「双端 GUI + 发布版」的全过程。每条都写清**症状 → 根因 → 修法 → 验证数据**，便于以后回归排查。
-
-代号说明：2026-11-23 全量改名为 `NK`（仓库 `nk-obf`，插件 `libNk.so`），旧名与新名的逐项对照见阶段 G。手机端阶段 F 表里的 1.1–1.8.1 是开发期迭代号，对外只有发布版 **v1.0** 这一个版本号。
-
----
-
-## 阶段 A · 让插件能编出可链接的产物（2026-11-21）
-
-### A1 `Undefined temporary symbol .L_v…`
-
-- **症状**：开了 `string_encryption` 的工程全部编译失败，报错是几十条 `error: Undefined temporary symbol .L_v<16 位十六进制>`，随后 `fatal error: too many errors emitted`。
-- **定位**：先用全关配置（`ci/plain.toml`）编译通过 ⇒ 说明是某个 pass 造出来的；再对 8 个核心 pass 做二分：`only-str` 失败、`only-const` / `only-sub` / `only-bcf` 通过 ⇒ 唯一元凶是 `string_encryption`。
-- **根因**：`StringEncryption.cpp:542-544`
-  ```cpp
-  GlobalValue::ThreadLocalMode tlsMode = M->getTargetTriple().empty()
-      ? GlobalValue::NotThreadLocal : GlobalValue::GeneralDynamicTLSModel;
-  ```
-  Android triple 永远非空，于是解密缓冲区被建成**线程局部全局**，汇编里只剩 `adrp x8, .L_v…` 的引用而没有任何定义；`.L` 前缀在 ELF 里代表「临时符号」，MC 层直接拒绝。
-- **修法**：`tlsMode = GV->getThreadLocalMode();`（沿用它原本的 TLS 属性）；同时把 4 处继承 `GV->getLinkage()` 的全局变量改成 `GlobalValue::InternalLinkage`。
-- **验证**：`ci/only-str.toml` 单 pass 编译 **0 错误**；用户真实配置（8 pass + `anti_debug=true`）出包成功，产物 19,595,824 B。
-
-### A2 `relocation refers to a discarded section: .text.startup`
-
-- **症状**：编译通过、链接阶段报 11 条 `.text.startup` 被丢弃。
-- **排查**：先试 `--no-gc-sections` 无效（说明不是 `--gc-sections` 干的）；把 `FeatureElimination` 里「linkonce/weak → internal + 清 COMDAT」改成 `continue` 之后错误反而扩散到 `~vector`、`basic_string` 等内联函数 ⇒ 内联化那一步是必要的。
-- **根因**：pass 把带 COMDAT 的函数拆段混淆，而 COMDAT 的语义是「组内要么全留要么全丢」，被拆分后链接器整组丢弃，其余引用变成指向废弃段。
-- **修法**：`Utils.cpp` 的 `toObfuscate()` 里加一条硬跳过：
-  ```cpp
-  if (f->hasComdat() || f->hasLinkOnceODRLinkage() || f->hasWeakODRLinkage()
-      || f->hasLinkOnceAnyLinkage() || f->hasWeakAnyLinkage()) return false;
-  ```
-  并在 `BASE` 里加 `-fno-asynchronous-unwind-tables -fno-unwind-tables`（CFI 段符号指向被丢段是同类问题的另一个入口）。
-- **验证**：17 个编译单元全 `rc=0`，链接 `rc=0`，产物 85,642,896 B。
-
-### A3 反调试把自己杀死了
-
-- **症状**：带 `anti_debugging` 的产物**启动即静默退出**，无输出、无崩溃日志。
-- **定位**：用 `nk_spawn`（ptrace 附加器）与普通启动对照；探针程序证明第一次 `PTRACE_TRACEME` 返回 0、第二次返回 `-1 EPERM`。而 pass 是「每个函数入口插一次 TRACEME」，第二次必然失败 ⇒ 被判定为「被调试」⇒ 走暴力退出。
-- **修法**：`AntiDebugging.cpp` 不再插 `PTRACE_TRACEME`，改为在每个函数入口插 `call __nk_ad_check()`，判定逻辑全部移交运行时的 `ci/nk_ad.c`（它自己起看门狗进程，只认「外来 tracer」）。
-- **验证**：`NK_AD_DEBUG=1` 日志 `TracerPid=0 wd=0 hooked=0`；普通启动正常打印自家界面；被 `nk_spawn` 附加时 `exit 97`。
+> 这份记录从「主人第一次说『做个 NKBuild』」开始，按阶段列出每一次真实改动、每个踩过的坑和最终数字。
+> 时间线：2026-11-21 起。
+> 版本号约定：开发期用过 1.1–1.18 这类小号，**对外只有发布版 `v1.0`** 一个版本号（versionCode 20）。
 
 ---
 
-## 阶段 B · 运行时看门狗 `nk_ad.c`（v1 → v11.1）
+## 阶段 0 · 起点：一个能把源码丢上去、拿回混淆二进制的工具
 
-模块定位：**不参与混淆**的独立 C 文件（`clang -x c` 单独编成 `nk_ad_extra.o` 再链接），因为把检测代码本身丢进 pass 会触发 `Undefined temporary symbol` 且逻辑会被打散。
+第一天的需求：桌面 GUI —— 选项目目录、上传到 GitHub、触发 Actions、拿回被 **Ensia**（后来的 NK）混淆的 aarch64 二进制，混淆与反调试可勾选。
 
-| 版本 | 新增能力 | 起因 |
-|---|---|---|
-| v1–v4 | `TracerPid` 探测、全线程扫描（`/proc/self/task`）、`maps` 差分、libc 序言扫描、自身 `.text` FNV、`prctl(PR_SET_DUMPABLE,0)`、直连 `svc #0`（openat=56 / read=63 / close=57 / write=64 / getdents64=61）、fail-open、命中 `_exit(97)` | 最初只查 `TracerPid`，被 Frida 与 ptrace 双混淆后失效 |
-| v4 | 自家看门狗进程用 `/proc/<pid>/comm == "nk-wd"` 白名单放过；`maps` 差分从「新 r-x 段即杀」改成「只查 rwx 段」 | Vulkan/GL 驱动运行期 `dlopen` 合法，误杀 |
-| v8 | `nk_maps_hit`（20 条特征：frida-agent / frida-gadget / libgum / gum-js-loop / frida-server / linjector / re.frida / lsposed / libxposed / xposedbridge / zygisk_lsposed / riru_ / edbg / stackplz / qbdi / libqbdi / unicorntrace / libunicorn / substrate / libhoudini_frida）、`nk_comm_hit`（逐 tid 扫 comm）、`nk_frida_socket`（`/proc/net/tcp{,6}` LISTEN 端口 27042 / 27043 / 27052，`/proc/net/unix` 找 `@frida`）、`nk_frida_files`、`nk_trace_state`、`nk_uprobe_brk`（扫自身 `.text` 前 8192 B 的 BRK 改写）、`nk_hwbp_hiccup` | 用户提供 204 行调试工具清单（Frida / LSPosed / eDBG / stackplz / QBDI / unicornTrace 等） |
-| v10 | `nk_jni_table_ok`（JavaVM 函数表前 8 项必须落在 ART 模块内）、`nk_anon_exec`（memfd / 无路径可执行段）、`nk_svc_ok`（只含 `svc #0` 的 getpid 探针）、`nk_root_framework`、`nk_hwbp_slots`（`perf_event_open` + `HW_BREAKPOINT_X`）、`nk_tm_collect/verify`（主模块 + libc/libart/libc++/libm/libnativehelper/libdl 的 `.text` 哈希） | 第三方评审 `mj (3).md` 给出 8 条改进建议 |
-| v10.2 | `g_text_rwx_self` + `NK_AD_NO_WLOCK` | `nk_text_wlock()` 自己把文本改成 RWX 后，下一轮「文本可写」判定把自己当攻击杀掉了 |
-| v11 | memfd 放过 ART JIT（`/memfd:jit-cache`）、哈希名单砍到 主模块 + libc + libm + libdl、基线延后到首次深检、`errno → -fd`、`g_wlock_tried` 默认关、JNI 降为软分、maps 用 `%n` 解析、`/data/adb` 存在即算 root | `mj (4).md` 指出两个「真机必崩」P0：ART 的 JIT memfd 被误杀、ART 自己会 patch 自身 `.text` 导致哈希必然不符 |
-| v11.1 | `jit` 改前缀精确匹配（防 `/memfd:frida-jit-agent` 绕过）、`g_jni_soft_done` 只记一次软分、`g_tm_ready` 原子三态、删掉 init 里冗余采样 | `mj (5).md` 指出：`strstr(q,"jit")` 可绕过、软分累加到 3 次即 `_exit(97)` 导致真机 4~6 秒自杀、`g_tm_ready` 非原子会让两线程同时写歪基线 |
+- 落地 `tools/NKBuild.py`：customtkinter 四卡片界面（源码 / 工程与产物 / 反混淆开关 / 开始与日志），`Github` 类负责 blob → tree → commit → dispatch → 轮询 run → 下 artifact。
+- 混淆侧：`kit.tar.gz` 里的 LLVM 21 Pass 插件（当时叫 `libEnsia.so`），用 `-fpass-plugin` 挂到 NDK r29 的 clang 上，配置走 `ci/*.toml`。
+- 第一版就从 17.6 分钟压到 1.8 分钟：apt 依赖改成按需检查（7.5 分钟 → 0.02 分钟）、smoke test 默认跳过（4 分钟 → 0）、插件与 clang 走缓存。
 
-**判定语义**：只有「外来 tracer / 命中特征」才走 `_exit(97)`；读失败一律 fail-open；`NK_AD_DEBUG=1` 时把每一步写进 `/data/local/tmp/nk_ad.log`。
+## 阶段 1 · 反调试让程序「一启动就静默退出」
 
----
+现象：开了 `anti_debugging` 的包启动后无输出退出。
 
-## 阶段 C · CI 从 17.6 分钟压到 1.8 分钟
+- 用自建探针测得：**第 1 次 `PTRACE_TRACEME` 返回 0，第 2 次就 `-1 EPERM`** —— 而老实现是「每个函数入口 + 全局构造器」各插一次，所以必然第 2 次就判定「被调试」并自杀。
+- KernelSU 环境下 `su` 里连第 1 次都 `EPERM`。
+- 修法：把 AArch64 分支整体换成 **`TracerPid` 探针**（open `/proc/self/status` → 读 1023 B → `strstr "TracerPid:"` → `strtol`），不再调 `ptrace`。
+- 同时定位「静默退出」的尾巴：老实现的暴力退出里塞了 **Q32 混沌死循环**，所以超时工具看到的是 `rc=124/137` 而不是退出码。
 
-- `disk & deps` 从固定 `apt-get` 改成按需检查：**7.5 min → 0.02 min**。
-- `smoke test` 默认 `skip_smoke=true`：**4 min → 0**。
-- LLVM 预编译产物改走 Release `llvm-build-21.1.8`（`llvm-build.tar.zst` 232 MB），插件缓存按 `sha256(kit.tar.gz)[:12]` 命名自动失效，NDK 命中缓存。
-- **结果：端到端 17.6 → 1.8 分钟**（同一天内实测）。
+## 阶段 2 · 自建运行时看门狗 `ci/nk_ad.c`
 
-### C1 配额爆掉
+从「插件插检测」升级成 **插件插调用点 + C 模块装逻辑**：
 
-- **症状**：run 19 秒失败，唯一报错 `##[error]Failed to CreateArtifact: Artifact storage quota has been hit.`，`build lucifer` 一步都没跑。
-- **根因**：私有仓库 500 MB 配额，却堆了 **289 个 artifact / 24.4 GiB**（`llvm-build` 约 90 份 × 231 MB、`ndk-r29-cache` 786 MB）。
-- **修法**：清理到 **5 个 / 16.8 MiB**；workflow 不再把 `llvm-build` / `ndk-r29-cache` 传成 artifact；二进制改由 **Release**（tag `nk-builds`）发布；artifact 统一 `retention-days: 3`。
-- **副产品教训**：往已有 `retention-days: 30` 的 YAML 块里再插一个同名键会产生重复键，GitHub dispatch 直接回 **422 Unprocessable Entity**。
+- LLVM 层只在每个函数入口插 `call __nk_ad_check()`（IR 级），逻辑全在 `nk_ad.c`（用 `-x c` 单独编译，避免被插件自己混淆出 `.L_vXXXX` 未定义符号）。
+- 检测项：`TracerPid` 交叉校验、全线程扫描（`/proc/self/task` + `getdents64`）、maps 快照差分、libc 序言改写扫描（只认跳出模块的 `B/BR/BLR/ldr+br`，避开 bionic thunk 误报）、自身 `.text` FNV 哈希、`prctl(PR_SET_DUMPABLE,0)`、纯 `svc #0` 直连系统调用（openat 56 / read 63 / close 57 / write 64 / getdents64 61）。
+- 读不到就放行（fail-open），命中 `_exit(97)`；调试输出由 `NK_AD_DEBUG=1` 打开，日志 `/data/local/tmp/nk_ad.log`。
+- 真机验证（realme RMX3300，Android 15，KernelSU）：正常启动打印自己的界面、`rc=255`；被 `nk_spawn` ptrace 时 **exit 97**。
 
----
+## 阶段 3 · GUI 该有的东西
 
-## 阶段 D · 大工程编译的三次事故（2026-11-22）
+- 16 个 pass 全部可选，`anti_hooking / anti_class_dump / objc` 标灰（一试就崩）。
+- 终止按钮（`threading.Event` 贯穿上传 / 等 run / 轮询三阶段，同时调 GitHub 取消接口）、ETA（`max(120, 120+20×pass+min(900, 20×MB))`）、耗时显示、失败时列出**具体哪一步红了**并给 run 链接。
+- 输出目录 5 级回退（桌面 / 文档 / `~` / LOCALAPPDATA / TEMP），每级先写探针文件再落盘。
 
-### D1 `build lucifer` 被 SIGTERM（exit 143）
+## 阶段 4 · Frida 与 Actions 配额
 
-- **症状**：17 文件工程在 `build lucifer` 第 161–182 秒被杀；日志只有 `##[error]Process completed with exit code 143.` 与 `The runner has received a shutdown signal`，一行编译错误都没有。
-- **逐项排除**：不是 `timeout-minutes`（350）、不是 `concurrency`、不是 OOM 的 137、不是 `systemd-oomd`（关掉 + 加 16 GB swap 无效）。
-- **根因**：把资源监控从 `> /tmp/nk_res.log` 改成 `| tee -a` 之后才看见 —— **`mem_avail` 全程只剩 119–398 MB**（16 GB 机器，swap 也满）。是内存耗尽导致的 job 终止。
-- **修法三层**：
-  1. 逐文件 `-c` 编译（原来是 17 个文件一次性交给一个 clang，出错无法定位，也无法按文件降级）；
-  2. 大 TU 先试 `ci/nk-nofold.toml`（7 pass，跳过 `flattening`），没有再退 `nk-light.toml`（3 pass）；
-  3. 大 TU 加 `-O1`。
-- **判定口径**：用**预处理字节数**而不是源文件大小 —— `projects/jni/main.cpp` 只有 1.3 KB，但 `#include` 了 `pz.h`/`xz.h`/`Encrypt.h`，`-E -P | wc -c` 出来是 3,123,227 B。
+- 想装 frida-server 做真机检测验证：拿到的是 `win_arm64` 轮子（本机 AMD64 跑不了），frida-server 又必须 root 才能起；设备当时换成了一台未 root 的 vivo。
+- 顺手发现 Actions 存储爆了：139 个 artifact / 5.8 GB（`llvm-build` 每次 225 MB × 17 份），清到 225 MB，并把清理 workflow 改成「保留 `llvm-build`、`ndk-*-cache`、`ensia-plugin-*`，总量 >300 MB 才删」。
 
-### D2 `Illegal instruction`（SIGILL）
+## 阶段 5 · 工作区被误删，全量恢复
 
-- **症状**：混淆后的产物一运行就 SIGILL。
-- **定位**：按 `PT_LOAD|PF_X` 精确扫代码段 —— 新产物 35,519,648 B 里有 **10 处 `brk` + 8 处 `udf`**，对照老产物 0 处。反汇编上下文是 `ldr w8,[x23,#0x28f4]; cmp w8,w20; b.ne +4; brk #0xf000`，即扁平化分发器的状态校验。
-- **根因**：`flattening` 把 switch 兜底标成 `unreachable`，`bcf` 的不透明谓词与 `split_blocks` 新增的块让这条「不可达」分支真的会被走到；LLVM 把 `llvm.trap/unreachable` 落成 `brk #0xf000`。
-- **修法**：大 TU 跳过 `flattening`；`BASE` 加 `-fno-asynchronous-unwind-tables -fno-unwind-tables`。
-- **验证**：新产物代码段 16,086,400 B，**`brk 0 / udf 0`**。
+- 整个 `ds工作区` 被删除。恢复路径：旧 PAT 已失效 → 从 `%APPDATA%\NKBuild\config.json` 里翻到还能用的 token → `tarball/main` 拉全量快照（168 个文件）→ 解出 `kit.tar.gz`（140 条目）。
+- **`NKBuild.py` 从未进过仓库**，只能重写：四卡片界面 + `PASS_SPEC` 16 项 + 预设分段按钮 + 终止 + ETA + 5 级输出回退，`py_compile` 与 GitHub 层冒烟都过。
+- 期间把 CI 的 `NDK_DIR: unbound variable`、`guard (cache required)` 快速失败、`if:` 重复键导致 dispatch 422 全部修掉。
 
-### D3 顺带修掉的编译/链接错误
+## 阶段 6 · 手机版 GUI（v1.1 → v1.2）
 
-| 报错 | 修法 |
+- Kotlin + Compose：源码扫描（含 `.h/.hpp/资源` 上传）、pass 勾选、`ci/ui-<工程>.toml` 本地生成后上传、进度与 ETA、日志框、产物自动存 `Download/NKBuild` 并一键安装。
+- 底部导航做成**液态玻璃胶囊**（Haze `hazeEffect` + 滑动选择块），4 个 tab：构建 / 混淆 / 产物 / 设置。
+- 首轮编译失败 3 个错：`DIRECTORY_DOWNLOAD` 少个 S、缺 `animateFloat` import、`@Composable` 在非 composable 上下文调用 —— 全部修掉后 v1.2 出包。
+
+## 阶段 7 · 「上传超过 1 MB 会失败」的疑云
+
+- 实测直接打 `POST /git/blobs`：1 MB、2 MB、5 MB、20 MB **全部 201** ⇒ blob 接口没有 1 MB 限制（上限 100 MB）。
+- 真正 1 MB 限制在 `PUT /contents`，而工具里只有「写 `ci/ui-<proj>.toml`」一处用它。给 blob 加 4 次退避重试，>1 MB 打日志，>70 MB 跳过。
+- 顺手解决装不上的问题：`INSTALL_FAILED_UPDATE_INCOMPATIBLE` 的根因是 GitHub runner 每次新生成 debug keystore → 用 openssl 生成固定 PKCS12（`android/keystore/nkbuild.p12`）并写进 `signingConfigs`。
+
+## 阶段 8 · 预检、鱼、皮肤（v1.3 → v1.4.6）
+
+- v1.3：新增「预检」页 —— 上传前扫出会崩的文件（>70 MB 必崩、编译单元名带空格/中文必崩、>45 MB 很可能崩、图片字体等资源只记「注意」、>60 个编译单元撞限流），并在开始编译前直接拦截。
+- 背景先做过一版自绘「蓝色大肥鱼」（矢量、带摆尾吐泡），后来主人给了 8 张 KernelSU 风格粉色皮肤图 ⇒ 删鱼，改成**每页一张背景 + 切页交叉淡入 + 一个 Q 版头像**，UI 从深紫玻璃整改成浅色（卡片 0xF2 白、accent 0xFFD2557F）。
+- 导航图标直接从皮肤图裁头像（显著性找头顶 + 圆形蒙版 + 提饱和），最后统一换成 Q 版粉发女孩；应用图标用 adaptive-icon（`ic_launcher_fg` + 粉底 `#FFF3F7`）。
+- 一路上修的编译错：`Brush.verticalGradient(...)` 少一个右括号、`quadTo` 不存在（改 `lineTo` 折线）、`Box(weight)` 没给底部留 96 dp 导致卡片被导航压住。
+
+## 阶段 9 · 切后台任务丢失（断点续接 + 任务历史）
+
+- 现象：切出去再回来，编译任务没了；服务端也查不到那次上传（`viewModelScope` 随进程被杀一起死）。
+- 方案：`BuildService` 前台通知保活 + `Prefs` 里记 `runId / jobProj / jobOut / jobEta / jobStart`，启动时 `resume()` 只接管「已拿到 runId」的任务（上传阶段被打断就明确告诉用户「上次上传被打断，点开始编译再来一次」）。
+- 之后又加「任务历史」：每次 dispatch 把 `(runId, 工程, 产物, 时间, 文件, 是否已下载)` 存进 `org.json`（留 30 条），在「产物」页点一条就能**重新下载**。
+
+## 阶段 10 · 真正的硬仗：编译链
+
+按时间顺序：
+
+1. **`.L_v` 未定义临时符号**（19–22 条）——二分到 `string_encryption`；根因是 `StringEncryption.cpp:542` 把解密缓冲区设成 `GeneralDynamicTLSModel`，Android triple 非空必走 TLS，汇编只剩 `adrp x8, .L_v…` 引用没有定义。改成沿用原变量的 `getThreadLocalMode()`，并把 4 处继承 `GV->getLinkage()` 的全局量改成 `InternalLinkage`。
+2. **`duplicate symbol: cJSON_*`** —— `SRC_FILES` 里带了被 `#include` 的 `.c`；两端 GUI 现在扫描时自动剔除「被别人 include 的源文件」。
+3. **`relocation refers to a discarded section: .text.startup`**（11 条）——不是 `--gc-sections`，是 COMDAT；在 `Utils.cpp toObfuscate()` 里跳过带 comdat / linkonce_odr / weak 的函数，并给 `BASE` 加 `-fno-asynchronous-unwind-tables -fno-unwind-tables`。
+4. **`vkCreateAndroidSurfaceKHR` 未声明** —— 缺 `-DVK_USE_PLATFORM_ANDROID_KHR`（第一次补丁把宏塞进 `-D_FORTIFY_SOURCE=2` 同一个字符串里，等于没定义）。
+5. **PhysX 要求 `NDEBUG`/`_DEBUG` 二选一** —— 补 `-DNDEBUG`。
+6. **链接 `posix_spawn failed`** —— 编译用的 `CF` 数组过滤掉了 `--ld-path`，链接行要补回来。
+7. **`build lucifer` 被 SIGTERM（exit 143）** —— 不是超时也不是 oomd：`mem_avail` 只剩 **119–398 MB**。关 systemd-oomd、加 16 GB swap、`overcommit_memory=1` 都没救；`-O1` 也没救。
+8. **大 TU 分级降级** —— 预处理 >800 KB 的单元自动跳过 `flattening`（保留其余 7 个 pass），内存立刻回落到 4–7 GB，`imgui.cpp`（预处理 3.0 MB）37–51 秒编过，全量 17 个 TU 一次通过，产物 21,145,056 B。
+9. **运行时报 `Illegal instruction`** —— 旧产物里有 **12 处 `brk`**（`flattening` 把 switch 兜底标成 unreachable，后端照规矩落成 `brk #0xf000`）；跳过 flattening 后 **brk 0 / udf 0**。
+10. **（v11 之后）自己把自己杀了** —— `nk_text_wlock()` 把文本改成 RWX 后，下一轮「文本可写 = 有 uprobe」判定会命中自己；加 `g_text_rwx_self` 标记，默认还关掉 wlock。
+
+## 阶段 11 · 卡密授权（XL 云验证）
+
+- 协议逐行从 `xl_verify.h` + `gm.h` 抠出来：`data = Base64(IV16 + SM4-CBC(GMKEY,IV, 8B随机‖4B时间戳BE‖plain) + HMAC-SM3(GMKEY, IV‖ct))`，响应同样解包后**先丢 12 字节**才是 JSON，再校 `code==200`、`|time-now|<=30`、`check==md5(str(time)+APPKEY+value)`。
+- 桌面 `tools/xlverify.py`（纯 Python，无依赖）：SM4 表 + SM3 + HMAC-SM3 + CBC + 信封封/解 + 设备码 + 双 host 回退。国标向量 `681EDF34D206965E86B3E94F536E4246`、`SM3("abc")` 全部对上；真服务器用假卡密回 `code=149`，证明链路通。
+- 手机 `XlVerify.kt` 用 Kotlin 重写同一套算法（`value` 用 `toUnsignedString` 顶掉 Java 没有的 `%u`），并用 Python 逐字节镜像校验一致。
+- 界面：桌面顶部授权条（状态点 + 卡密 + 登录/粘贴/解绑），手机全屏卡密门；后来又按主人要求**去掉账号体系只留卡密**，并修 `vip` 在 `msg` 里且是字符串导致的「到期时间永远永久」。
+- 加音效（4 个合成 WAV：click / ok / deny / tick，`SoundPool` 单流不叠）+ 震感 + 左上角自动消失提示条。
+
+## 阶段 12 · 反调试强化 v7 → v11.1
+
+按主人给的三份评估报告（`mj.md`、`mj (3).md`、`mj (4).md`、`mj (5).md`）逐条落地：
+
+| 版本 | 加了什么 |
 |---|---|
-| `use of undeclared identifier 'vkCreateAndroidSurfaceKHR'` | `BASE` 加 `-DVK_USE_PLATFORM_ANDROID_KHR`（注意要作为独立数组元素，塞进 `-D_FORTIFY_SOURCE=2` 那个字符串里会污染宏值） |
-| `PxPreprocessor.h:454: Exactly one of NDEBUG and _DEBUG needs to be defined!` | `BASE` 加 `-DNDEBUG` |
-| `clang++: error: unable to execute command: posix_spawn failed` | 编译用的 `CF` 数组过滤掉了 `--ld-path`，链接行要单独补 `"--ld-path=$LLD"` |
-| `ld.lld: error: duplicate symbol: cJSON_*` | 提交源文件时剔除「被别的源文件 `#include` 的 `.c/.cpp`」 |
-| `[3/3] 编译 …/nk_ad_extra.o` 把 `.o` 当源码 | `try()` 循环开头加 `case "$f" in *.o / *.a) objs+=("$f"); continue ;; esac` |
+| v7 | 12 项模拟环境检测（qemu 属性、`gGoldfish`、`/dev/qemu_pipe`、abort 消息比对、MAGIC 值、maps 里的 qemu 段…），软分累计 ≥3 才杀 |
+| v8 | 工具指纹：maps 20 项黑名单、线程 comm、`/proc/net/tcp` 端口 27042/27043/27052、`/proc/net/unix` 的 `@frida`、frida 文件、`State: t`、uprobe BRK 改写扫描 |
+| v10 | JNI 函数表落点、匿名可执行段、`svc #0` 自检、`/data/adb` 分级、perf 硬件断点槽、多模块 `.text` 哈希、artseek 兜底 |
+| v10.1/10.2 | `g_text_rwx_self`：自己 mprotect 出来的 RWX 不再算攻击 |
+| v11 | 放过 ART JIT 的 `/memfd:jit-cache`、哈希名单砍成 主模块+libc+libm+libdl、基线延后到首次深检、`errno` 改 `-fd`、wlock 默认关、JNI 降软分、maps `%n` 解析、`/data/adb` 存在即算 root |
+| v11.1 | JIT 前缀精确匹配、JNI 软分只记一次、`g_tm_ready` 原子三态、删掉 init 里的冗余采样 |
+
+## 阶段 13 · 配额治理与产物改走 Release
+
+- `llvm-build` 每跑一次就上传一份，堆到 **289 个 artifact / 24.4 GiB**，直接撞爆配额（`Failed to CreateArtifact: Artifact storage quota has been hit`），编译一步都没跑就失败。
+- 清理到 **16.8 MiB**；workflow 里删掉 `llvm-build` / `ndk-cache` 的上传，改成「clang 只在需要时重建 + 存成 Release 资产 `llvm-build.tar.zst`（232.3 MB，不占配额）」；artifact 保留期改成 3 天。
+- 产物发布也改成 Release：`publish binary to release`（tag `nk-builds`，`gh release upload --clobber`），APK 同样走 Release —— 因为配额重算要 6–12 小时，等不起。
+
+## 阶段 14 · 改名、双语文档、公开
+
+- **全量改名**：早期代号 → `NK`。kit 目录 `nk/`（95 个文件）、产物 `libNk.so`、脚本 `ci/build-nk.sh`、环境变量 `NK` / `NK_CONFIG`，仓库 `nk-obf`。
+- 文档：`docs/zh/` 与 `docs/en/` 各 8 篇（index / FEATURES / USAGE / ARCHITECTURE / COMPATIBILITY / CHANGELOG / RELEASES / CREDITS）+ 本文件 + 双语 `README.md` / `README.en.md` + 保姆级部署教程 `DEPLOY.md`。
+- 两个子智能体逐篇校对，再用脚本机械复核：围栏成对、标题无跳级、相对链接全部可解析、旧名命中 0、无乱码、无 TODO。
+- **授权修正**：`src/`、`ci/`、`kit.tar.gz` 源自 **OLLVM-Next（AGPL-3.0）**，原来挂 MIT 是错的；改成「插件部分 AGPL-3.0 + 双端 GUI 与文档 MIT」，`CREDITS` 两边补授权节。
+- 发布 `v1.0`：`NKBuild-mobile-1.0-kami.apk` + `NKBuild-1.0-win64.exe`，手机上显示 `v1.0（versionCode 20）`，关于页大字号 `NK / OLLVM-NEXT / 新一代混淆`。
+- 公开前自查：仓库内**没有任何真实 PAT**（只有文档里的 `ghp_xxxx…` 占位），删掉私人工程目录，示例签名口令与 XL 测试密钥在 `CREDITS` 里注明「仅供示例，自行更换」。
 
 ---
 
-## 阶段 E · 桌面端 GUI（→ 发布版 v1.0）
+## 数字回顾
 
-- 从零重写为 `tools/NKBuild.py`（CustomTkinter，约 1000 行）：源码 / 工程·产物 / 反调试 / 开始 四张卡片 + 日志框 + 进度条 + ETA + 终止 + 打开产物。
-- **关键修复**
-  - 扫描分成「可编译单元」与「待上传文件」两份清单 —— 只传 `.cpp` 会导致 CI 报 `imgui.h file not found`。
-  - blob 上传 4 次退避重试（实测 1 / 2 / 5 / 20 MB 全部 201，blob 单个上限 100 MB；`put /contents` 才有 1 MB 限制，只用于写 `ci/ui-<proj>.toml`）。
-  - 扫描后剔除被 `#include` 的 `.c/.cpp`。
-  - 输出目录多级回退：桌面 → 文档 → `~` → LOCALAPPDATA → TEMP（5 个候选，都建 `NKBuild-out\<产物名>`，全失败才报错；起因是受限令牌下 `PermissionError [WinError 5]`）。
-  - 失败时列出失败的步骤名 + run 链接（原来只有 `!! 编译失败：failure`）。
-- **1.6.0 加入卡密授权栏**：`tools/xlverify.py` 纯 Python 实现 SM4-CBC + HMAC-SM3 信封、设备码、登录/解绑；`start()` 首行校验，未授权不允许编译。
-
----
-
-## 阶段 F · 手机端 GUI（开发期 v1.1 → v1.8.1，对外 v1.0）
-
-| 版本 | 变化 |
+| 指标 | 值 |
 |---|---|
-| 1.1 | 首个可用版本：选目录、编译、下载产物 |
-| 1.2 | 16 pass 分项勾选 + 本地生成 toml 上传；产物自动存 `Download/NKBuild` + 一键安装；ETA；底部液态玻璃导航（Haze） |
-| 1.3 | 新增「预检」页：上传前扫危险文件（>70 MB 必崩 / >45 MB 很可能崩 / 文件名带空格或中文的编译单元必崩 / 图片字体文档只拖时间 / >60 编译单元易撞限流） |
-| 1.4 | 换主人给的 5 张开源皮肤（每页一张，`Crossfade` 切页换图）、Q 版粉发女孩做应用图标与导航图标、浅色主题（`#F6EFF4` 底 / `#D2557F` 主色）；1.4.2–1.4.6 逐版调对比度、卡片不透明度、日志框、图标取景 |
-| 1.4.1 | 切后台不丢任务：前台服务 `BuildService` 保活 + `runId` 断点续接 |
-| 1.5.x | 自动跳过被 `#include` 的源文件；新增「任务历史」卡片（`工程·产物 + run id + 时间 + 是否已下载`，点一下重新下载） |
-| 1.7 | 账号注册/登录、卡密充值、公告、云端版本检查（`api=ini` 的 `version`） |
-| 1.8.0 | 4 个按钮音效（`SoundPool` 单流不叠 + 55 ms 节流）、震感分级、左上角自动消失提示条 |
-| 1.8.1 | 按用户要求**只保留卡密**（去掉账号体系）；修「未激活不进充值页」（服务器对未激活账号回 `code=179`）；修「卡密已使用」（卡密一次性绑定，先 `unbind` 再登）；修到期时间（服务器把 `vip` 放在 `msg` 里且是字符串，`4102243200` 是秒）。这一版就是对外发布的 **v1.0** |
-
-- **签名固定**：`android/keystore/nkbuild.p12`（PKCS12，自签 10,950 天），解决「CI 每次生成新 debug keystore，新包装不上旧包」的 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。
-- **版本约定**：对外 `versionName` 固定 `1.0`，只递增 `versionCode`（当前 19）。
-
----
-
-## 阶段 G · 改名与发布（2026-11-23）
-
-- 全量改名（2026-11-23）：早期代号、仓库名、动态库名、脚本名、环境变量前缀统一换成 `NK` / `nk-obf` —— kit 目录 `nk/`（95 个文件）、产物 `libNk.so`、构建脚本 `ci/build-nk.sh`、环境变量 `NK` / `NK_CONFIG`，仓库仍为私有。
-- 源码摊开进仓库 `src/`（79 文件 / 2.5 MB）、文档 8 篇、MIT LICENSE。
-- 清仓库：删 `proj/`、`projects/myproj/`（37.4 MiB，光 `font.h` 就 20 MB）、`projects/路西法/`；**410 文件 / 63.3 MiB → 294 文件 / 24.9 MiB**。
-- 发布 **Release `v1.0`**：`NKBuild-mobile-1.0-kami.apk`（9.98 MB）+ `NKBuild-1.0-win64.exe`（13.35 MB）；另有 `nk-builds`（每次构建的 `lucifer` 与 `nk-toolchain.tar.gz`）、`llvm-build-21.1.8`。
-- 最新 CI：run `45041678195` success，`build lucifer` **41 秒**，产物 21,145,056 B，sha256 `6753A4C83F20A5FABEDC9903C1DD9741F23E5FA5E685A6534A20D14E5DF26F34`，代码段 16,086,400 B，`brk 0 / udf 0`，明文 `yz.dujiuyue.cn` 0 处、`kami` 0 处。
+| 单次构建（缓存命中） | 41 秒 ~ 1.8 分钟 |
+| 首次自建 clang | 40–100 分钟（只一次，随后存 Release） |
+| 示例产物 | 21,145,056 B，`.text` 16,086,400 B，`brk 0 / udf 0` |
+| 真机连续启动 | 100/100 无卡死（RMX3888）、100/100 无卡死（RMX3300） |
+| 混淆后体积 | 原大小的 2–3 倍；稳态性能 −10%~−40% |
