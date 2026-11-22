@@ -27,6 +27,7 @@
 #include <setjmp.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #define NK_EXIT 97
 
@@ -1090,6 +1091,193 @@ static void nk_tm_verify(void)
     }
 }
 
+/* ================= v11.5 行为验证：不匹配指纹，验证「世界是否正常」 ================= */
+
+/* 某地址是否落在可执行映射里（现查 maps，稳妥，不依赖缓存） */
+static int nk_addr_exec(uint64_t a)
+{
+    char *buf = (char *)malloc(262144);
+    if (!buf) return 1;                       /* fail-open：查不了就当正常 */
+    int n = nk_slurp("/proc/self/maps", buf, 262143);
+    int ok = 0;
+    if (n > 0) {
+        buf[n] = 0;
+        char *p = buf;
+        while (p && *p) {
+            char *nl = strchr(p, '\n');
+            if (nl) *nl = 0;
+            unsigned long long lo = 0, hi = 0;
+            char perm[8] = {0};
+            if (sscanf(p, "%llx-%llx %7s", &lo, &hi, perm) == 3) {
+                if (a >= lo && a < hi) { ok = (perm[2] == 'x'); break; }
+            }
+            if (!nl) break;
+            p = nl + 1;
+        }
+    }
+    free(buf);
+    return ok;
+}
+
+/* A) ArtMethod 入口点：ART 里 jmethodID 就是 ArtMethod*，
+ *    取几个指针槽位，看解引用出来的入口是否落在可执行映射。
+ *    artseek / 部分 ART hook 会把入口改到堆或匿名页上。 */
+static void nk_art_entry_check(void)
+{
+    typedef long (*getvms_t)(void **, long, long *);
+    getvms_t gv = (getvms_t)dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
+    if (!gv) return;
+    void *vm = NULL;
+    long nvm = 0;
+    if (gv(&vm, 1, &nvm) != 0 || !vm || nvm < 1) return;
+    void **vt = *(void ***)vm;
+    if (!vt) return;
+    typedef long (*getenv_t)(void *, void **, long);
+    getenv_t ge = (getenv_t)vt[3];             /* JNIInvokeInterface::GetEnv */
+    if (!ge) return;
+    void *env = NULL;
+    if (ge(vm, &env, 0x00010006L) != 0 || !env) return;   /* 线程没附着 → 放过 */
+    void **evt = *(void ***)env;
+    if (!evt) return;
+    typedef void *(*findclass_t)(void *, const char *);
+    typedef void *(*getmid_t)(void *, void *, const char *, const char *);
+    findclass_t fc = (findclass_t)evt[6];      /* JNINativeInterface::FindClass */
+    getmid_t   gm = (getmid_t)evt[33];         /* JNINativeInterface::GetMethodID */
+    if (!fc || !gm) return;
+    void *cls = fc(env, "java/lang/Object");
+    if (!cls) return;
+    void *mid = gm(env, cls, "hashCode", "()I");
+    if (!mid) return;
+
+    uint64_t *w = (uint64_t *)mid;
+    for (int i = 3; i <= 5; i++) {             /* 24 / 32 / 40 字节处的入口槽 */
+        uint64_t v = w[i];
+        uint64_t a = v & ~7ULL;                /* 低 3 位可能是 tag */
+        if (a < 0x10000ULL) continue;          /* 0 或小值 = 还没编译，正常 */
+        if (nk_addr_exec(a)) continue;
+        Dl_info di;
+        if (dladdr((void *)a, &di) && di.dli_fbase) continue;
+        nk_dbg("nk_ad[tool] ArtMethod.word[%d]=%p 落在非可执行区\n", i, (void *)a);
+        nk_soft_tool("art-entry-outside-exec");
+        return;
+    }
+}
+
+/* B) 缓存侧信道：32 MB 随机步进，真机 L1 命中与 DRAM 未命中差 3~10 倍；
+ *    QBDI / unicornTrace 这类软件模拟每次访问耗时几乎一样（比值接近 1）。 */
+static unsigned long long nk_cntvct(void)
+{
+    unsigned long long v;
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(v));
+    return v;
+}
+
+static void nk_cache_probe(void)
+{
+    const size_t SZ = 32u << 20;
+    unsigned char *p = (unsigned char *)mmap(NULL, SZ, PROT_READ | PROT_WRITE,
+                                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return;
+    for (size_t i = 0; i < SZ; i += 4096) p[i] = 1;          /* 先把页提交 */
+    unsigned long long mn = ~0ULL, mx = 0, sum = 0;
+    unsigned seed = 12345u;
+    const int N = 1024;
+    for (int i = 0; i < N; i++) {
+        seed = seed * 1103515245u + 12345u;
+        size_t off = ((size_t)((seed >> 8) % (unsigned)(SZ / 64))) * 64;
+        unsigned long long t0 = nk_cntvct();
+        volatile unsigned char sink = p[off];
+        unsigned long long t1 = nk_cntvct();
+        (void)sink;
+        unsigned long long d = t1 - t0;
+        if (d < mn) mn = d;
+        if (d > mx) mx = d;
+        sum += d;
+    }
+    munmap(p, SZ);
+    if (mn == 0 || sum == 0) return;
+    unsigned long long avg = sum / (unsigned long long)N;
+    unsigned long long r10 = mx * 10ULL / mn;
+    nk_dbg("nk_ad[tool] cache min=%llu avg=%llu max=%llu ratio=%llu.%llu\n",
+           mn, avg, mx, r10 / 10ULL, r10 % 10ULL);
+    if (r10 < 13ULL)      nk_soft_tool("cache-latency-flat");
+    else if (r10 < 20ULL) nk_soft_tool("cache-latency-uniform");
+}
+
+/* C) 硬件断点主动触发：给自己的 canary 下执行断点，调用 64 次后看计数器。
+ *    计数器不涨 = 硬件断点机制被底层劫持（或内核把事件吃了）。 */
+static volatile int g_canary_sink;
+
+__attribute__((noinline)) static int nk_canary(int x)
+{
+    volatile int t = x * 3 + 1;
+    return t ^ 0x5a5a;
+}
+
+static void nk_hwbp_trigger(void)
+{
+    unsigned char attr[128];
+    memset(attr, 0, sizeof attr);
+    *(uint32_t *)(attr + 0)  = 5;                            /* PERF_TYPE_BREAKPOINT */
+    *(uint32_t *)(attr + 4)  = (uint32_t)sizeof attr;
+    *(uint64_t *)(attr + 40) = (1ULL << 5) | (1ULL << 6);    /* exclude_kernel|hv */
+    *(uint32_t *)(attr + 52) = 4;                            /* HW_BREAKPOINT_X */
+    *(uint64_t *)(attr + 56) = (uint64_t)(uintptr_t)&nk_canary;
+    *(uint64_t *)(attr + 64) = 4;                            /* len */
+    long fd = nk_sys5(241, (long)attr, 0, -1, -1, 0);
+    if (fd < 0) return;                                      /* 无权限/被占，交给别的检查 */
+    unsigned long long c0 = 0, c1 = 0;
+    if (nk_sys(63, fd, (long)&c0, 8) != 8) { nk_sys(57, fd, 0, 0, 0); return; }
+    int sink = 0;
+    for (int i = 0; i < 64; i++) sink += nk_canary(i);
+    long r = nk_sys(63, fd, (long)&c1, 8);
+    nk_sys(57, fd, 0, 0, 0);
+    g_canary_sink = sink;
+    if (r != 8) return;
+    nk_dbg("nk_ad[tool] hwbp counter %llu -> %llu\n", c0, c1);
+    if (c1 == c0) nk_soft_tool("hwbp-not-counting");
+}
+
+/* D) 时间源一致性：cntvct 推算的纳秒 vs CLOCK_MONOTONIC，偏离 30% 以上记软分 */
+static void nk_time_probe(void)
+{
+    unsigned long long f = 0;
+    __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(f));
+    if (!f) return;
+    struct timespec a, b;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    unsigned long long t0 = nk_cntvct();
+    volatile unsigned long long acc = 0;
+    for (int i = 0; i < 200000; i++) acc += (unsigned long long)i;
+    (void)acc;
+    unsigned long long t1 = nk_cntvct();
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    double ns = (double)(b.tv_sec - a.tv_sec) * 1e9 + (double)(b.tv_nsec - a.tv_nsec);
+    if (ns < 1000.0) return;
+    double expect = (double)(t1 - t0) / (double)f * 1e9;
+    if (expect <= 0.0) return;
+    double ratio = expect / ns;
+    nk_dbg("nk_ad[tool] time expect=%.0fns real=%.0fns ratio=%.2f\n", expect, ns, ratio);
+    if (ratio < 0.70 || ratio > 1.40) nk_soft_tool("time-desync");
+}
+
+/* 深度行为检查：60 秒一次，全部 fail-open */
+static unsigned long long g_beh_last;
+
+static void nk_behavior_scan(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    unsigned long long now = (unsigned long long)ts.tv_sec * 1000ULL +
+                             (unsigned long long)ts.tv_nsec / 1000000ULL;
+    if (g_beh_last && now - g_beh_last < 60000ULL) return;
+    g_beh_last = now;
+    nk_art_entry_check();
+    nk_hwbp_trigger();
+    nk_time_probe();
+    nk_cache_probe();
+}
+
 static void nk_tool_scan(int early) {
     if (nk_uprobe_maps())  nk_die_r("nk_ad: text writable / [uprobes]");
     if (nk_maps_hit())     nk_die_r("nk_ad: frida/xposed module in maps");
@@ -1110,6 +1298,8 @@ static void nk_tool_scan(int early) {
         if (nk_hwbp_slots()) nk_die_r("nk_ad: hw breakpoint slots occupied");
         nk_tm_verify();
         nk_text_wlock();
+        /* v11.5：深度行为验证（ART 入口 / 硬件断点 / 时间源 / 缓存侧信道） */
+        nk_behavior_scan();
     }
 }
 
