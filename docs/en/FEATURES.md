@@ -19,7 +19,7 @@ enabled = true
 probability = 100
 ```
 
-The plugin is loaded with `-fpass-plugin=libNk.so` and reads the `NK_CONFIG` environment variable; `ci/build-nk.sh` exports `NK=1 NK_CONFIG="$cfg"`. The pre-rename `ENSIA` / `ENSIA_CONFIG` spellings are still accepted as aliases. A `[passes.<key>]` section without `enabled` does not participate in the pipeline, and `enabled = false` is equivalent to omitting the section.
+The plugin is loaded with `-fpass-plugin=libNk.so` and reads the `NK_CONFIG` environment variable; `ci/build-nk.sh` exports `NK=1 NK_CONFIG="$cfg"`. A `[passes.<key>]` section without `enabled` does not participate in the pipeline, and `enabled = false` is equivalent to omitting the section.
 
 ## The 16 passes
 
