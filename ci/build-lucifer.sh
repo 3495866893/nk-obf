@@ -162,10 +162,14 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     if [ "$fsz" -gt 300000 ] || [ "$ppsz" -gt 1500000 ]; then fopt="-O1"; fi
     # 大 TU 换成轻量配置（只加密字符串 + 指令替换 + 反调试），
     # flattening/bcf/indirect 在这种 TU 上会把内存吃爆 → runner SIGTERM 143
-    LIGHT="$PWD/ensia/config/presets/nk-light.toml"
-    if { [ "$fsz" -gt 200000 ] || [ "$ppsz" -gt 800000 ]; } && [ -f "$LIGHT" ]; then
+    NOFOLD="$PWD/ensia/config/presets/nk-nofold.toml"    # 8 pass 减 flattening
+    LIGHT="$PWD/ensia/config/presets/nk-light.toml"      # 兜底：极重文件才用
+    if { [ "$fsz" -gt 200000 ] || [ "$ppsz" -gt 800000 ]; } && [ -f "$NOFOLD" ]; then
+      export ENSIA_CONFIG="$NOFOLD"
+      echo "   → 大 TU（预处理 ${ppsz}B）：跳过 flattening，其余 7 个 pass 照常"
+    elif { [ "$fsz" -gt 200000 ] || [ "$ppsz" -gt 800000 ]; } && [ -f "$LIGHT" ]; then
       export ENSIA_CONFIG="$LIGHT"
-      echo "   → 大 TU（预处理 ${ppsz}B）：切轻量配置 nk-light.toml（无 flattening/bcf/indirect）"
+      echo "   → 大 TU（预处理 ${ppsz}B）：退回 nk-light.toml（只 3 个 pass）"
     else
       export ENSIA_CONFIG="$cfg"
     fi
