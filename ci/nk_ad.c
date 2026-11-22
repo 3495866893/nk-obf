@@ -42,6 +42,9 @@ static int      g_nmaps = 0;
 static uint64_t g_text_hash = 0;
 static uint64_t g_text_addr = 0;
 static uint64_t g_text_size = 0;
+/* v10.1：我们自己把文本 mprotect 成 RWX 之后，不能在下一轮 maps 检查里
+ * 把自己当成『文本被改写成可写』的攻击者，否则每次都会自杀。 */
+static int g_text_rwx_self = 0;
 
 static long nk_sys(long n, long a, long b, long c);   /* fwd decl */
 static long nk_sys5(long n, long a, long b, long c, long d, long e)
@@ -120,6 +123,12 @@ static int nk_has_rwx(void) {
             char perm[8] = {0};
             if (sscanf(q, "%lx-%lx %7s", &lo, &hi, perm) == 3 &&
                 perm[0] == 'r' && perm[1] == 'w' && perm[2] == 'x') {
+                /* v10.2：这块 RWX 如果是我们自己给文本打的，就别自杀 */
+                if (g_text_rwx_self && g_text_addr >= (uint64_t)lo &&
+                    g_text_addr < (uint64_t)hi) {
+                    q = nl ? nl + 1 : NULL;
+                    continue;
+                }
                 nk_dbg("nk_ad[rwx] %lx-%lx\n", lo, hi);
                 hit = 1;
                 break;
@@ -828,7 +837,7 @@ static int nk_uprobe_maps(void)
             char perm[8] = {0};
             if (sscanf(p, "%lx-%lx %7s", &a, &b, perm) == 3 &&
                 g_text_addr >= (uint64_t)a && g_text_addr < (uint64_t)b) {
-                if (perm[1] == 'w') {
+                if (perm[1] == 'w' && !g_text_rwx_self) {
                     nk_dbg("nk_ad[tool] 自身文本可写: %s\n", perm);
                     free(buf);
                     return 1;
@@ -848,6 +857,8 @@ static int nk_uprobe_maps(void)
 static void nk_text_wlock(void)
 {
     if (!g_text_addr || !g_text_size) return;
+    if (g_text_rwx_self) return;              /* 只做一次 */
+    if (getenv("NK_AD_NO_WLOCK")) return;     /* 留一个调试开关 */
     long pg = sysconf(_SC_PAGESIZE);
     if (pg <= 0) pg = 4096;
     uintptr_t base = (uintptr_t)g_text_addr & ~(uintptr_t)(pg - 1);
@@ -855,6 +866,7 @@ static void nk_text_wlock(void)
     size_t len = (size_t)(end - base);
     if (len > (size_t)(4u << 20)) len = (size_t)(4u << 20);
     int r = mprotect((void *)base, len, PROT_READ | PROT_WRITE | PROT_EXEC);
+    if (r == 0) g_text_rwx_self = 1;
     nk_dbg("nk_ad[tool] mprotect 文本 RWX -> %d\n", r);
     if (r == 0) nk_soft("text-rwx-blocks-uprobe");
 }
