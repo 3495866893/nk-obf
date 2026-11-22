@@ -79,7 +79,10 @@ class BuildViewModel : ViewModel() {
         _s.value = _s.value.copy(passes = cur)
     }
 
+    private var prefsRef: Prefs? = null
+
     fun restore(prefs: Prefs) {
+        prefsRef = prefs
         _s.value = _s.value.copy(passes = prefs.passes, adb = prefs.antiDebug)
     }
 
@@ -169,6 +172,8 @@ class BuildViewModel : ViewModel() {
             savedUri = null, savedName = null, runUrl = null,
             eta = eta, elapsed = 0L)
         startedAt = System.currentTimeMillis()
+        prefs.markJob(_s.value.project, _s.value.outName.ifBlank { "lucifer" }, eta)
+        BuildService.start(ctx, "正在上传源码并触发编译…")
 
         job = viewModelScope.launch(Dispatchers.IO) {
             val ticker = launch {
@@ -258,6 +263,8 @@ class BuildViewModel : ViewModel() {
                 }
                 if (runId == 0L) throw RuntimeException("没等到新的 run（workflow 名字对吗？）")
                 log("run id = $runId")
+                prefs.runId = runId
+                BuildService.start(ctx, "云端编译中 · run $runId")
 
                 // ---- ④ 轮询 ----
                 setPhase("编译中", 0.3f)
@@ -322,20 +329,135 @@ class BuildViewModel : ViewModel() {
                     elapsed = (System.currentTimeMillis() - startedAt) / 1000)
                 log("⏱ 总用时 ${fmt(_s.value.elapsed)}")
                 log("产物：${art.absolutePath}")
+                prefs.clearJob()
                 if (uri != null) log("已存到 Download/NKBuild/${art.name}")
             } catch (e: Exception) {
+                prefs.clearJob()
                 val msg = e.message ?: e.toString()
                 _s.value = _s.value.copy(phase = Phase.ERROR, statusText = "失败", error = msg,
                     elapsed = (System.currentTimeMillis() - startedAt) / 1000)
                 log("!! $msg")
             } finally {
                 ticker.cancel()
+                BuildService.stop(ctx)
             }
+        }
+    }
+
+    /** 切后台/进程被杀之后回来：按存下的 run id 接上，重传源码那步跳过 */
+    fun resume(ctx: Context, prefs: Prefs) {
+        if (_s.value.phase == Phase.RUNNING) return
+        val rid = prefs.runId
+        if (rid <= 0L) {
+            if (prefs.jobStart > 0L) {
+                prefs.clearJob()
+                log("上次上传被打断（切后台时进程被杀了），点「开始编译」再来一次")
+            }
+            return
+        }
+        val proj = prefs.jobProj.ifBlank { "myproj" }
+        val out = prefs.jobOut.ifBlank { "lucifer" }
+        val eta = prefs.jobEta.coerceAtLeast(240L)
+        startedAt = prefs.jobStart.takeIf { it > 0L } ?: System.currentTimeMillis()
+        _s.value = _s.value.copy(
+            phase = Phase.RUNNING, statusText = "接续中", progress = 0.3f,
+            project = proj, outName = out, eta = eta, error = null,
+            runUrl = "https://github.com/${prefs.owner}/${prefs.repo}/actions/runs/$rid")
+        log("接上上次的后台任务：run $rid · 工程 $proj")
+        BuildService.start(ctx, "云端编译中 · run $rid")
+        job = viewModelScope.launch(Dispatchers.IO) {
+            attach(ctx, prefs, rid, proj, out, eta)
+        }
+    }
+
+    /** 只轮询 + 下载，不碰源码上传 */
+    private suspend fun attach(
+        ctx: Context, prefs: Prefs, runId: Long, proj: String, out: String, eta: Long
+    ) {
+        val ticker = launch {
+            while (_s.value.phase == Phase.RUNNING) {
+                delay(500)
+                _s.value = _s.value.copy(
+                    elapsed = (System.currentTimeMillis() - startedAt) / 1000)
+            }
+        }
+        try {
+            val gh = Github(prefs.token)
+            val o = prefs.owner
+            val r = prefs.repo
+            setPhase("编译中", 0.3f)
+            val hardLimit = maxOf(240L, eta) * 2
+            var waited = 0L
+            var info: JSONObject? = null
+            var printed = ""
+            while (waited < hardLimit) {
+                info = gh.run(o, r, runId)
+                val st = info.optString("status", "unknown")
+                if (st != printed) { log("状态 $st"); printed = st }
+                if (st == "completed") break
+                val frac = (waited.toFloat() / eta.toFloat()).coerceIn(0f, 1f)
+                _s.value = _s.value.copy(progress = 0.3f + 0.55f * frac)
+                delay(10000)
+                waited += 10
+            }
+            val concl = info?.optString("conclusion", "") ?: ""
+            val url = info?.optString("html_url", "") ?: ""
+            _s.value = _s.value.copy(runUrl = url.ifEmpty { _s.value.runUrl })
+            if (concl != "success") {
+                val steps = try { gh.failedSteps(o, r, runId) } catch (e: Exception) { emptyList() }
+                throw RuntimeException("上次那个任务失败了：$concl" +
+                    (if (steps.isNotEmpty()) "\n失败步骤：" + steps.take(4).joinToString(" | ") else "") +
+                    (if (url.isNotEmpty()) "\n日志：$url" else ""))
+            }
+
+            setPhase("下载中", 0.88f)
+            val dir = File(ctx.filesDir, "out/$proj")
+            dir.mkdirs()
+            var saved: File? = null
+            for ((aid, name, expired) in gh.artifacts(o, r, runId)) {
+                if (expired) { log("$name 已过期，跳过"); continue }
+                if (name != "lucifer-obf" && name != "nk-toolchain") continue
+                val bytes = gh.downloadArtifact(o, r, aid)
+                ZipInputStream(bytes.inputStream()).use { z ->
+                    while (true) {
+                        val e = z.nextEntry ?: break
+                        if (e.isDirectory) continue
+                        val base = e.name.substringAfterLast('/')
+                        if (base.isBlank()) continue
+                        val f = File(dir, base)
+                        f.outputStream().use { o2 -> z.copyTo(o2) }
+                        log("下载 $base（${f.length()} 字节）")
+                        if (base == out || base.startsWith(out) || base == "lucifer") saved = f
+                    }
+                }
+            }
+            val art = saved ?: throw RuntimeException("没有下载到产物")
+            var uri: Uri? = null
+            if (prefs.autoExport) uri = exportToDownloads(ctx, art, art.name)
+            _s.value = _s.value.copy(
+                phase = Phase.DONE, statusText = "完成", progress = 1f,
+                artifactPath = art.absolutePath,
+                savedUri = uri?.toString(), savedName = art.name,
+                elapsed = (System.currentTimeMillis() - startedAt) / 1000)
+            log("⏱ 总用时 ${fmt(_s.value.elapsed)}")
+            log("产物：${art.absolutePath}")
+            if (uri != null) log("已存到 Download/NKBuild/${art.name}")
+            prefs.clearJob()
+        } catch (e: Exception) {
+            prefs.clearJob()
+            val msg = e.message ?: e.toString()
+            _s.value = _s.value.copy(phase = Phase.ERROR, statusText = "失败", error = msg,
+                elapsed = (System.currentTimeMillis() - startedAt) / 1000)
+            log("!! $msg")
+        } finally {
+            ticker.cancel()
+            BuildService.stop(ctx)
         }
     }
 
     fun cancel() {
         job?.cancel()
+        prefsRef?.clearJob()
         _s.value = _s.value.copy(phase = Phase.IDLE, statusText = "已取消", progress = 0f)
         log("已取消")
     }
