@@ -37,7 +37,7 @@ The dividing line is deliberate: **the obfuscator never writes anti-debug logic 
 | Module pass | `runOnModule` | Runs enabled passes in fixed order |
 | Verify | `verifyModule` | Runs once after rewriting; a failure discards the change instead of emitting broken IR |
 
-The pre-rename `ENSIA` / `ENSIA_CONFIG` spellings remain valid aliases. Configuration precedence: TOML named by `NK_CONFIG` > built-in `preset` > compile-time defaults. The environment is read once per process, so all units compiled by one clang invocation share one configuration.
+Configuration precedence: TOML named by `NK_CONFIG` > built-in `preset` > compile-time defaults. The environment is read once per process, so all units compiled by one clang invocation share one configuration.
 
 ## Pass order over IR
 
