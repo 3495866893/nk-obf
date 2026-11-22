@@ -682,13 +682,29 @@ private fun SetPage(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         GlassCard(haze) {
-            SectionTitle("⚙", "仓库")
+            SectionTitle("⚙", "仓库（要填的第一个东西）")
             Field("GitHub Token", token) { token = it }
+            Text("以 ghp_ 开头的一长串。GitHub → 头像 → Settings → Developer settings → "
+                + "Personal access tokens → Tokens (classic) → Generate new token，勾 repo + workflow，"
+                + "生成后只有一次可见，立刻复制过来。只存本机，不上传。",
+                color = TextDim, fontSize = 10.sp)
+            Spacer(Modifier.height(10.dp))
             Field("用户名 / 组织", owner) { owner = it }
+            Text("Token 属于谁就填谁，例如 3495866893。不确定就浏览器打开 github.com，"
+                + "右上角头像下面那一行就是。",
+                color = TextDim, fontSize = 10.sp)
+            Spacer(Modifier.height(10.dp))
             Field("仓库", repo) { repo = it }
+            Text("放工作流的那个仓库名，不带用户名。例如 github.com/3495866893/nk-obf 就填 nk-obf。",
+                color = TextDim, fontSize = 10.sp)
+            Spacer(Modifier.height(10.dp))
             Field("分支", branch) { branch = it }
+            Text("一般 main；仓库默认分支叫什么就填什么（master 也行）。",
+                color = TextDim, fontSize = 10.sp)
+            Spacer(Modifier.height(10.dp))
             Field("工作流文件", wf) { wf = it }
-            Text("Token 只存本机 SharedPreferences，不联网外发",
+            Text("仓库 .github/workflows/ 下的文件名，例如 build-obf.yml。"
+                + "点开文件再点 Raw，地址最后一段就是它。",
                 color = TextDim, fontSize = 10.sp)
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -765,7 +781,7 @@ private fun SetPage(
                     Text(
                         if (st.updText.isBlank())
                             "云端版本 " + st.cloudVer.ifBlank { prefs.cloudVer.ifBlank { "?" } } +
-                                " · 本地 v1.7.0"
+                                " · 本地 v1.0"
                         else st.updText,
                         color = if (st.updText.startsWith("检查失败")) Color(0xFFE0556B) else TextMain,
                         fontSize = 13.sp
@@ -792,10 +808,45 @@ private fun SetPage(
 
         GlassCard(haze) {
             SectionTitle("", "关于")
-            Text("NKBuild 手机版 v1.0（versionCode 19）\n" +
-                "Nk = LLVM-21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
-                "构建：GitHub Actions · 产物：AArch64 PIE",
-                color = TextSub, fontSize = 11.sp)
+            Text(
+                "NK",
+                color = Accent, fontSize = 40.sp, fontWeight = FontWeight.Black,
+                letterSpacing = 3.sp, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "OLLVM-NEXT",
+                color = TextMain, fontSize = 21.sp, fontWeight = FontWeight.Bold,
+                letterSpacing = 4.sp, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "新一代混淆",
+                color = Accent2, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
+                letterSpacing = 6.sp, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "NKBuild 手机版 v1.0（versionCode 20）\n" +
+                    "NK = LLVM 21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
+                    "构建：GitHub Actions · 产物：AArch64 PIE\n" +
+                    "开源：github.com/3495866893/nk-obf",
+                color = TextSub, fontSize = 11.sp
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Contributors",
+                color = TextMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "· DeepSeek —— 模型与工程协作（代码、CI、逆向排查、文档）\n" +
+                    "· Xs —— 本项目的常驻执行者（猫娘形态）\n" +
+                    "· 上游 OLLVM-Next（AGPL-3.0）与 Hikari 血脉",
+                color = TextDim, fontSize = 10.sp
+            )
         }
         Spacer(Modifier.height(96.dp))
     }
