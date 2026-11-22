@@ -98,7 +98,9 @@ object XlVerify {
         if (km.isEmpty()) return Result(false, "卡密不能为空")
         val t = System.currentTimeMillis() / 1000L
         val imei = deviceCode(ctx)
-        val plain = "kami=$km&user=&markcode=$imei&t=$t"
+        val core = "kami=$km&user=&markcode=$imei&t=$t"
+        // 解绑也必须带 sign，否则服务器直接回 104「签名为空」
+        val plain = core + "&sign=" + md5Hex((core + "&" + APPKEY).toByteArray())
         val rnd = SecureRandom()
         val pre = ByteArray(12)
         rnd.nextBytes(pre)
@@ -112,6 +114,111 @@ object XlVerify {
         val json = gmUnwrapToJson(resp) ?: return Result(false, "响应校验失败")
         return if (json.optInt("code", -1) == 200) Result(true, "解绑完成")
         else Result(false, "解绑失败：" + json.optString("msg", "code " + json.optInt("code", -1)))
+    }
+
+
+    /* ---------------------------------------- 账号 / 公告 / 云端版本（v1.7） */
+
+    /** 账号体系：userreg / userlogon 的字段是 user、password、markcode、t，签名同上 */
+    data class Acct(
+        val ok: Boolean,
+        val msg: String,
+        val user: String = "",
+        val activated: Boolean = false,
+        val vip: Long = 0L,
+    )
+
+    /** 云端配置：api=ini 的 msg.version / version_info / app_update_url / app_name */
+    data class Cloud(val version: String, val info: String, val url: String, val name: String)
+
+    fun account(ctx: Context, reg: Boolean, user: String, password: String): Acct {
+        val u = user.trim()
+        val p = password.trim()
+        if (u.isEmpty()) return Acct(false, "账号不能为空")
+        if (p.isEmpty()) return Acct(false, "密码不能为空")
+        val t = System.currentTimeMillis() / 1000L
+        val core = "user=$u&password=$p&markcode=" + deviceCode(ctx) + "&t=$t"
+        val sign = md5Hex((core + "&" + APPKEY).toByteArray())
+        val api = if (reg) "userreg" else "userlogon"
+        val json = call(api, core + "&sign=" + sign)
+            ?: return Acct(false, "连不上验证服务器（网络不通 / 被拦）")
+        val code = json.optInt("code", -1)
+        val nested = json.optJSONObject("msg")
+        val text = if (nested != null) nested.optString("msg", "") else json.optString("msg", "")
+        if (code != 200) return Acct(false, if (text.isBlank()) "code $code" else text)
+        val act = if (nested != null) nested.optString("activated", "n").equals("y", true) else true
+        val vip = if (nested != null) nested.optLong("vip", 0L) else json.optLong("vip", 0L)
+        val name = if (nested != null) nested.optString("user", u) else u
+        return Acct(true, if (text.isBlank()) "成功" else text, name, act, vip)
+    }
+
+    /** 卡密给账号加时：kmlogon 带 user=账号，服务器按卡密时长续期 */
+    fun recharge(ctx: Context, kami: String, user: String): Result {
+        val r = login(ctx, kami, user)
+        return if (r.ok) Result(true, "充值成功 · " + r.msg, r.vip, r.expiry) else r
+    }
+
+    /** 公告：api=notice → msg.app_gg */
+    fun notice(): String? {
+        val m = getJson("notice")?.optJSONObject("msg") ?: return null
+        val s = m.optString("app_gg", "")
+        return if (s.isBlank()) null else s
+    }
+
+    /** 云端配置（版本号来源） */
+    fun cloud(): Cloud? {
+        val m = getJson("ini")?.optJSONObject("msg") ?: return null
+        return Cloud(
+            m.optString("version", ""),
+            m.optString("version_info", ""),
+            m.optString("app_update_url", ""),
+            m.optString("app_name", ""),
+        )
+    }
+
+    private fun call(api: String, plain: String): org.json.JSONObject? {
+        val body = "data=" + URLEncoder.encode(wrapStamp(plain), "UTF-8")
+        val resp = post("/api.php?api=$api&app=$APPID", body) ?: return null
+        return gmUnwrapToJson(resp)
+    }
+
+    private fun wrapStamp(plain: String): String {
+        val t = System.currentTimeMillis() / 1000L
+        val pre = ByteArray(12)
+        SecureRandom().nextBytes(pre)
+        pre[8] = ((t ushr 24) and 0xFF).toByte()
+        pre[9] = ((t ushr 16) and 0xFF).toByte()
+        pre[10] = ((t ushr 8) and 0xFF).toByte()
+        pre[11] = (t and 0xFF).toByte()
+        return gmWrap(pre + plain.toByteArray(Charsets.UTF_8))
+    }
+
+    private fun getJson(api: String): org.json.JSONObject? {
+        for (h in HOSTS) {
+            for (scheme in listOf("https", "http")) {
+                val url = "$scheme://$h/api.php?api=$api&app=$APPID"
+                try {
+                    val c = URL(url).openConnection() as HttpURLConnection
+                    c.connectTimeout = 8000
+                    c.readTimeout = 12000
+                    c.requestMethod = "GET"
+                    c.setRequestProperty("User-Agent", "NKBuild")
+                    if (c.responseCode == 200) {
+                        val s = c.inputStream.bufferedReader().readText().trim()
+                        if (s.isNotEmpty() && !s.startsWith("<")) {
+                            val j = gmUnwrapToJson(s)
+                            if (j != null) {
+                                c.disconnect()
+                                return j
+                            }
+                        }
+                    }
+                    c.disconnect()
+                } catch (_: Exception) {
+                }
+            }
+        }
+        return null
     }
 
     private fun fmtDate(sec: Long): String {
