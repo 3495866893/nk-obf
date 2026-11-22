@@ -1,0 +1,61 @@
+name: Bug 报告 / Bug report
+description: 工具或产物出问题，附上日志与复现步骤
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前请确认：用 `projects/hello` 能出包（说明流水线本身没问题），并且最近一次 `build-obf` 是绿的。
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台
+      options:
+        - Windows 桌面端
+        - Android 手机端
+        - GitHub Actions（CI 本身）
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: Release 标签或 commit sha
+      placeholder: v1.0 / 8c927ac
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      description: Windows 版本，或 手机型号 + Android 版本 + root 方案
+      placeholder: Windows 11 23H2 / realme RMX3888 · Android 16 · KernelSU
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从打开工具开始，一步一步写
+      placeholder: |
+        1. 选 projects/hello
+        2. 打开反调试
+        3. 点开始编译
+        4. 约 40 秒后报错
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期 vs 实际
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 桌面 startup.log / 手机 crash 目录 / CI run 链接
+      render: text
+    validations:
+      required: false

@@ -1,0 +1,25 @@
+name: 功能建议 / Feature request
+description: 想要新的 pass、新的检测项、或界面改进
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 想要什么
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: 解决什么问题
+      description: 说清场景，比说「更好用」有用
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: 可能的副作用
+      description: 会不会拖慢编译、增大体积、引入误报
+    validations:
+      required: false

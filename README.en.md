@@ -1,3 +1,7 @@
+![build-obf](https://github.com/3495866893/nk-obf/actions/workflows/build-obf.yml/badge.svg)
+![release](https://img.shields.io/github/v/release/3495866893/nk-obf?label=release)
+![license](https://img.shields.io/badge/license-AGPL--3.0%20%2B%20MIT-blue)
+
 # NK · LLVM 21 IR-level Obfuscator (Android / NDK)
 
 [中文](README.md) | **English**
