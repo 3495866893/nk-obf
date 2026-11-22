@@ -55,6 +55,41 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("autoExport", true)
         set(v) = sp.edit().putBoolean("autoExport", v).apply()
 
+    /* ---- 后台任务的断点：切出去/被系统杀掉之后回来还能接上 ---- */
+
+    /** 已触发的 run id；0 = 还没触发 */
+    var runId: Long
+        get() = sp.getLong("run_id", 0L)
+        set(v) = sp.edit().putLong("run_id", v).apply()
+
+    var jobProj: String
+        get() = sp.getString("job_proj", "") ?: ""
+        set(v) = sp.edit().putString("job_proj", v).apply()
+
+    var jobOut: String
+        get() = sp.getString("job_out", "") ?: ""
+        set(v) = sp.edit().putString("job_out", v).apply()
+
+    var jobEta: Long
+        get() = sp.getLong("job_eta", 0L)
+        set(v) = sp.edit().putLong("job_eta", v).apply()
+
+    var jobStart: Long
+        get() = sp.getLong("job_start", 0L)
+        set(v) = sp.edit().putLong("job_start", v).apply()
+
+    /** 开始上传前先落一个时间戳（此时还没有 run id） */
+    fun markJob(proj: String, out: String, eta: Long) {
+        sp.edit().putLong("run_id", 0L).putString("job_proj", proj)
+            .putString("job_out", out).putLong("job_eta", eta)
+            .putLong("job_start", System.currentTimeMillis()).apply()
+    }
+
+    fun clearJob() {
+        sp.edit().remove("run_id").remove("job_proj").remove("job_out")
+            .remove("job_eta").remove("job_start").apply()
+    }
+
     /** 皮肤背景：每切一页换一张图（默认开） */
     var skin: Boolean
         get() = sp.getBoolean("skin", true)
