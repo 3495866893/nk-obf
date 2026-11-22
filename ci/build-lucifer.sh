@@ -155,7 +155,7 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     # 大 TU 换成轻量配置（只加密字符串 + 指令替换 + 反调试），
     # flattening/bcf/indirect 在几万行函数上会把内存吃爆 → runner SIGTERM 143
     LIGHT="$PWD/ensia/config/presets/nk-light.toml"
-    if [ "$fsz" -gt 200000 ] && [ -f "$LIGHT" ] && [ "$preset" != "custom" ]; then
+    if [ "$fsz" -gt 200000 ] && [ -f "$LIGHT" ]; then
       export ENSIA_CONFIG="$LIGHT"
       echo "   → 大 TU：切轻量配置 nk-light.toml（无 flattening/bcf/indirect）"
     else
