@@ -34,9 +34,14 @@ jobs:
           tail -30 /tmp/build.log
           test -f app/build/outputs/apk/debug/app-debug.apk
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: NKBuild-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: warn
+      - name: publish apk to release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          cp android/app/build/outputs/apk/debug/app-debug.apk /tmp/NKBuild-mobile-1.0-kami.apk
+          ls -l /tmp/NKBuild-mobile-1.0-kami.apk
+          gh release view nk-builds -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create nk-builds -R "$GITHUB_REPOSITORY" -t "nk-builds" -n "自动构建产物（最新一次覆盖）"
+          gh release upload nk-builds /tmp/NKBuild-mobile-1.0-kami.apk -R "$GITHUB_REPOSITORY" --clobber
