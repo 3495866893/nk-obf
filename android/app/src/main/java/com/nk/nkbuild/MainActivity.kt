@@ -34,8 +34,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sin
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -50,11 +57,12 @@ import dev.chrisbanes.haze.hazeSource
 enum class Tab(val label: String, val glyph: String) {
     BUILD("构建", "⚡"),
     OBF("混淆", "◈"),
+    PRE("预检", "◎"),
     OUT("产物", "▣"),
     SET("设置", "⚙"),
 }
 
-val TABS = listOf(Tab.BUILD, Tab.OBF, Tab.OUT, Tab.SET)
+val TABS = listOf(Tab.BUILD, Tab.OBF, Tab.PRE, Tab.OUT, Tab.SET)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -117,6 +125,9 @@ fun App(vm: BuildViewModel = viewModel()) {
                 radius = size.width * 0.9f))
         }
 
+        // ---- 会游的蓝色大肥鱼（纯 Canvas 矢量，不占体积、任意分辨率都清晰）----
+        if (prefs.fish) FishBackground(haze)
+
         Column(
             Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)
         ) {
@@ -127,10 +138,11 @@ fun App(vm: BuildViewModel = viewModel()) {
                 when (tab) {
                     Tab.BUILD -> BuildPage(vm, st, haze) { pickTree.launch(null) }
                     Tab.OBF -> ObfPage(vm, st, haze)
+                    Tab.PRE -> PrecheckPage(st, haze)
                     Tab.OUT -> OutPage(vm, st, haze)
-                    Tab.SET -> SetPage(prefs, blurOn, haze) { on ->
-                        blurOn = on; prefs.blur = on
-                    }
+                    Tab.SET -> SetPage(prefs, blurOn, prefs.fish, haze,
+                        onBlur = { on -> blurOn = on; prefs.blur = on },
+                        onFish = { on -> prefs.fish = on })
                 }
             }
         }
@@ -246,6 +258,20 @@ private fun BuildPage(vm: BuildViewModel, st: UiState, haze: HazeState?, onPick:
                 Text(sel.joinToString(" / ") { PassCatalog.labelOf(it) }
                     .take(40) + if (sel.size > 3) "…" else "",
                     color = TextDim, fontSize = 11.sp)
+            }
+            // 预检结论：一眼看见有没有会把这次构建搞崩的文件
+            val risks = remember(st.files) { Precheck.scan(st.files) }
+            val nb = risks.count { it.level == Risk.Level.BLOCK }
+            val nh = risks.count { it.level == Risk.Level.HIGH }
+            if (st.files.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (nb > 0) "⚠ 预检：$nb 个必崩文件（点开始会被拦下）· 去「预检」页看清单"
+                    else if (nh > 0) "⚠ 预检：$nh 个高风险（能编，可能慢）· 去「预检」页看清单"
+                    else "✓ 预检通过：没有会崩的文件",
+                    color = if (nb > 0) Color(0xFFFF8A8A)
+                    else if (nh > 0) Color(0xFFFFC68A) else Color(0xFF3DDC97),
+                    fontSize = 11.sp)
             }
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically,
@@ -501,7 +527,14 @@ private fun OutPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
 /* ------------------------------------------------------------- ④ 设置页 */
 
 @Composable
-private fun SetPage(prefs: Prefs, blurOn: Boolean, haze: HazeState?, onBlur: (Boolean) -> Unit) {
+private fun SetPage(
+    prefs: Prefs,
+    blurOn: Boolean,
+    fishOn: Boolean,
+    haze: HazeState?,
+    onBlur: (Boolean) -> Unit,
+    onFish: (Boolean) -> Unit,
+) {
     var token by remember { mutableStateOf(prefs.token) }
     var owner by remember { mutableStateOf(prefs.owner) }
     var repo by remember { mutableStateOf(prefs.repo) }
@@ -560,6 +593,15 @@ private fun SetPage(prefs: Prefs, blurOn: Boolean, haze: HazeState?, onBlur: (Bo
                         color = TextDim, fontSize = 10.sp)
                 }
                 GlassSwitch(blurOn) { onBlur(it) }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("会游的蓝色大肥鱼背景", color = TextMain, fontSize = 13.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("矢量绘制 + 摆尾/吐泡动画，0 素材体积", color = TextDim, fontSize = 10.sp)
+                }
+                GlassSwitch(fishOn) { onFish(it) }
             }
         }
 
@@ -644,4 +686,259 @@ private fun Field(label: String, value: String, onChange: (String) -> Unit) {
         cursorBrush = Brush.verticalGradient(listOf(Accent, Accent))
     )
     Spacer(Modifier.height(10.dp))
+}
+
+/* --------------------------------------------------- 背景：会游的蓝色大肥鱼 */
+
+/**
+ * 纯 Canvas 画的蓝色大肥鱼：横向慢慢游 + 上下浮动 + 摆尾 + 眨眼 + 吐泡泡。
+ * 不用任何图片素材（0 KB），任意分辨率都清晰，也不会被 aapt 压缩坏。
+ */
+@Composable
+private fun FishBackground(haze: HazeState?) {
+    val tr = rememberInfiniteTransition(label = "fish")
+
+    // 主鱼：一次完整的横向穿越 26 秒
+    val swim by tr.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(26000, easing = LinearEasing),
+            RepeatMode.Restart), label = "swim")
+    // 上下浮动
+    val bob by tr.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(3600, easing = LinearEasing),
+            RepeatMode.Reverse), label = "bob")
+    // 摆尾（快一点）
+    val tail by tr.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(620, easing = LinearEasing),
+            RepeatMode.Reverse), label = "tail")
+    // 眨眼：周期 5.4 秒，只有最后 6% 是闭眼
+    val blinkT by tr.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(5400, easing = LinearEasing),
+            RepeatMode.Restart), label = "blink")
+    // 小鱼苗更快，相位错开
+    val swim2 by tr.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(15000, easing = LinearEasing),
+            RepeatMode.Restart), label = "swim2")
+
+    Canvas(
+        if (haze != null) Modifier.fillMaxSize().hazeSource(state = haze)
+        else Modifier.fillMaxSize()
+    ) {
+        val w = size.width
+        val h = size.height
+        val blink = if (blinkT > 0.94f) abs(0.94f - blinkT) / 0.06f else 1f
+
+        // 主鱼：从右往左游（往右游更自然，这里用 0→1 从左边进）
+        val fw = w * 0.52f
+        val fx = -fw * 0.9f + (w + fw * 1.8f) * swim
+        val fy = h * 0.68f + sin(bob * 2f * PI).toFloat() * h * 0.028f
+        drawFatFish(fx, fy, fw, tail, blink, 0.42f)
+
+        // 两条小鱼苗（远近感：更小、更淡、更快）
+        val sw = w * 0.20f
+        val sx = -sw + (w + sw * 2f) * swim2
+        val sy = h * 0.30f + sin((bob * 1.7f) * 2f * PI).toFloat() * h * 0.02f
+        drawFatFish(sx, sy, sw, (tail + 0.5f) % 1f, 1f, 0.22f)
+
+        val sx2 = w + sw * 0.5f - ((w + sw * 2f) * swim2)
+        drawFatFish(sx2, h * 0.86f + sin((bob * 2.3f) * 2f * PI).toFloat() * h * 0.02f,
+            sw * 0.7f, tail, 1f, 0.16f)
+    }
+}
+
+/** 一条胖鱼：椭圆身体 + 三角尾 + 背鳍 + 眼睛 + 嘴 + 吐泡泡。 */
+private fun DrawScope.drawFatFish(
+    cx: Float,
+    cy: Float,
+    w: Float,
+    tailPhase: Float,
+    blink: Float,
+    alpha: Float,
+) {
+    val bodyTop = cy - w * 0.29f
+    val bodyH = w * 0.58f
+    val left = cx - w * 0.5f
+    val bodyBrush = Brush.linearGradient(
+        colors = listOf(Color(0xFF6FC0FF), Color(0xFF2E7BEE), Color(0xFF1B4FC4)),
+        start = Offset(left, bodyTop),
+        end = Offset(left + w, bodyTop + bodyH))
+    val edge = Color(0xFF0E2F80).copy(alpha = alpha * 0.9f)
+
+    // 尾巴（左右摆动）
+    val wig = sin(tailPhase * 2f * PI).toFloat() * w * 0.10f
+    val tailPath = Path().apply {
+        moveTo(left + w * 0.06f, cy)
+        lineTo(left - w * 0.26f, cy - w * 0.24f + wig)
+        lineTo(left - w * 0.18f, cy)
+        lineTo(left - w * 0.26f, cy + w * 0.24f + wig)
+        close()
+    }
+    drawPath(tailPath, Color(0xFFFFB347).copy(alpha = alpha * 1.5f))
+    drawPath(tailPath, edge, style = Stroke(width = w * 0.012f))
+
+    // 背鳍
+    val finPath = Path().apply {
+        moveTo(cx - w * 0.10f, bodyTop + bodyH * 0.06f)
+        quadTo(cx + w * 0.02f, bodyTop - w * 0.16f + wig * 0.4f,
+            cx + w * 0.16f, bodyTop + bodyH * 0.10f)
+        close()
+    }
+    drawPath(finPath, Color(0xFFFFCF6B).copy(alpha = alpha * 1.4f))
+
+    // 身体
+    drawOval(bodyBrush, topLeft = Offset(left, bodyTop), size = Size(w, bodyH))
+    drawOval(edge.copy(alpha = alpha), topLeft = Offset(left, bodyTop),
+        size = Size(w, bodyH), style = Stroke(width = w * 0.012f))
+
+    // 肚皮高光
+    drawOval(Color.White.copy(alpha = alpha * 0.35f),
+        topLeft = Offset(left + w * 0.10f, bodyTop + bodyH * 0.52f),
+        size = Size(w * 0.55f, bodyH * 0.32f))
+
+    // 眼睛（blink = 0 时闭眼）
+    val eyeX = cx + w * 0.24f
+    val eyeY = cy - w * 0.07f
+    val r = w * 0.085f
+    drawCircle(Color.White.copy(alpha = alpha * 2.0f), r, Offset(eyeX, eyeY))
+    if (blink > 0.15f) {
+        drawCircle(Color(0xFF10205A).copy(alpha = alpha * 2.2f), r * 0.55f, Offset(eyeX, eyeY))
+        drawCircle(Color.White.copy(alpha = alpha * 3f), r * 0.20f,
+            Offset(eyeX - r * 0.22f, eyeY - r * 0.24f))
+    } else {
+        drawLine(edge, Offset(eyeX - r, eyeY), Offset(eyeX + r, eyeY),
+            strokeWidth = w * 0.016f)
+    }
+
+    // 嘴 + 腮红
+    drawArc(edge, startAngle = 20f, sweepAngle = 120f, useCenter = false,
+        topLeft = Offset(cx + w * 0.34f, cy - w * 0.02f),
+        size = Size(w * 0.12f, w * 0.10f), style = Stroke(width = w * 0.014f))
+    drawCircle(Color(0xFFFF8FB0).copy(alpha = alpha * 0.9f), w * 0.045f,
+        Offset(cx + w * 0.10f, cy + w * 0.10f))
+
+    // 泡泡
+    for (i in 0..2) {
+        val p = ((tailPhase + i * 0.33f) % 1f)
+        val br = w * (0.02f + 0.012f * i)
+        drawCircle(Color.White.copy(alpha = alpha * 0.5f * (1f - p)), br,
+            Offset(cx + w * 0.44f + w * 0.05f * i, cy - w * 0.05f - p * w * 0.45f),
+            style = Stroke(width = w * 0.006f))
+    }
+}
+
+/* --------------------------------------------------------------- 预检菜单 */
+
+@Composable
+private fun PrecheckPage(st: UiState, haze: HazeState?) {
+    val risks = remember(st.files) { Precheck.scan(st.files) }
+    val blocks = risks.count { it.level == Risk.Level.BLOCK }
+    val highs = risks.count { it.level == Risk.Level.HIGH }
+    val notes = risks.count { it.level == Risk.Level.NOTE }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        GlassCard(haze) {
+            SectionTitle("◎", "上传预检")
+            Text(
+                if (st.files.isEmpty()) "还没选源码：先在「构建」里选一次项目目录"
+                else "${st.files.size} 个文件、共 ${Precheck.human(st.files.sumOf { it.size })}"
+                        + " · ${st.files.count { it.rel.substringAfterLast('.', "").lowercase() in Precheck.compileExt }} 个编译单元",
+                color = TextMain, fontSize = 13.sp)
+
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CountBadge("必崩", blocks, Color(0xFFFF5D5D))
+                CountBadge("很可能崩", highs, Color(0xFFFFB04D))
+                CountBadge("注意", notes, Color(0xFF6FB3FF))
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                if (blocks > 0) "① 有 $blocks 个必崩项：点「开始编译」会被直接拦下"
+                else if (highs > 0) "② 没有必崩项，但有 $highs 个高风险：能跑，可能慢或超时"
+                else "③ 没发现问题，可以放心编",
+                color = if (blocks > 0) Color(0xFFFF8A8A)
+                else if (highs > 0) Color(0xFFFFC68A) else Color(0xFF3DDC97),
+                fontSize = 12.sp)
+        }
+
+        if (risks.isEmpty()) {
+            GlassCard(haze) {
+                SectionTitle("✓", "全部通过")
+                Text("没有超过 1 MB 的文件、没有带空格的文件名、没有会用不上的大素材。",
+                    color = TextDim, fontSize = 12.sp)
+            }
+        } else {
+            GlassCard(haze) {
+                SectionTitle("!", "逐条清单")
+                risks.forEach { r ->
+                    RiskRow(r)
+                    Spacer(Modifier.height(10.dp))
+                }
+            }
+        }
+
+        GlassCard(haze) {
+            SectionTitle("i", "判定规则")
+            RuleLine("> 70 MB", "必崩 —— GitHub 单文件上限 100 MB，base64 后超了，会被跳过")
+            RuleLine("> 45 MB", "很可能崩 —— 请求体太大，大概率上传超时")
+            RuleLine("> 1 MB", "注意 —— 走 blob 接口，能传但慢")
+            RuleLine("文件名带空格/中文", "必崩（编译单元）—— CI 按空格切 SRC_FILES")
+            RuleLine("图片/字体/文档", "注意 —— 编译用不上，只拖时间")
+            RuleLine("> 60 个编译单元", "很可能崩 —— 一次提交文件太多容易撞限流")
+        }
+    }
+}
+
+@Composable
+private fun CountBadge(label: String, n: Int, color: Color) {
+    Row(
+        Modifier.background(color.copy(alpha = 0.14f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("$n", color = color, fontSize = 15.sp, fontWeight = FontWeight.Black)
+        Spacer(Modifier.width(6.dp))
+        Text(label, color = color.copy(alpha = 0.85f), fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun RiskRow(r: Risk) {
+    val c = when (r.level) {
+        Risk.Level.BLOCK -> Color(0xFFFF5D5D)
+        Risk.Level.HIGH -> Color(0xFFFFB04D)
+        Risk.Level.NOTE -> Color(0xFF6FB3FF)
+    }
+    val tag = when (r.level) {
+        Risk.Level.BLOCK -> "必崩"
+        Risk.Level.HIGH -> "很可能崩"
+        Risk.Level.NOTE -> "注意"
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Box(
+            Modifier.padding(top = 2.dp)
+                .background(c.copy(alpha = 0.16f), RoundedCornerShape(6.dp))
+                .padding(horizontal = 6.dp, vertical = 2.dp)
+        ) { Text(tag, color = c, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(r.rel, color = TextMain, fontSize = 12.sp)
+            Spacer(Modifier.height(3.dp))
+            Text("${Precheck.human(r.size)} · ${r.reason}", color = TextDim, fontSize = 10.sp)
+        }
+    }
+}
+
+@Composable
+private fun RuleLine(k: String, v: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
+        Text(k, color = Accent2, fontSize = 11.sp, modifier = Modifier.width(112.dp))
+        Text(v, color = TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
+    }
 }
