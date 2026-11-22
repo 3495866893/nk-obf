@@ -12,8 +12,8 @@ android {
         applicationId = "com.nk.nkbuild"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.4.3"
+        versionCode = 9
+        versionName = "1.4.4"
     }
 
     // 固定签名：CI 每次跑的 debug keystore 都是新生成的，签名不一致会导致
