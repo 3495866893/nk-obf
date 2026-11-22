@@ -55,10 +55,10 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("autoExport", true)
         set(v) = sp.edit().putBoolean("autoExport", v).apply()
 
-    /** 背景：会游的蓝色大肥鱼（纯 Canvas 动画，默认开） */
-    var fish: Boolean
-        get() = sp.getBoolean("fish", true)
-        set(v) = sp.edit().putBoolean("fish", v).apply()
+    /** 皮肤背景：每切一页换一张图（默认开） */
+    var skin: Boolean
+        get() = sp.getBoolean("skin", true)
+        set(v) = sp.edit().putBoolean("skin", v).apply()
 
     private fun defaultBlur(): Boolean {
         if (android.os.Build.VERSION.SDK_INT < 31) return false
