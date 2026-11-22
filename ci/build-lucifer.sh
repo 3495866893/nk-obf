@@ -182,7 +182,7 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     if [ $((i % 4)) = "0" ]; then rm -rf /tmp/nk_o_*.d /tmp/nk_o_*.i /tmp/nk_o_*.s; fi
   done
   echo "  [链接] ${#objs[@]} 个 .o -> $out"
-  timeout 1800 "$CLANG" "${CF[@]}" "${NKO:--O2}" "${extra[@]}" "${LIBS[@]}" \
+  timeout 1800 "$CLANG" "${CF[@]}" "${NKO:--O2}" "--ld-path=$LLD" "${extra[@]}" "${LIBS[@]}" \
     -o "$out" "${objs[@]}" -lEGL -lGLESv2 -lGLESv3 -landroid -llog 2>&1 \
     | tee -a /tmp/nk_err.txt | tail -30
   rc=${PIPESTATUS[0]}
