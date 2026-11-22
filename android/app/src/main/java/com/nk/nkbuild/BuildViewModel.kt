@@ -145,13 +145,27 @@ class BuildViewModel : ViewModel() {
             return
         }
 
+        // ---- 上传预检：必崩项直接拦下，高风险只提醒不拦 ----
+        val risks = Precheck.scan(files)
+        val blocks = Precheck.blocking(risks)
+        if (blocks.isNotEmpty()) {
+            val head = blocks.take(3).joinToString("\n") { "· ${it.rel} —— ${it.reason}" }
+            val more = if (blocks.size > 3) "\n…还有 ${blocks.size - 3} 项，去「预检」页看全表" else ""
+            _s.value = _s.value.copy(phase = Phase.ERROR,
+                error = "预检拦下 ${blocks.size} 个必崩文件，编了也是白等：\n$head$more")
+            return
+        }
+
         val mb = files.sumOf { it.size } / 1048576.0
         val npass = _s.value.passes.size + if (_s.value.adb) 1 else 0
         val eta = (120 + 20 * npass + minOf(900L, (20 * mb).toLong())).toLong()
 
         _s.value = _s.value.copy(
             phase = Phase.RUNNING, statusText = "校验中", progress = 0.02f,
-            logs = emptyList(), error = null, artifactPath = null,
+            logs = if (risks.isEmpty()) listOf("预检 · 全部通过")
+            else listOf("预检 · ${risks.size} 项提示（不影响编译）") +
+                    risks.take(8).map { "  · ${it.rel} —— ${it.reason}" },
+            error = null, artifactPath = null,
             savedUri = null, savedName = null, runUrl = null,
             eta = eta, elapsed = 0L)
         startedAt = System.currentTimeMillis()
