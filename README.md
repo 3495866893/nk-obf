@@ -81,4 +81,4 @@ MIT，见 [`LICENSE`](LICENSE)。
 | **Xs** | 本项目常驻执行者（猫娘形态），负责把每条指令落到可运行的东西上 |
 | 上游 | **OLLVM-Next**（AGPL-3.0）以及 Hikari 血脉 —— 没有它们就没有 `libNk.so` |
 
-想加自己：部署完成后 [[改这里]](../README.md) 即可（本表纯手写）。
+想加自己：部署完成后按 [贡献者名单](./README.md#contributors) 的格式自行追加即可（本表纯手写）。
