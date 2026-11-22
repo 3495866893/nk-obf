@@ -129,6 +129,16 @@ class Prefs(ctx: Context) {
         saveJobs(jobs().filter { it.runId != runId })
     }
 
+    /** XL 云验证卡密（登录成功后落盘，下次启动自动复验） */
+    var kami: String
+        get() = sp.getString("kami", "") ?: ""
+        set(v) = sp.edit().putString("kami", v).apply()
+
+    /** 上次验证通过的到期秒（0 = 永久），只用来做本地提示 */
+    var licVip: Long
+        get() = sp.getLong("lic_vip", 0L)
+        set(v) = sp.edit().putLong("lic_vip", v).apply()
+
     /** 皮肤背景：每切一页换一张图（默认开） */
     var skin: Boolean
         get() = sp.getBoolean("skin", true)
