@@ -252,7 +252,7 @@ static int nk_any_thread_traced(void)
                     char *t = strstr(st, "TracerPid:");
                     if (t) {
                         int pid = (int)strtol(t + 10, NULL, 10);
-                        if (pid != 0 && !nk_comm_is((pid_t)pid, "nk-wd")) {
+                        if (pid != 0 && !(g_wd_pid > 0 && pid == (int)g_wd_pid)) {
                             nk_dbg("nk_ad[task] %s traced by %d\n", name, pid);
                             nk_close_fd(fd); return 1;
                         }
@@ -1160,7 +1160,12 @@ static int nk_tracer_pid_foreign(void)
     int pid = (int)strtol(t + 10, NULL, 10);
     nk_dbg("nk_ad[chk] TracerPid=%d wd=%d\n", pid, (int)g_wd_pid);
     if (pid == 0) return 0;
-    return !nk_comm_is((pid_t)pid, "nk-wd");
+    /* v11.4 P1：只认「真·看门狗 pid」。comm 是可以被 PR_SET_NAME 冒充的，
+     * 光比对 comm 等于 nk-wd 就能被外部调试器骗过去（攻击者自己叫 nk-wd 再 attach）。 */
+    if (g_wd_pid > 0 && pid == (int)g_wd_pid) return 0;
+    if (nk_comm_is((pid_t)pid, "nk-wd"))
+        nk_dbg("nk_ad[chk] pid %d 自称 nk-wd 但不是看门狗，判外来 tracer\n", pid);
+    return 1;
 }
 
 static void nk_check_full(int early) {
