@@ -90,11 +90,24 @@ jobs:
           sudo systemctl disable systemd-oomd 2>/dev/null || true
           sudo systemctl mask systemd-oomd.socket 2>/dev/null || true
           # 16 GB swap：imgui.cpp 这种大 TU 在 flattening/indirect 下峰值能到 10 GB+
+                    # swap 按「可用空间 - 8 GB 余量」算，最多 16 GB；绝不用 dd 灌满磁盘
+          # （曾有 runner 只剩 ~14 GB 可用，fallocate 16G 失败后 dd 兜底把盘写满，
+          #   runner 连自己的日志都写不下去 → "No space left on device" 直接崩）
+          free_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          want=16
+          [ -z "$free_gb" ] && free_gb=0
+          [ "$free_gb" -lt 24 ] && want=$((free_gb - 8))
+          [ "$want" -lt 2 ] && want=2
+          echo "可用空间 ${free_gb} GB → swap 申请 ${want} GB"
           if [ ! -f /swapfile ]; then
-            sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
-            sudo chmod 600 /swapfile
-            sudo mkswap /swapfile >/dev/null
-            sudo swapon /swapfile || echo "!! swap 挂载失败（不影响，只是少一层保险）"
+            if sudo fallocate -l ${want}G /swapfile; then
+              sudo chmod 600 /swapfile
+              sudo mkswap /swapfile >/dev/null
+              sudo swapon /swapfile || echo "!! swap 启用失败，不影响构建"
+            else
+              sudo rm -f /swapfile
+              echo "!! fallocate 失败（空间不足），本次不启用 swap"
+            fi
           fi
           # 压测时不要因为 swap 抖动被内核 OOM 挑中
           cat /proc/sys/vm/overcommit_memory || true
