@@ -32,6 +32,7 @@ object XlVerify {
         val msg: String,
         val vip: Long = 0L,
         val expiry: String = "",
+        val code: Int = 0,
     )
 
     // ------------------------------------------------------------ 对外
@@ -75,7 +76,7 @@ object XlVerify {
         val code = json.optInt("code", -1)
         if (code != 200) {
             val m = json.optString("msg", "").ifBlank { "code $code" }
-            return Result(false, "卡密无效：$m")
+            return Result(false, "卡密无效：$m", code = code)
         }
         val st = json.optLong("time", 0L)
         if (st > 0 && kotlin.math.abs(st - t) > 30) return Result(false, "服务器时间偏差过大")
@@ -88,9 +89,9 @@ object XlVerify {
         if (vip <= 0) vip = json.optLong("endtime", 0L)
         if (vip <= 0) vip = json.optLong("expire", 0L)
         if (vip <= 0) vip = json.optLong("expiretime", 0L)
-        if (vip > 0 && vip < t) return Result(false, "卡密已过期", vip, fmtDate(vip))
+        if (vip > 0 && vip < t) return Result(false, "卡密已过期", vip, fmtDate(vip), 200)
         return Result(true, if (vip > 0) "已授权 · ${fmtDate(vip)}" else "已授权 · 永久", vip,
-            if (vip > 0) fmtDate(vip) else "")
+            if (vip > 0) fmtDate(vip) else "", 200)
     }
 
     fun unbind(ctx: Context, kami: String): Result {
@@ -112,8 +113,9 @@ object XlVerify {
         val resp = post("/api.php?api=kmunmachine&app=$APPID", "data=" + URLEncoder.encode(body, "UTF-8"))
             ?: return Result(false, "连不上验证服务器")
         val json = gmUnwrapToJson(resp) ?: return Result(false, "响应校验失败")
-        return if (json.optInt("code", -1) == 200) Result(true, "解绑完成")
-        else Result(false, "解绑失败：" + json.optString("msg", "code " + json.optInt("code", -1)))
+        val c = json.optInt("code", -1)
+        return if (c == 200) Result(true, "解绑完成", code = 200)
+        else Result(false, "解绑失败：" + json.optString("msg", "code $c"), code = c)
     }
 
 
@@ -126,6 +128,7 @@ object XlVerify {
         val user: String = "",
         val activated: Boolean = false,
         val vip: Long = 0L,
+        val code: Int = 0,
     )
 
     /** 云端配置：api=ini 的 msg.version / version_info / app_update_url / app_name */
@@ -145,17 +148,31 @@ object XlVerify {
         val code = json.optInt("code", -1)
         val nested = json.optJSONObject("msg")
         val text = if (nested != null) nested.optString("msg", "") else json.optString("msg", "")
-        if (code != 200) return Acct(false, if (text.isBlank()) "code $code" else text)
+        if (code != 200) {
+            return Acct(false, if (text.isBlank()) "code $code" else text, u,
+                activated = false, code = code)
+        }
         val act = if (nested != null) nested.optString("activated", "n").equals("y", true) else true
         val vip = if (nested != null) nested.optLong("vip", 0L) else json.optLong("vip", 0L)
         val name = if (nested != null) nested.optString("user", u) else u
-        return Acct(true, if (text.isBlank()) "成功" else text, name, act, vip)
+        return Acct(true, if (text.isBlank()) "成功" else text, name, act, vip, 200)
     }
 
     /** 卡密给账号加时：kmlogon 带 user=账号，服务器按卡密时长续期 */
     fun recharge(ctx: Context, kami: String, user: String): Result {
-        val r = login(ctx, kami, user)
-        return if (r.ok) Result(true, "充值成功 · " + r.msg, r.vip, r.expiry) else r
+        var r = login(ctx, kami, user)
+        // 卡密已经被这台机绑过、或上次绑给了别的账号：先解绑再重试一次
+        if (!r.ok && (r.msg.contains("已使用") || r.msg.contains("已绑定") ||
+                    r.msg.contains("已被使用") || r.code == 150 || r.code == 151)) {
+            runCatching { unbind(ctx, kami) }
+            r = login(ctx, kami, user)
+        }
+        // 带账号绑不上（有的账号是空壳），退回不带账号的纯卡密登录
+        if (!r.ok && user.isNotBlank() && (r.code == 149 || r.code == 179)) {
+            val r2 = login(ctx, kami, "")
+            if (r2.ok) r = r2
+        }
+        return if (r.ok) Result(true, "充值成功 · " + r.msg, r.vip, r.expiry, r.code) else r
     }
 
     /** 公告：api=notice → msg.app_gg */
