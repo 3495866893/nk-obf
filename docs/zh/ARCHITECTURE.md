@@ -162,6 +162,20 @@ v12 的取舍原则：**能软分的绝不判死，判死的地方不留唯一�
 | S-4 | 模拟器的 syscall 分发表伪装 `ENOSYS` | `nk_syscall_semantic()` 探 0x7fff / 0x0e00 / 0x3a00，返回既非 `-ENOSYS`(-38) 也非 `-EPERM`(-1) 记分 | 软分 |
 | S-6 | 缓存 fd 会自占槽位 | 逐槽 `perf_event_open` 后立即 close，统计可用槽数（< 3 记分），绝不缓存 fd；仅在检出 root 框架时执行 | 软分 |
 
+### v12.2 补充（E / N / Q 系列）
+
+| 编号 | 改法 | 档位 |
+| --- | --- | --- |
+| E-2 | `nk_wd_reseize()` 反向 `PTRACE_SEIZE` 看门狗：成功→`INTERRUPT`+`wait4(WNOHANG)`+`DETACH`；`EPERM`→`wd-seized-by-other`；`ESRCH`→`wd-gone` | 软分 |
+| E-4 | `nk_uarch_consume()` 给 `g_uarch_flags` 接消费点：漂移 + `g_emu_score>=2` 才硬处置 | 合判 |
+| E-6 | `nk_prop_get()`（`__system_property_get`）读 `ro.kernel.qemu` / `ro.hardware` / `ro.product.cpu.abi` 当第二信源 | 软分 |
+| N-1 / N-2 | `prctl(PR_GET_SECCOMP)` 与 `getauxval(AT_HWCAP[2])` 只写日志，不打分 | 仅日志 |
+| N-3 | `readlink("/proc/self/exe")` 校验安装域，域外记 `self-path-outside-install` | 软分 |
+| Q-3 | 启动 8 秒内 `g_wd_pid<=0` 且 comm 为 `nk-wd` 时放过 | 防误杀 |
+| Q-6 | `g_vma_trunc`：maps 读满/条目打满时不据结构判硬 | 防误杀 |
+
+新增分块 `ci/nk_ad_parts/09_nk_env_probe.inc`，壳里在 `08` 之前 include（`09` 只依赖前面已定义的工具函数）。
+
 P-4 用的两组常量：路径白名单前缀 `/system/`、`/system_ext/`、`/vendor/`、`/apex/`、`/product/`、`/odm/`、`/data/app/`、`/data/data/`、`/data/user/`、`/data/dalvik-cache/`、`/data/local/`、`/mnt/`、`[`；ART JIT 的 `/memfd:` 前缀是 `jit-cache`、`jit-zygote`、`jit_zygote`、`jit_cache`，命中即放行。
 
 接线：`nk_tool_scan(!early)` 依次跑 `nk_seg_verify → nk_struct_scan → nk_peer_verify → nk_cross_conflict → nk_uarch_update → nk_syscall_semantic → nk_behavior_scan`；低频的 `nk_thread_anomaly` / `nk_hwbp_slot_count` 放进 60 秒一次的行为检查；看门狗线程每轮跑 `nk_wd_reap + nk_seg_verify`。
@@ -261,8 +275,8 @@ data class JobRecord(
 | `nk_ad_extra.o` | `ci/nk_ad.c` 单独编译 | 直接进链接列表 |
 | `lucifer` | `ci/build-lucifer.sh` | Release `nk-builds` + artifact `lucifer-obf` |
 | `nk-toolchain.tar.gz` | workflow 里现场拼（`source.properties` + banner + brand） | Release `nk-builds` + artifact |
-| `NKBuild-1.0-win64.exe` | PyInstaller onefile | Release v1.0 |
-| `NKBuild-mobile-1.0-kami.apk` | `build-apk.yml`（`assembleDebug` + 固定签名） | Release v1.0 |
+| `NKBuild-1.0.2-win64.exe` | PyInstaller onefile | Release v1.0.2 |
+| `NKBuild-mobile-1.0.2-kami.apk` | `build-apk.yml`（`assembleDebug` + 固定签名） | Release v1.0.2 |
 
 品牌写入用 `objcopy`：
 
