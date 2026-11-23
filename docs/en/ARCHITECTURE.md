@@ -116,14 +116,16 @@ The same tiering removes the trap problem. `flattening` marks a switch default `
 | `-DVK_USE_PLATFORM_ANDROID_KHR` | Compile flags | Vulkan surface support |
 | `-DNDEBUG` | Compile flags | PhysX `PxPreprocessor.h:454` |
 
-## Why `nk_ad.c` is excluded
+## The self-obfuscation boundary of `nk_ad.c`
 
-Four reasons, all learned the hard way:
+`ci/nk_ad.c` is compiled on its own into `nk_ad_extra.o`, and **it is not "unobfuscated" — it goes through exactly one pass, `string_encryption`** (`ci/nk-self.toml`). The boundary:
 
-1. **Self-destruction.** Flattening and bogus control flow applied to the watchdog itself make its own decisions unstable — a detection routine that could be rewritten into an unreachable branch is a detection routine that stops detecting.
-2. **Traceability.** A plain C object can be debugged with an ordinary debugger while the payload next to it is unreadable. When a device reports a false positive, the fix is a normal debugging session.
-3. **Iteration cost.** The detection list grew from a 4-check first version to v11.1 over five revision rounds (204-line, 8-item, 2-P0 and 4-item review lists). Adding a check must not require touching an IR generator.
-4. **Failure isolation.** The link step can leave `nk_ad_extra.o` out entirely (`anti_debug=false`), producing a build with no watchdog and no behavioral surprises.
+1. **Strings must be encrypted.** Before hardening the shipped binary carried `nk_ad` 79 times, `TracerPid` 2, `frida` 23 as plaintext; one `strings` run listed the whole detection set. With `string_encryption` alone those counts are 1 / 0 / 0, and the single remaining `nk_ad` hit is the `/data/local/tmp/nk_ad.log` path.
+2. **No semantic pass, ever.** `bcf` / `indirect_branch` / `split_blocks` / `flattening` / `constant_encryption` / `substitution` together make the artifact spin inside a **global constructor** (`debuggerd`: `nanosleep ← usleep ← call_constructors`, `State: S`, `wchan=__arm64_sys_nanosleep`, zero log lines). Compiling `nk_ad.c` as part of `SRCS` also produces `Undefined temporary symbol .L_vXXXX`.
+3. **The entry symbol is re-randomised per build.** `build-lucifer.sh` exports `NK_AD_SYM="__nk_$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')_g"`; the plugin reads it with `getenv("NK_AD_SYM")` and calls `getOrInsertFunction`, the runtime keeps `#ifndef NK_AD_SYM / #define NK_AD_SYM __nk_ad_check` as the default. No fixed name survives in the binary.
+4. **`NK_SKIP_ADB=1` stops self-reference.** Without it the `anti_debugging` pass would inject `call <NK_AD_SYM>()` into every function of the watchdog itself — recursive and pointless; `runOnFunction` returns immediately when the variable is set.
+5. **Six names must stay visible.** The inlined ART table check links against `__nk_art_lo`, `__nk_art_hi`, `__nk_vm`, `__nk_ad_panic`; the P-3 baseline writer needs `__nk_base_hash` and `__nk_base_exempt`. Everything else is randomised or encrypted.
+6. **It can still be switched off wholesale.** With `NK_AD=0` the file is built with `-DNK_AD_OFF` into empty implementations of `nk_die_r()` and `NK_AD_SYM()`; the rest is kept so the injected call sites still resolve.
 
 ### v12 hardening (P/S series)
 
@@ -146,7 +148,12 @@ Two constants drive P-4. Legal path prefixes are `/system/`, `/system_ext/`, `/v
 
 Wiring: `nk_tool_scan(!early)` runs `nk_seg_verify → nk_struct_scan → nk_peer_verify → nk_cross_conflict → nk_uarch_update → nk_syscall_semantic → nk_behavior_scan`; the low-frequency `nk_thread_anomaly` / `nk_hwbp_slot_count` live in the 60-second behavior check; the watchdog thread runs `nk_wd_reap + nk_seg_verify` each round.
 
-v12 also fixes the boundary of self-obfuscation: `nk_ad.c` goes through `string_encryption` only (`ci/nk-self.toml`) and through no semantic pass at all — all seven passes together hang the process inside the constructor (see [CHANGELOG.md](CHANGELOG.md), Phase 15, lesson 1).
+Two more layers landed after v12:
+
+- **P-3 compile-time baseline.** The link step no longer strips immediately: `ci/tools/nk_patch_baseline.py` splits the main executable segment into 64 chunks, hashes each with FNV-1a into `__nk_base_hash[]`, marks every chunk that a relocation targets in `__nk_base_exempt[]`, and only then do `brand` and `llvm-strip --strip-all` run. At runtime `nk_cbase_check()` compares one chunk per round, so full coverage takes 12 s and any edit hits `nk_ad: text chunk differs from build baseline`.
+- **Randomised injection layout.** The plugin mixes the function name (FNV-1a) with `NK_AD_SEED`: functions where `nkH % 100 >= 62` are skipped (~38%), the insertion point rotates between the entry, the second and the third block, and the ART table check is expanded in only half of them — no uniform injection pattern remains.
+
+The file itself went from 2,099 lines in one unit to a shell plus eight `.inc` parts: `ci/nk_ad.c` now holds the headers and `#include "nk_ad_parts/NN_*.inc"`, numbered in original order so the token stream is unchanged.
 
 ## CI: cache layout and Release-based distribution
 
