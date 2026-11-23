@@ -43,9 +43,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          cp android/app/build/outputs/apk/debug/app-debug.apk /tmp/NKBuild-mobile-1.0-kami.apk
-          ls -l /tmp/NKBuild-mobile-1.0-kami.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk /tmp/NKBuild-mobile-1.0.2-kami.apk
+          ls -l /tmp/NKBuild-mobile-1.0.2-kami.apk
           gh release view nk-builds -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create nk-builds -R "$GITHUB_REPOSITORY" -t "nk-builds" -n "自动构建产物（最新一次覆盖）"
-          gh release upload nk-builds /tmp/NKBuild-mobile-1.0-kami.apk --clobber -R "$GITHUB_REPOSITORY" \
+          gh release upload nk-builds /tmp/NKBuild-mobile-1.0.2-kami.apk --clobber -R "$GITHUB_REPOSITORY" \
             || { echo "upload failed"; gh auth status || true; exit 1; }
