@@ -54,24 +54,19 @@ enabled = true
 probability = 100
 
 [passes.mba]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.chaos_state_machine]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.vector_obfuscation]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.function_wrapper]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.function_call_obfuscate]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.anti_hooking]
 enabled = false
