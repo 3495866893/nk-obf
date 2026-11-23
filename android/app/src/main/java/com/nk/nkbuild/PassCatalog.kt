@@ -43,6 +43,9 @@ object PassCatalog {
         setOf("string_encryption", "substitution", "bcf", "split_blocks")
     val FULL: Set<String> = SPEC.filter { it.selectable }.map { it.key }.toSet()
 
+    /** 16 个全开（含实验项）：界面的「满血」预设用它 */
+    val FULL16: Set<String> = SPEC.map { it.key }.toSet()
+
     fun labelOf(key: String): String = SPEC.firstOrNull { it.key == key }?.label ?: key
 
     fun byGroup(g: Int): List<PassDef> = SPEC.filter { it.group == g }
