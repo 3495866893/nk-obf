@@ -84,7 +84,7 @@ gh workflow run build-obf.yml -R <owner>/nk-obf \
 
 ## 版本
 
-当前发布 **v1.0**。历史演进（含每个 bug 的根因与修法）见 [CHANGELOG](docs/zh/CHANGELOG.md)。
+当前发布 **v1.0.2**（`v1.0` 保留为上一版）。历史演进（含每个 bug 的根因与修法）见 [CHANGELOG](docs/zh/CHANGELOG.md)。
 
 ## Contributors
 
