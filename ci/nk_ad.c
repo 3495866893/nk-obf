@@ -386,4 +386,5 @@ static void nk_soft_tool(const char *tag) {
 #include "nk_ad_parts/05_nk_behavior_scan.inc"
 #include "nk_ad_parts/06_nk_proc_starttime.inc"
 #include "nk_ad_parts/07_nk_cross_conflict.inc"
+#include "nk_ad_parts/09_nk_env_probe.inc"
 #include "nk_ad_parts/08_nk_syscall_semantic.inc"
