@@ -176,3 +176,15 @@
 | 桌面 NKBuild | 1.0.0 → **1.0.2**（标题栏带版本号、品牌副标题加一行版本） |
 | 手机 NKBuild | 1.0 → **1.0.2**（versionCode 22） |
 | 构建 | 私有仓 run `45178198836` success，产物 2,097,528 字节，明文泄露仍为 `nk_ad` 1 / `__nk_ad_check` 0 / `TracerPid` 0 / `frida` 0 |
+
+## 阶段 15.2 · 1.0.2 补丁：P-3 编译期基线 + 注入随机化 + 分块
+
+不升版本号（仍是 1.0.2 / versionCode 22），只替换 Release 资产。
+
+| 项 | 内容 |
+| --- | --- |
+| P-3 编译期基线 | 新增 `ci/tools/nk_patch_baseline.py`：链接后先不 strip，把主代码段按 64 段逐段 FNV-1a 写进 `__nk_base_hash[]`，被重定位命中的段在 `__nk_base_exempt[]` 置豁免位，再 `brand`、最后 `llvm-strip --strip-all`。运行期 `nk_cbase_check()` 每轮只比一段，12 秒覆盖全量 |
+| 注入位置随机化 | 插件把「函数名 FNV-1a + `NK_AD_SEED`」混成 `nkH`：`nkH % 100 >= 62` 的函数不插（约 38% 跳过），插入点在入口 / 第 2 / 第 3 个基本块之间轮换，ART 表校验只在一半函数展开 |
+| 单文件拆分 | `ci/nk_ad.c` 2,099 行 → 壳（头 + 8 条 `#include "nk_ad_parts/NN_*.inc"`）+ 8 个分块，编号按原始顺序，token 流等价 |
+| 文档纠错 | 之前多篇文档写「`nk_ad.c` 不参与混淆」，实际是「只过 `string_encryption`、语义 pass 全不碰、入口符号每次随机」。README / ARCHITECTURE / FEATURES / index 中英共 8 处已改，并补了 6 个必须留名的符号清单 |
+| 构建 | 私有仓 run `45191819853` success（P-3 + 分块 + 随机注入同时生效） |
