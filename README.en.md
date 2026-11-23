@@ -24,14 +24,14 @@ NK is an **IR-level obfuscation pass plugin** for **LLVM 21** (`libNk.so`) that,
 
 | Artifact | Location | Size |
 |---|---|---|
-| Android APK | Release `v1.0` → `NKBuild-mobile-1.0-kami.apk` | 9.98 MB |
-| Desktop EXE | Release `v1.0` → `NKBuild-1.0-win64.exe` | 13.35 MB |
+| Android APK | Release `v1.0` → `NKBuild-mobile-1.0.2-kami.apk` | 9.98 MB |
+| Desktop EXE | Release `v1.0` → `NKBuild-1.0.2-win64.exe` | 13.35 MB |
 
 Checksums (`sha256sum` / `Get-FileHash -Algorithm SHA256`):
 
 ```
-43F42D12F325119AC95914AB77E7C7505522EA19538AFD7B2E21C5F51D0723D3  NKBuild-mobile-1.0-kami.apk
-90F60A2CA0899A48838F263255E3741D1490DB0BF73BB726512F8834A8AE8EE1  NKBuild-1.0-win64.exe
+43F42D12F325119AC95914AB77E7C7505522EA19538AFD7B2E21C5F51D0723D3  NKBuild-mobile-1.0.2-kami.apk
+90F60A2CA0899A48838F263255E3741D1490DB0BF73BB726512F8834A8AE8EE1  NKBuild-1.0.2-win64.exe
 ```
 
 | Example obfuscated binary | Release `nk-builds` → `lucifer` | 21,145,056 B |
