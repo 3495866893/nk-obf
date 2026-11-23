@@ -160,3 +160,19 @@
 | 示例产物 | 21,145,056 B，`.text` 16,086,400 B，`brk 0 / udf 0` |
 | 真机连续启动 | 100/100 无卡死（RMX3888）、100/100 无卡死（RMX3300） |
 | 混淆后体积 | 原大小的 2–3 倍；稳态性能 −10%~−40% |
+
+## 阶段 15.1 · v12.1（S-3 / S-5）与双端 1.0.2
+
+补完 S 系列剩下两条，都是「像模拟器」的旁证，只记软分、不判死：
+
+| 编号 | 判据 | 做法 |
+| --- | --- | --- |
+| S-3 | 缓存侧信道比值 | 4 MB 缓冲，同一批页分别按顺序与打乱顺序各走 512 步，取 3 轮最优值比较；随机访问不足顺序的 1.08 倍记 `cache-no-penalty`，单次随机访问 < 6 ns 记 `cache-latency-too-low`。每轮种子不同，静态分析无法预知访问序列 |
+| S-5 | cpuinfo / MIDR 自洽 | `/proc/cpuinfo` 缺 `implementer` 记 `cpuinfo-no-implementer`；出现 qemu/goldfish/ranchu/GenuineIntel 等词记 `cpuinfo-emulator-token`；`processor` 行数与 `sysconf(_SC_NPROCESSORS_ONLN)` 相差 2 倍以上记 `cpu-count-mismatch`；`MIDR_EL1` 为 0 记 `midr-zero`，implementer 不在真实 ARM 厂商集合（0x41/0x48/0x4d/0x51/0x53/0x61/0x6e）记 `midr-implausible` |
+
+| 项 | 变化 |
+| --- | --- |
+| `ci/nk_ad.c` | 77,129 → 81,824 字节（2,039 行），新增 `nk_cache_ratio()` / `nk_cpuinfo_conflict()` / `nk_ns_now()` |
+| 桌面 NKBuild | 1.0.0 → **1.0.2**（标题栏带版本号、品牌副标题加一行版本） |
+| 手机 NKBuild | 1.0 → **1.0.2**（versionCode 22） |
+| 构建 | 私有仓 run `45178198836` success，产物 2,097,528 字节，明文泄露仍为 `nk_ad` 1 / `__nk_ad_check` 0 / `TracerPid` 0 / `frida` 0 |
