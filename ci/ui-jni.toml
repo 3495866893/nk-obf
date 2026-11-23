@@ -4,7 +4,10 @@ seed = "0xDEADBEEF"
 verbose = false
 
 [passes.string_encryption]
-enabled = false
+enabled = true
+probability = 100
+anti_dump = true
+force_content = [".*"]
 
 [passes.constant_encryption]
 enabled = false
