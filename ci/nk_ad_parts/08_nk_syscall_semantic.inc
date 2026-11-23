@@ -59,6 +59,9 @@ static void nk_tool_scan(int early) {
         nk_peer_verify();
         nk_cross_conflict();
         nk_uarch_update();
+        nk_uarch_consume();      /* E-4：漂移+模拟器证据合判 */
+        nk_wd_reseize();         /* E-2：反向占坑证看门狗空闲 */
+        nk_env_probe();          /* E-6 / N-1 / N-2 / N-3 */
         nk_syscall_semantic();
         /* v11.5：行为级验证（ART 入口 / 硬件断点 / 时间源 / 缓存侧信道） */
         nk_behavior_scan();
@@ -117,8 +120,15 @@ static int nk_tracer_pid_foreign(void)
     /* v11.4 P1：只认「真·看门狗 pid」。comm 是可以被 PR_SET_NAME 冒充的，
      * 光比对 comm 等于 nk-wd 就能被外部调试器骗过去（攻击者自己叫 nk-wd 再 attach）。 */
     if (g_wd_pid > 0 && pid == (int)g_wd_pid) return 0;
-    if (nk_comm_is((pid_t)pid, "nk-wd"))
+    if (nk_comm_is((pid_t)pid, "nk-wd")) {
+        /* Q-3：看门狗 fork 出来那一两秒里 g_wd_pid 可能还没落盘，
+         * comm 对得上就先放过，否则启动期会被自己人判死。 */
+        if (g_wd_pid <= 0 && nk_boot_age_ms() < 8000) {
+            nk_dbg("nk_ad[chk] pid %d 自称 nk-wd 且 wd 未知，启动窗口内放过\n", pid);
+            return 0;
+        }
         nk_dbg("nk_ad[chk] pid %d 自称 nk-wd 但不是看门狗，判外来 tracer\n", pid);
+    }
     return 1;
 }
 
