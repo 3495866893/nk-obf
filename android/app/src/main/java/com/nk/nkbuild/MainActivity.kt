@@ -428,7 +428,7 @@ private fun ObfPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
             SectionTitle("◈", "预设")
             GlassSegmented(listOf("满血", "标准", "轻量"),
                 when {
-                    st.passes == PassCatalog.FULL -> 0
+                    st.passes == PassCatalog.FULL16 -> 0
                     st.passes == PassCatalog.DEFAULTS -> 1
                     st.passes == PassCatalog.LIGHT -> 2
                     else -> 1
@@ -436,13 +436,13 @@ private fun ObfPage(vm: BuildViewModel, st: UiState, haze: HazeState?) {
             ) { idx ->
                 vm.applyPreset(
                     when (idx) {
-                        0 -> PassCatalog.FULL
+                        0 -> PassCatalog.FULL16
                         2 -> PassCatalog.LIGHT
                         else -> PassCatalog.DEFAULTS
                     })
             }
             Spacer(Modifier.height(8.dp))
-            Text("满血=${PassCatalog.FULL.size} 个 pass（含未验证项，易崩）\n" +
+            Text("满血=${PassCatalog.FULL16.size} 个 pass（含实验项，CI 已验证能编过，逻辑风险自负）\n" +
                 "标准=${PassCatalog.DEFAULTS.size} 个（推荐）· 轻量=${PassCatalog.LIGHT.size} 个（快）",
                 color = TextDim, fontSize = 10.sp)
         }
