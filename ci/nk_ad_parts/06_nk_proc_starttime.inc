@@ -45,6 +45,7 @@ static int g_vma_n = 0;
 static unsigned long long g_vma_gen = 0;
 static unsigned long long g_vma_gen_used = 0;
 
+static int g_vma_trunc = 0;      /* Q-6：maps 读满/条目溢出 -> 本次不据结构判硬 */
 static int nk_vma_refresh(int force) {
     if (!force && g_vma && g_vma_gen == g_vma_gen_used) return g_vma_n;
     if (!g_vma) {
@@ -75,6 +76,9 @@ static int nk_vma_refresh(int force) {
         p = nl ? nl + 1 : NULL;
     }
     free(buf);
+    /* Q-6：缓冲读满或条目打满都说明这份 maps 可能不完整，此时不能拿「缺条目」当证据 */
+    g_vma_trunc = (cnt >= NK_VMA_MAX) || (n >= (1024 * 1024) - 1);
+    if (g_vma_trunc) nk_dbg("nk_ad[p6] maps truncated: vma=%d bytes=%d\n", cnt, n);
     g_vma_n = cnt;
     g_vma_gen++;
     g_vma_gen_used = g_vma_gen;
@@ -110,7 +114,7 @@ static void nk_struct_scan(void) {
                 nk_soft_tool("exec-memfd");
             continue;
         }
-        if (!nk_path_legit(path)) nk_soft_tool("exec-suspicious-path");
+        if (!g_vma_trunc && !nk_path_legit(path)) nk_soft_tool("exec-suspicious-path");
     }
 }
 
