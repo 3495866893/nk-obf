@@ -26,15 +26,15 @@ object PassCatalog {
         PassDef("flattening", "控制流平坦化", "状态机 + 分发器", true, true, 0),
         PassDef("anti_debugging", "反调试（IR 级）", "TracerPid 探测 + 时间差，需顶部开关同开", true, true, 0),
 
-        PassDef("mba", "MBA 混淆", "位运算恒等式替换，体积大、耗时长", false, true, 1),
-        PassDef("chaos_state_machine", "混沌状态机", "未充分验证，可能崩", false, true, 1),
-        PassDef("vector_obfuscation", "向量混淆", "体积暴涨、收益低", false, true, 1),
-        PassDef("function_wrapper", "函数包装", "可能破坏结构（尤其虚表）", false, true, 1),
-        PassDef("function_call_obfuscate", "函数调用混淆", "崩溃后极难排查", false, true, 1),
+        PassDef("mba", "MBA 混淆", "位运算恒等式替换，体积大、耗时长（CI 已验证）", false, true, 1),
+        PassDef("chaos_state_machine", "混沌状态机", "偏激进，逻辑可能被改坏（CI 已验证）", false, true, 1),
+        PassDef("vector_obfuscation", "向量混淆", "体积涨得多、收益一般（CI 已验证）", false, true, 1),
+        PassDef("function_wrapper", "函数包装", "改调用约定，虚表场景慎用（CI 已验证）", false, true, 1),
+        PassDef("function_call_obfuscate", "函数调用混淆", "崩溃后不好排查，先小工程试（CI 已验证）", false, true, 1),
 
-        PassDef("anti_hooking", "反 Hook", "完整性基线永远对不上，已知会崩 → 禁用", false, false, 2),
-        PassDef("anti_class_dump", "类 dump 防护", "仅 Objective-C，AArch64 无意义", false, false, 2),
-        PassDef("objc", "ObjC 混淆", "仅 Objective-C，AArch64 无意义", false, false, 2),
+        PassDef("anti_hooking", "反 Hook（内联校验）", "会改函数体，可能连带崩；建议单独试（CI 已验证）", false, true, 2),
+        PassDef("anti_class_dump", "类 dump 防护", "原本给 Objective-C，AArch64 上基本空转", false, true, 2),
+        PassDef("objc", "ObjC 混淆", "纯 C/C++ 工程里是空操作", false, true, 2),
     )
 
     val KEYS: List<String> = SPEC.map { it.key }
