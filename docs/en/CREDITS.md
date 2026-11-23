@@ -58,7 +58,7 @@ What NK builds on, and where each piece came from.
 
 | Item | Location | Note |
 |---|---|---|
-| Runtime watchdog | `ci/nk_ad.c` (~47 KB) | All probes are in-project C: raw `svc #0` syscalls, `/proc` parsers, `perf_event_open` slots. No third-party injection or hooking library |
+| Runtime watchdog | `ci/nk_ad.c` shell + `ci/nk_ad_parts/*.inc` (~85 KB total) | All probes are in-project C: raw `svc #0` syscalls, `/proc` parsers, `perf_event_open` slots. No third-party injection or hooking library |
 | Configurations | `ci/*.toml` | `plain.toml`, `only-*.toml`, `nk-nofold.toml`, `tuned.toml`, `nk-ir.toml`, generated `ui-<proj>.toml` |
 | Envelope crypto | `tools/xlverify.py` | SM4 (GB/T 32907), SM3 (GB/T 32905) and HMAC-SM3 written from the specifications; no `pycryptodome` dependency |
 | Envelope crypto (mobile) | `android/.../XlVerify.kt` | Kotlin port of the same primitives, byte-compatible with the desktop side |
