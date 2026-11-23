@@ -52,7 +52,7 @@ static void nk_uarch_consume(void) {
     if (!(g_uarch_flags & 1)) return;
     /* 定时器比例漂移 + 已有两条真·模拟器证据 -> 才算够格硬处置；
      * 单独一条漂移只在部分机型（省电调频）出现，绝不判死。 */
-    if (g_emu_score >= 2) nk_die_r("nk_ad: timer desync + emulation evidence");
+    if (g_emu_score >= 3) nk_die_r("nk_ad: timer desync + emulation evidence");
     if (!g_uarch_soft_done) { g_uarch_soft_done = 1; nk_soft_tool("uarch-timer-drift"); }
 }
 
