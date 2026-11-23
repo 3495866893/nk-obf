@@ -11,6 +11,18 @@ static unsigned long long nk_proc_starttime(pid_t p) {
     return sp ? strtoull(sp + 1, NULL, 10) : 0;  /* 第 22 域 starttime */
 }
 
+/* 读 ppid（/proc/<p>/stat 第 4 域）。comm 里可能有空格/括号，先跳到最后一个 ')'。 */
+static unsigned long nk_proc_ppid(pid_t p) {
+    char path[64], buf[1024];
+    snprintf(path, sizeof path, "/proc/%d/stat", (int)p);
+    if (nk_slurp(path, buf, sizeof buf) <= 0) return 0;
+    char *q = strrchr(buf, ')');
+    if (!q) return 0;
+    unsigned long ppid = 0;
+    if (sscanf(q + 1, " %*c %lu", &ppid) != 1) return 0;
+    return ppid;
+}
+
 static unsigned long long g_wd_start = 0;
 
 /* 主进程侧：看门狗死了 / pid 被回收复用 -> 软分并放弃它（不判死，防误杀） */
