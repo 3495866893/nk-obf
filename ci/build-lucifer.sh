@@ -53,9 +53,12 @@ echo "头文件路径 (${#INCS[@]}): ${INCS[*]:-无}"
 # ---- /nk-autoincludes ----
 
 # ---- 反调试强化模块 ----
-# 注意：这里必须“不带 -fpass-plugin”单独编译成 .o 再链接。
-# 若直接把 nk_ad.c 丢进 SRCS，它会被混淆 pass 处理，产生
-# "Undefined temporary symbol .L_vXXXX" 的汇编错误（已实测）。
+# 注意：这里单独编译成 .o 再链接，并且**只喂 nk-self.toml（当前只开 string_encryption）**。
+# 历史教训：
+#   1) 直接把 nk_ad.c 丢进 SRCS（8 个 pass 全开）会产生 "Undefined temporary symbol .L_vXXXX"；
+#   2) 让它过 7 个 pass（bcf/flattening/indirect…）会让全局构造函数里的 usleep 死循环，
+#      进程零输出卡死（真机实测 rc=124），所以收敛到只做字符串加密。
+# 入口符号每次构建随机（NK_AD_SYM），插件按同一个名字注入 call。
 #
 # NK_AD=0 时不再“删掉这个 .o”，而是用 -DNK_AD_OFF 编成空实现：
 #   Nk 的 anti_debugging pass 会在每个函数入口注入 call __nk_ad_check()，
@@ -66,7 +69,10 @@ if [ -f "$PWD/ci/nk_ad.c" ]; then
   # ---- 随机入口符号（每次构建不同，成品里搜不到固定名字）----
   NK_AD_SYM="__nk_$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')_g"
   export NK_AD_SYM
-  echo "反调试入口符号: $NK_AD_SYM"
+  # ---- 随机注入布局种子：插件据此决定「哪些函数插检查、插在第几个基本块」----
+  NK_AD_SEED="$(( (0x$(head -c4 /dev/urandom | od -An -tx4 | tr -d ' \n')) % 100000 ))"
+  export NK_AD_SEED
+  echo "反调试入口符号: $NK_AD_SYM  （注入布局种子 $NK_AD_SEED）"
   # ---- 给 nk_ad.c 用的插件路径（PLUGINS 数组在后面才建，这里先探一次）----
   NK_PLUG=""
   if [ -n "$PLUGIN_ARG" ]; then
@@ -79,7 +85,7 @@ if [ -f "$PWD/ci/nk_ad.c" ]; then
     echo "反调试强化模块: NK_AD=0 -> 编成空实现（anti_debugging pass 仍开）"
   else
     NK_AD_DEF=""
-    echo "反调试强化模块: 单独编译 ci/nk_ad.c -> nk_ad_extra.o（不经混淆）"
+    echo "反调试强化模块: 单独编译 ci/nk_ad.c -> nk_ad_extra.o（只过 string_encryption）"
   fi
   # nk_ad.c 自己也过一遍混淆（字符串加密 + 常量加密 + 指令替换 + 虚假控制流 +
   # 块分割 + 间接跳转 + 反调试），但用 nk-nofold 配置跳过 flattening（大 TU 上会炸内存）。
@@ -125,7 +131,7 @@ BASE=(
   "-nostdlib++" "--ld-path=$LLD"
   "-Wl,--no-gc-sections" "-Wl,--exclude-libs,ALL"
   "-Wl,-z,relro" "-Wl,-z,now" "-Wl,-z,noexecstack"
-  "-Wl,--build-id=none" "-Wl,--strip-all"
+  "-Wl,--build-id=none"
 )
 BASE+=("${INCS[@]:-}")
 
@@ -264,7 +270,20 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
   rm -f "${objs[@]}" 2>/dev/null || true
   echo "  链接 rc=$rc"
   if [ -f "$out" ]; then
+    # ---- P-3：链接后、strip 前回填编译期基线（必须在混淆完成之后）----
+    if [ -f "$PWD/ci/tools/nk_patch_baseline.py" ]; then
+      if command -v python3 >/dev/null 2>&1; then
+        python3 "$PWD/ci/tools/nk_patch_baseline.py" "$out" 2>&1 | sed 's/^/  /'
+      else
+        echo "  [baseline] 没找到 python3，跳过回填（运行时将 fail-open）"
+      fi
+    fi
     brand "$out"
+    # 回填完再剥符号，否则工具找不到 __nk_base_hash / __nk_base_exempt
+    if [ -x "$TC/bin/llvm-strip" ]; then
+      "$TC/bin/llvm-strip" --strip-all "$out" 2>/dev/null || true
+      echo "  已 strip: $(stat -c%s "$out") 字节"
+    fi
     echo "成功: $out ($(stat -c%s "$out") 字节)"
     return 0
   fi
