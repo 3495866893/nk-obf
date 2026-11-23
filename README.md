@@ -61,7 +61,9 @@ gh workflow run build-obf.yml -R <owner>/nk-obf \
 
 ## 运行时看门狗
 
-`ci/nk_ad.c` 是一个**不参与混淆**的独立 C 文件，链进目标二进制后提供：TracerPid 与全线程扫描、`maps` 差分、libc 序言校验、自身与多模块 `.text` 哈希、JNI 函数表校验、匿名可执行段、`svc #0` 自检、perf 硬件断点槽、Frida / LSPosed / Zygisk / eDBG / QBDI 特征、uprobe BRK 改写检测、root 框架分级。命中 `_exit(97)`，读失败一律 fail-open（宁可放过不误杀）。
+`ci/nk_ad.c` 单独编译成 `nk_ad_extra.o` 后链进目标二进制（只过 `string_encryption` 一道 pass，边界见下），提供：TracerPid 与全线程扫描、`maps` 差分、libc 序言校验、自身与多模块 `.text` 哈希、JNI 函数表校验、匿名可执行段、`svc #0` 自检、perf 硬件断点槽、Frida / LSPosed / Zygisk / eDBG / QBDI 特征、uprobe BRK 改写检测、root 框架分级。命中时按 `nk_fatal_poly()` 轮换处置（`brk #0x1` / 伪装 ANR 后退出 / 裸 `svc #0` 退出），读失败一律 fail-open（宁可放过不误杀）。
+
+**自混淆边界**：`nk_ad.c` 只喂 `ci/nk-self.toml`（仅 `string_encryption`），语义类 pass 一个不上——7 个 pass 全上会在构造函数里挂死；入口符号每次构建重新随机（`NK_AD_SYM=__nk_<8位hex>_g`，插件与运行时共用同一个），`NK_SKIP_ADB=1` 阻止插件给模块自身插调用。成品里 `nk_ad` 明文只剩 1 处（日志路径），`__nk_ad_check` / `TracerPid` / `frida` / `lsposed` 均为 0 处。
 
 ## 实测
 
