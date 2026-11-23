@@ -154,6 +154,21 @@ static int nk_comm_is(pid_t pid, const char *want) {
 }
 
 /* 是否存在同时可写可执行(rwx)的映射：正常 App 极少出现，是内存补丁的强特征 */
+/* 认亲：这个 tracer 是不是我们自己 fork 出来的看门狗？
+   1) 已知 pid 直接比；
+   2) 不知道 pid 时用「本进程的直接子进程 + comm == nk-wd」判定 —— 看门狗 SEIZE 与
+      g_wd_pid 落盘之间有先后，只比 pid 会把自家看门狗当外来 tracer（真机必杀）。 */
+static unsigned long nk_proc_ppid(pid_t p);   /* 定义在 06 分块 */
+static int nk_tracer_is_ours(int pid) {
+    if (pid <= 0) return 0;
+    if (g_wd_pid > 0 && pid == (int)g_wd_pid) return 1;
+    if (!nk_comm_is((pid_t)pid, "nk-wd")) return 0;
+    if (nk_proc_ppid((pid_t)pid) != (unsigned long)getpid()) return 0;
+    g_wd_pid = (pid_t)pid;                    /* 认亲成功顺手补上 */
+    nk_dbg("nk_ad[tracer] 认亲：%d 是自家看门狗\n", pid);
+    return 1;
+}
+
 static int nk_has_rwx(void) {
     char *buf = (char *)malloc(256 * 1024);
     if (!buf) return 0;
@@ -296,7 +311,7 @@ static int nk_any_thread_traced(void)
                     char *t = strstr(st, "TracerPid:");
                     if (t) {
                         int pid = (int)strtol(t + 10, NULL, 10);
-                        if (pid != 0 && !(g_wd_pid > 0 && pid == (int)g_wd_pid)) {
+                        if (pid != 0 && !nk_tracer_is_ours(pid)) {
                             nk_dbg("nk_ad[task] %s traced by %d\n", name, pid);
                             nk_close_fd(fd); return 1;
                         }
