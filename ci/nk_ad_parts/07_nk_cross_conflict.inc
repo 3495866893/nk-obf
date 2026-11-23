@@ -40,8 +40,13 @@ static void nk_seg_verify(void) {
  * 这两个数组必须留名字（有 used 属性），脚本按符号名定位写入口。
  */
 #define NK_CSEG 64
-unsigned long __nk_base_hash[NK_CSEG] __attribute__((used)) = {0};
-unsigned char __nk_base_exempt[(NK_CSEG + 7) / 8] __attribute__((used)) = {0};
+/* 哨兵 1 = 未回填。必须非零，否则整块落进 .bss（NOBITS），
+ * ci/tools/nk_patch_baseline.py 就没有可写的文件偏移，只能跳过。
+ * 段名单独指定，保证它是 PROGBITS 且不与别的常量并段。 */
+unsigned long __nk_base_hash[NK_CSEG]
+    __attribute__((used, section(".nkbase"), aligned(8))) = {1};
+unsigned char __nk_base_exempt[(NK_CSEG + 7) / 8]
+    __attribute__((used, section(".nkbase_ex"), aligned(8))) = {0xFF};
 
 static uint64_t g_ctext_lo = 0;
 static uint64_t g_ctext_len = 0;
@@ -77,7 +82,8 @@ static void nk_cbase_check(void)
     if (!g_ctext_lo || g_ctext_len < (uint64_t)NK_CSEG * 256) return;
     int i = g_cseg_cur;
     g_cseg_cur = (g_cseg_cur + 1) % NK_CSEG;
-    if (__nk_base_hash[i] == 0) return;                    /* 未回填 -> 放过 */
+    if (__nk_base_hash[i] == 0 || __nk_base_hash[i] == 1)
+        return;                                  /* 未回填（0 或哨兵 1）-> 放过 */
     if (__nk_base_exempt[i / 8] & (unsigned char)(1u << (i % 8))) return;
     uint64_t per = g_ctext_len / NK_CSEG;
     uint64_t off = (uint64_t)i * per;
