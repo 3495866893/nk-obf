@@ -23,7 +23,7 @@ NK 是一个基于 **LLVM 21** 的 **IR 级代码混淆插件**（产物 `libNk.
 | 路径 | 内容 | 备注 |
 | --- | --- | --- |
 | `src/` | 插件源码，79 文件 / 2.5 MB | 16 个 pass 各一个 `.cpp`，加 `Utils.cpp` / `CryptoUtils.cpp` |
-| `ci/nk_ad.c` | 运行时看门狗，单文件 1204 行 | **不参与混淆**，单独编成 `nk_ad_extra.o` 再链接 |
+| `ci/nk_ad.c` | 运行时看门狗壳（8 条 `#include "nk_ad_parts/NN_*.inc"`，分块合计约 2,100 行） | 单独编译、只过 `string_encryption`，入口符号每次构建随机 |
 | `ci/build-nk.sh` | 构建 `libNk.so` | 用宿主 clang++/g++，只借自建 LLVM 的头文件 |
 | `ci/build-lucifer.sh` | 交叉编译入口 | 逐文件 `-c`，大 TU 三级降级，链接 `nk_ad.o` |
 | `ci/*.toml` | 30 余份配置 | `tuned.toml` 是默认，`nk-nofold.toml` / `ui-jni-light.toml` 是大 TU 兜底 |
