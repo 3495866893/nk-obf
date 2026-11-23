@@ -6,8 +6,8 @@
 
 | 产物 | 位置 | 大小 | 说明 |
 |---|---|---|---|
-| 手机端 APK | Release `v1.0` → `NKBuild-mobile-1.0-kami.apk` | 9.98 MB | Android 8.0+（`minSdk 26`），签名已固定，可直接覆盖升级 |
-| 桌面端 EXE | Release `v1.0` → `NKBuild-1.0-win64.exe` | 13.35 MB | Windows x64 单文件，免安装 |
+| 手机端 APK | Release `v1.0.2` → `NKBuild-mobile-1.0.2-kami.apk` | 9.98 MB | Android 8.0+（`minSdk 26`），签名已固定，可直接覆盖升级 |
+| 桌面端 EXE | Release `v1.0.2` → `NKBuild-1.0.2-win64.exe` | 13.35 MB | Windows x64 单文件，免安装 |
 | 混淆后的示例二进制 | Release `nk-builds` → `lucifer` | 21,145,056 B | 每次构建自动覆盖（`--clobber`） |
 | 工具链 | Release `nk-builds` → `nk-toolchain.tar.gz` | KB 级（只含 `source.properties` 与打包入口） | clang 21 + lld + sysroot 打包入口 |
 | LLVM 预编译 | Release `llvm-build-21.1.8` → `llvm-build.tar.zst` | 232 MB | CI 缓存用，不占 artifact 配额 |
@@ -85,8 +85,8 @@ apksigner verify --print-certs NKBuild-mobile-1.0-kami.apk | grep SHA-256
 1. 改 `android/app/build.gradle.kts` 的 `versionCode`（+1），`versionName` 保持 `1.0`。
 2. push 到 `android/**` 触发 `build-apk.yml`，签名固定 `android/keystore/nkbuild.p12`。
 3. 桌面端跑 `pyinstaller tools/NKBuild.spec`，产物改名 `NKBuild-1.0-win64.exe`。
-4. `gh release create v1.0 <两个文件> --repo 3495866893/nk-obf`；tag 已存在时用 `gh release upload v1.0 <文件> --clobber`。
-5. 复核：`gh release view v1.0 --repo 3495866893/nk-obf`，两个资产大小应是 9.98 MB 与 13.35 MB。
+4. `gh release create v1.0.2 <两个文件> --repo 3495866893/nk-obf`；tag 已存在时用 `gh release upload v1.0.2 <文件> --clobber`。
+5. 复核：`gh release view v1.0.2 --repo 3495866893/nk-obf`，两个资产大小应是 9.98 MB 与 13.35 MB。
 
 `nk-builds` 是滚动 tag，每次构建 `--clobber` 覆盖同名资产，不留历史版本；要留档就自己另存。
 
@@ -95,7 +95,7 @@ apksigner verify --print-certs NKBuild-mobile-1.0-kami.apk | grep SHA-256
 | 返回 | 含义 | 处理 |
 | --- | --- | --- |
 | `code=0` | 信封校验通过 | 进主界面，`msg.vip` 即到期秒 |
-| `code=179` | 账号未激活（老账号体系遗留） | 发布版 v1.0 已去掉账号，直接用卡密登 |
+| `code=179` | 账号未激活（老账号体系遗留） | 1.0 起已去掉账号，直接用卡密登 |
 | `msg.vip=4102243200` | 到期时间戳（秒） | 界面上换算成年月日，不是错误 |
 | 网络失败 | 域名 `yz.dujiuyue.cn` 不可达 | 检查网络；域名换过就看 `XlVerify.kt` 的 `HOSTS` |
 
