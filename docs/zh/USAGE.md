@@ -229,7 +229,7 @@ gh workflow run build-obf.yml --repo 3495866893/nk-obf \
 | `fatal error: 'imgui.h' file not found` | 头文件没上传 | 确认「待上传文件」包含头文件 |
 | `Failed to CreateArtifact: Artifact storage quota has been hit` | artifact 配额爆了 | 别把 LLVM/NDK 往 artifact 传，走 Release |
 | `LLVM 构建树缓存不可用` + 立即失败 | `guard` 步骤拦截 | 勾 `rebuild_clang=true` 重建一次（约 100 分钟） |
-| 手机端 `code=179` | 账号未激活（服务端对未激活账号的返回值） | 发布版 v1.0 已去掉账号体系，只留卡密；老包还报这个就直接登卡密 |
+| 手机端 `code=179` | 账号未激活（服务端对未激活账号的返回值） | 1.0 起已去掉账号体系，只留卡密；老包还报这个就直接登卡密 |
 | 「卡密已使用」 | 卡密一次性绑定到设备码 | 先「解绑」再登，或用同一账号回查 |
 | 到期时间显示成 `4102243200` | 服务端把 `vip` 放在 `msg` 里且是字符串 | 这个数就是秒级时间戳，不是错误 |
 | 上传卡在某个文件 | 单文件太大或名字带空格 | 预检页会标 BLOCK，按提示改名/剔除 |
