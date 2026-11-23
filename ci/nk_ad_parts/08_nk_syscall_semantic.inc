@@ -119,7 +119,7 @@ static int nk_tracer_pid_foreign(void)
     if (pid == 0) return 0;
     /* v11.4 P1：只认「真·看门狗 pid」。comm 是可以被 PR_SET_NAME 冒充的，
      * 光比对 comm 等于 nk-wd 就能被外部调试器骗过去（攻击者自己叫 nk-wd 再 attach）。 */
-    if (g_wd_pid > 0 && pid == (int)g_wd_pid) return 0;
+    if (nk_tracer_is_ours(pid)) return 0;
     if (nk_comm_is((pid_t)pid, "nk-wd")) {
         /* Q-3：看门狗 fork 出来那一两秒里 g_wd_pid 可能还没落盘，
          * comm 对得上就先放过，否则启动期会被自己人判死。 */
@@ -239,13 +239,15 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
     if (wd > 0) {
         char st[4096];
         g_wd_pid = 0;
-        for (int i = 0; i < 40; i++) {
+        for (int i = 0; i < 120; i++) {
             usleep(25 * 1000);
             if (nk_slurp("/proc/self/status", st, sizeof st) > 0) {
                 char *t = strstr(st, "TracerPid:");
                 if (t && (int)strtol(t + 10, NULL, 10) == (int)wd) { g_wd_pid = wd; break; }
             }
         }
+        /* 还认不出来就按「直接子进程 + comm=nk-wd」补上，避免深检把自家看门狗当外来 */
+        if (g_wd_pid <= 0) { (void)nk_tracer_is_ours((int)wd); }
         nk_dbg("nk_ad[init] watchdog=%d seized=%d\n", (int)wd, (int)g_wd_pid);
     }
 
