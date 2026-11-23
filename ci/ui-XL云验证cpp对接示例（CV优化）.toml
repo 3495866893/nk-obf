@@ -58,12 +58,10 @@ enabled = true
 probability = 100
 
 [passes.chaos_state_machine]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.vector_obfuscation]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.function_wrapper]
 enabled = true
