@@ -130,7 +130,7 @@ The token is only ever sent to `api.github.com` as an `Authorization` header; it
 | `duplicate symbol` for cJSON or similar | An included `.c`/`.cpp` was also compiled as its own unit | The clients filter included units; drop it from `src_files` by hand |
 | `imgui.h: file not found` | Headers were not uploaded, only units | Upload the whole directory; the desktop scan's second set exists for this |
 | Upload stalls on a large file | Blob above ~20 MB, near the 100 MB ceiling | Reduce the file; 70 MB is already refused by precheck |
-| License gate: `code=179` | Server answers inactive accounts on the recharge page | The v1.0 client has no account system; use the key-only flow |
+| License gate: `code=179` | Server answers inactive accounts on the recharge page | The current client (1.0.2) has no account system; use the key-only flow |
 | License gate: "key already used" | A key binds to one device | Unbind first (`XlVerify.unbind`), or look the key up again |
 | Wrong expiry date shown | The server returns `vip` inside `msg` as a string; `4102243200` is epoch **seconds** | Parsed as seconds since v1.0 |
 | New APK will not install over the old one | Different debug keystore each build | Always sign with `android/keystore/nkbuild.p12` |
