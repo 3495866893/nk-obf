@@ -38,7 +38,7 @@
 ## 参考与灵感
 
 - OLLVM / OLLVM-Next 系列的混淆思路（字符串加密、控制流平坦化、虚假控制流、指令替换）。
-- 公开的反调试/反注入检测清单（Frida、Xposed/LSPosed、Zygisk、eDBG/stackplz、QBDI、unicornTrace 等工具特征），用于 `ci/nk_ad.c` 的特征表。
+- 公开的反调试/反注入检测清单（Frida、Xposed/LSPosed、Zygisk、eDBG/stackplz、QBDI、unicornTrace 等工具特征），用于 `ci/nk_ad.c`（壳 + `ci/nk_ad_parts/` 8 个分块） 的特征表。
 - KernelSU / APatch 皮肤包的视觉风格，是手机端浅色主题的参考来源。
 
 ## 版本对照
