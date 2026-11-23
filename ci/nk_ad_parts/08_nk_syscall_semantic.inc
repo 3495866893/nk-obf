@@ -99,7 +99,7 @@ static void nk_emu_scan(int early) {
             nk_emu_name();
             nk_emu_task();
             nk_emu_maps();
-            if (g_emu_score >= 3) nk_die_r("nk_ad: emulation score>=3");
+            if (g_emu_score >= 4) nk_die_r("nk_ad: emulation score>=4");
         }
     }
 }
