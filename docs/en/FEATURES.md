@@ -2,7 +2,7 @@
 
 This document lists what NK actually does: the 16 LLVM passes with their keys, effects and defaults, the full runtime detection set inside `ci/nk_ad.c` grouped by what it defends against, and the precheck rules that gate an upload.
 
-All figures here describe the shipped state of v1.0.
+All figures here describe the shipped state of v1.0.2.
 
 ## Configuration model
 
