@@ -374,6 +374,24 @@ static void nk_soft_tool(const char *tag) {
     nk_dbg("nk_ad[tool] soft %s (tool=%d, 仅日志)\n", tag, g_tool_score);
 }
 
+/* 每个软证据只在位图里计一次：worker 每 1.5s 深检一次，重复触发不再累加
+   否则真机在重载 / ART 环境里 4~6 秒就会撞上判死阈值。 */
+static unsigned g_emu_seen = 0;
+static int g_emu_note_n = 0;
+static void nk_emu_hit(int bit, const char *tag) {
+    if (bit >= 0 && bit < 32) {
+        unsigned m = 1u << bit;
+        if (g_emu_seen & m) return;
+        g_emu_seen |= m;
+    }
+    g_emu_score++;
+    nk_dbg("nk_ad[emu] soft %s (score=%d)\n", tag, g_emu_score);
+}
+static void nk_emu_note(const char *tag) {
+    if (g_emu_note_n < 255) g_emu_note_n++;
+    nk_dbg("nk_ad[emu] note %s (仅日志)\n", tag);
+}
+
 /* ---------- 分块源码：按原顺序 include，单 TU 等价 ---------- */
 
 /* ---------- 分块源码：按原顺序 include，单 TU 等价 ---------- */
