@@ -83,7 +83,7 @@ explanation lives in [LICENSE-NOTICE.md](LICENSE-NOTICE.md).
 
 ## Version
 
-Current release **v1.0**. The full history — with root cause and fix for every bug — is in the [CHANGELOG](docs/en/CHANGELOG.md).
+Current release **v1.0.2** (`v1.0` stays available as the previous one). The full history — with root cause and fix for every bug — is in the [CHANGELOG](docs/en/CHANGELOG.md).
 
 ## Contributors
 
