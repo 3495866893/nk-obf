@@ -28,7 +28,7 @@ static int nk_emu_timer(void) {
     __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(frq));
     if (frq == 0 || frq < 1000000ULL || frq > 5000000000ULL) {
         nk_dbg("nk_ad[emu] cntfrq=%llu\n", frq);
-        nk_soft("cntfrq");
+        nk_emu_hit(1, "cntfrq");
         return 0;
     }
     struct timespec a, b;
@@ -44,7 +44,7 @@ static int nk_emu_timer(void) {
         double ratio = hw / wall;
         nk_dbg("nk_ad[emu] timer wall=%.4f hw=%.4f ratio=%.3f\n", wall, hw, ratio);
         /* 真机 0.9~1.1；模拟器要么 0（计数不动）要么差一个数量级 */
-        if (ratio < 0.25 || ratio > 4.0) nk_soft("timer-ratio");
+        if (ratio < 0.25 || ratio > 4.0) nk_emu_note("timer-ratio");
     }
     return 0;
 }
@@ -80,7 +80,7 @@ static int nk_emu_trap(void) {
     munmap(p, 4096);
 
     nk_dbg("nk_ad[emu] segv kind=%d\n", g_emu_kind);
-    if (g_emu_kind == 0) nk_soft("segv-not-delivered");
+    if (g_emu_kind == 0) nk_emu_note("segv-not-delivered");
     else if (g_emu_kind == 1) { nk_dbg("nk_ad[emu] segv si_addr wrong\n"); return 1; }
     return 0;
 }
@@ -99,7 +99,7 @@ static int nk_emu_name(void) {
     c[n] = 0;
     if (strncmp(c, probe, 9) != 0) {
         nk_dbg("nk_ad[emu] comm=%s\n", c);
-        nk_soft("comm-readback");
+        nk_emu_note("comm-readback");
     }
     return 0;
 }
