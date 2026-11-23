@@ -205,3 +205,24 @@ Still 1.0.2, no version bump.
 | Q-6 | A maps buffer that filled up made "missing entry" look like evidence | New `g_vma_trunc`: when truncated, `exec-suspicious-path` is not scored | false-positive guard |
 
 Files: new `ci/nk_ad_parts/09_nk_env_probe.inc` (5.1 KB); the shell gained one include; nine parts in total.
+
+## Phase 15.4 · v12.3 / v12.4: real-device false-positive fix
+
+Two field reports: a normal device died with `emulation score>=3`; and a phone-side build that
+selected **only** anti-debug came back looking heavily obfuscated.
+
+| Issue | Root cause | Fix |
+|---|---|---|
+| Normal device killed by `emulation score>=3` | ① All 7 soft signals were re-scored on every 1.5 s deep scan, so three points accumulated within 4–6 s; ② the watchdog's `PTRACE_SEIZE` completes *after* `g_wd_pid` is written, so the deep scan treated **our own watchdog** as a foreign tracer (log `19158 traced by 19159`). | ① Each soft signal is counted once via a bitmask (`nk_emu_hit`); the kill threshold moved from 3 to **4 distinct** signals (E-4: 2 → 3); `timer-ratio` / `comm-readback` / `segv-not-delivered` became **log-only**. ② New `nk_tracer_is_ours()`: match by pid when known, otherwise accept a tracer that is a **direct child of this process with comm == nk-wd** and back-fill `g_wd_pid`; post-fork polling 40×25 ms → 120×25 ms. |
+| Only-anti-debug build came out obfuscated | The large-TU tiering (`fsz>200 KB \|\| preprocessed>800 KB`) unconditionally swapped the user config for `nk-nofold.toml` (7 passes). | Tiering now applies **only when the user enabled ≥5 passes**; otherwise the user config is used verbatim (log line `→ 用户配置只开 N 个 pass，尊原配置`). |
+
+**Regression on device (RMX3888 / Android 16, 12 s / 3 threads / malloc stress sample `projects/loop`)**
+
+| Scenario | Result |
+|---|---|
+| 8 passes + anti-debug, 5 straight runs | **5/5 rc=0**, 12 `tick` lines + `loop done sink=900`; log shows `nk_ad[tracer] 认亲：xxxxx 是自家看门狗` |
+| Anti-debug only (`ci/only-adb.toml`), 3 runs | **3/3 rc=0**; log `→ 用户配置只开 1 个 pass，尊原配置`; binary 2,069,464 B |
+| Both binaries under `projects/tracer` | **rc=97** (`nk_ad[die] reason=nk_ad: thread traced`) — detection still works |
+| Plaintext scan (anti-debug-only build) | `nk_ad` / `TracerPid` / `frida` / kami domain: **0 hits each** (self-obfuscation intact) |
+
+Lesson: the criteria were fine; the bugs were **double-counting one signal from several sources** (kill in 4–6 s) and **mistaking our own watchdog for an attacker** (self-kill switch).
