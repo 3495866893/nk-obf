@@ -20,7 +20,7 @@ All three live in the same repository and share one pipeline: pick a directory, 
 | 2 | Desktop GUI | `tools/NKBuild.py` | Python 3 + CustomTkinter (~1000 lines) | Four cards (source / project·artifact / anti-debug / build) + log pane, progress bar, ETA, abort, open-output |
 | 3 | Android GUI | `android/` (package `com.nk.nkbuild`) | Kotlin + Jetpack Compose | Same flow on the phone; 16 pass toggles, local TOML upload, `Download/NKBuild`, one-tap install |
 
-A fourth, smaller component is not a product line but a runtime module: **`ci/nk_ad.c`** — anti-debug / anti-injection watchdog, deliberately excluded from obfuscation, linked as `nk_ad_extra.o`.
+A fourth, smaller component is not a product line but a runtime module: **`ci/nk_ad.c`** — anti-debug / anti-injection watchdog, compiled on its own, obfuscated with `string_encryption` only, linked as `nk_ad_extra.o`.
 
 ## Repository layout
 
@@ -29,7 +29,7 @@ A fourth, smaller component is not a product line but a runtime module: **`ci/nk
 | `src/` | Plugin sources, 79 files / 2.5 MB | One translation unit per pass plus `Utils` |
 | `ci/build-nk.sh` | Builds `libNk.so` from an LLVM 21 build tree | 1.7 KB |
 | `ci/build-lucifer.sh` | NDK r29 cross-compile driver for arbitrary projects | 13 KB; collects `-I`, links static libc++, appends `nk_ad_extra.o` |
-| `ci/nk_ad.c` | Runtime watchdog (current generation v11.1) | Not obfuscated; linked separately |
+| `ci/nk_ad.c` | Runtime watchdog shell + eight `.inc` parts under `ci/nk_ad_parts/` | Separate compile; `string_encryption` only; entry symbol randomised per build |
 | `ci/*.toml` | Pass presets: `plain`, `fast`, `tuned`, `tuned-noadb`, `max-*`, `nk-nofold`, `nk-ir`, per-pass probes | `nk-nofold.toml` = 7 passes, skips `flattening` |
 | `ci/brand.txt` | Vendor string injected into artifacts | `NK-Ollvm[QQ:3495866893]…` |
 | `tools/NKBuild.py` | Desktop GUI | Python 3 + CustomTkinter |
