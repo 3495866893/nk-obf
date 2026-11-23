@@ -176,3 +176,15 @@ Completes the remaining S-series checks. Both are "looks like an emulator" corro
 | Desktop NKBuild | 1.0.0 → **1.0.2** (version in title bar and brand line) |
 | Mobile NKBuild | 1.0 → **1.0.2** (versionCode 22) |
 | Build | Private repo run `45178198836` success, 2,097,528 bytes; plaintext leaks still `nk_ad` 1 / `__nk_ad_check` 0 / `TracerPid` 0 / `frida` 0 |
+
+## Phase 15.2 · The 1.0.2 patch: P-3 compile-time baseline, randomised injection, split files
+
+No version bump (still 1.0.2 / versionCode 22); only the Release assets are replaced.
+
+| Item | Detail |
+| --- | --- |
+| P-3 compile-time baseline | New `ci/tools/nk_patch_baseline.py`: after linking, before stripping, the main executable segment is split into 64 chunks and hashed with FNV-1a into `__nk_base_hash[]`; chunks targeted by a relocation get a bit in `__nk_base_exempt[]`. Then `brand`, then `llvm-strip --strip-all`. At runtime `nk_cbase_check()` compares one chunk per round, full coverage in 12 s |
+| Randomised injection | The plugin mixes each function name (FNV-1a) with `NK_AD_SEED` into `nkH`: functions where `nkH % 100 >= 62` are skipped (~38%), the insertion point rotates between the entry, second and third block, and the ART table check is expanded in only half of them |
+| Split files | `ci/nk_ad.c` went from 2,099 lines to a shell (headers + eight `#include "nk_ad_parts/NN_*.inc"`) plus eight numbered parts, keeping the original order so the token stream is unchanged |
+| Documentation fix | Several documents claimed `nk_ad.c` is "not obfuscated"; the truth is "`string_encryption` only, no semantic pass, entry symbol randomised per build". Eight places across README / ARCHITECTURE / FEATURES / index (zh + en) were corrected, and the six names that must stay visible are now listed |
+| Build | Private repo run `45191819853` success (P-3, split include and randomised injection all in one build) |
