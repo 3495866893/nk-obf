@@ -140,6 +140,29 @@ runner 上 `disk & deps` 步骤会停掉 `systemd-oomd` 并挂 16 GB swap，同�
 
 **为什么不能干脆关掉 `anti_debugging` pass**：关掉之后注入点没了，但实测产物在静态初始化阶段 100% CPU 死循环、输出 0 字节。所以 pass 永远开着，「关闭反调试」只换实现。
 
+### v12 加固（P/S 系列）
+
+v12 的取舍原则：**能软分的绝不判死，判死的地方不留唯一出口**。六项 P 系列改的是判据的结构与处置路径，S 系列针对模拟执行。
+
+| 编号 | 问题 | 改法 | 档位 |
+| --- | --- | --- | --- |
+| P-1 | 30+ 个检测点全汇到 `nk_die_r()` 的一句 `_exit(NK_EXIT)`，改一条 `bl` 就全线失效 | `nk_panic_ill()`（`brk #0x1` → SIGILL）/ `nk_panic_spin()`（伪装 ANR，忙等 5 秒后 exit，自带超时）/ `nk_panic_exit()`（裸 `svc #0` exit_group），`nk_fatal_poly()` 按 `g_panic_n % 3` 轮换 | 机制（消除唯一处置点） |
+| P-2 | 看门狗 pid 被回收复用后可冒充 | `nk_wd_reap()` 回收僵尸 + `kill(pid,0)` 探活；`nk_peer_verify()` 用 `/proc/<pid>/stat` 第 22 域 starttime 校验身份 | 软分（避免误杀加固壳 / 厂商性能守护） |
+| P-3 | 自哈希只覆盖 `.text` 前 1 MB | `nk_seg_verify()` 切 8 段轮转，1.5 秒一段、12 秒覆盖全量，单轮成本 1/8；首轮只采样不比对 | 硬证据 |
+| P-4 | 判据靠枚举已知字符串 | `nk_struct_scan()` 按结构判定可执行映射的合法性；`nk_thread_anomaly()` 改成「总数 + 白名单外计数 > 12」 | 软分 |
+| P-5 | 只伪造 `/proc` 一条通道就成立 | `nk_cross_conflict()` 比对裸 `svc #0` 的 `getppid`(173) 与 `/proc/self/status` 的 `PPid` | 软分 |
+| P-6 | 5 处各自 `malloc(256 KB)` 全扫 maps | `nk_vma_t` + `nk_vma_refresh()`：1 MB 单次读、`sscanf("%lx-%lx %7s %*s %*s %*s %n")` 解析，`g_vma_gen` 保证同轮幂等 | 机制（单一数据源） |
+| S-1 | 微架构判据直接判死 | 只翻 `g_uarch_flags` 位 | 软分 |
+| S-2 | 写死 24 MHz / 19.2 MHz 跨不了 SoC | 构造函数里 `nk_cntvct_calibrate()` 用两个短窗口标定 `cntvct` / `CLOCK_MONOTONIC` 比例，`nk_uarch_update()` 只测漂移，相对偏差 > 35% 置位 | 软分 |
+| S-4 | 模拟器的 syscall 分发表伪装 `ENOSYS` | `nk_syscall_semantic()` 探 0x7fff / 0x0e00 / 0x3a00，返回既非 `-ENOSYS`(-38) 也非 `-EPERM`(-1) 记分 | 软分 |
+| S-6 | 缓存 fd 会自占槽位 | 逐槽 `perf_event_open` 后立即 close，统计可用槽数（< 3 记分），绝不缓存 fd；仅在检出 root 框架时执行 | 软分 |
+
+P-4 用的两组常量：路径白名单前缀 `/system/`、`/system_ext/`、`/vendor/`、`/apex/`、`/product/`、`/odm/`、`/data/app/`、`/data/data/`、`/data/user/`、`/data/dalvik-cache/`、`/data/local/`、`/mnt/`、`[`；ART JIT 的 `/memfd:` 前缀是 `jit-cache`、`jit-zygote`、`jit_zygote`、`jit_cache`，命中即放行。
+
+接线：`nk_tool_scan(!early)` 依次跑 `nk_seg_verify → nk_struct_scan → nk_peer_verify → nk_cross_conflict → nk_uarch_update → nk_syscall_semantic → nk_behavior_scan`；低频的 `nk_thread_anomaly` / `nk_hwbp_slot_count` 放进 60 秒一次的行为检查；看门狗线程每轮跑 `nk_wd_reap + nk_seg_verify`。
+
+自混淆的边界在 v12 定死：`nk_ad.c` 只过 `string_encryption`（`ci/nk-self.toml`），语义类 pass 一个不碰 —— 7 个 pass 全上会在构造函数里挂死（事故链条见 [CHANGELOG.md](CHANGELOG.md) 阶段 15 教训 1）。
+
 ## CI 缓存与 Release 分发
 
 ### 三层缓存
