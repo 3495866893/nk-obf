@@ -90,7 +90,7 @@ static int nk_emu_auxv(void) {
     }
     if (sysinfo == 0) { nk_dbg("nk_ad[emu] auxv no vDSO\n"); return 1; }
     if (hwcap == 0)   { nk_dbg("nk_ad[emu] auxv hwcap=0\n"); return 1; }
-    if (platform == 0 || random == 0) nk_soft("auxv-platform");
+    if (platform == 0 || random == 0) nk_emu_hit(0, "auxv-platform");
     return 0;
 }
 
