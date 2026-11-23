@@ -122,8 +122,32 @@ Driven by the three review documents supplied by the owner:
 - Docs: `docs/zh/` and `docs/en/` with eight pages each (index / FEATURES / USAGE / ARCHITECTURE / COMPATIBILITY / CHANGELOG / RELEASES / CREDITS), plus bilingual `README.md` / `README.en.md` and a step-by-step `DEPLOY.md`.
 - Two subagents proofread every page, then a script re-audited them: balanced code fences, no skipped heading levels, every relative link resolvable, zero hits for the old codename, no mojibake, no leftover placeholders.
 - **License correction**: `src/`, `ci/` and `kit.tar.gz` derive from **OLLVM-Next (AGPL-3.0)**, so the previous MIT license was wrong; it is now "plugin AGPL-3.0 + both GUIs and docs MIT", with a licensing section in both `CREDITS.md` files.
-- Released `v1.0`: `NKBuild-mobile-1.0-kami.apk` + `NKBuild-1.0-win64.exe`; the phone shows `v1.0 (versionCode 20)` and the about page renders `NK / OLLVM-NEXT / 新一代混淆` in large type.
+- Released `v1.0`: `NKBuild-mobile-1.0-kami.apk` + `NKBuild-1.0-win64.exe`; the phone shows `v1.0 (versionCode 20)` and the about page renders `NK / OLLVM-NEXT` with the tagline "a new generation of obfuscation" in large type.
 - Pre-public audit: **no real PAT anywhere in the repo** (only `ghp_xxxx…` placeholders in the deploy guide); the private client project was removed; the sample signing password and XL test keys are called out in `CREDITS` as sample values to replace.
+
+## Phase 15 · Anti-debug hardening v12
+
+`ci/nk_ad.c` grew from 64,441 bytes to roughly 76,962 bytes (1,933 lines). The round started from a static review: 30+ detection points all funnelled into a single `_exit(NK_EXIT)` inside `nk_die_r()`, so patching that one `bl` into a `ret` in `.text` disabled every check at once — and several criteria still only enumerated known strings.
+
+| Item | Problem | Change |
+|---|---|---|
+| P-1 | One exit for everything | Added `nk_panic_ill()` (`brk #0x1` → SIGILL), `nk_panic_spin()` (fake ANR: 5 s busy-wait then exit, self-timing so it never hangs forever) and `nk_panic_exit()` (raw `svc #0` exit_group); `nk_fatal_poly()` rotates them by `g_panic_n % 3`, so no single disposal site exists statically |
+| P-2 | The watchdog process can be impersonated | Main process now runs `nk_wd_reap()` (`waitpid(WNOHANG)` zombie reaping + `kill(pid,0)` liveness) and `nk_peer_verify()` (identity from field 22 starttime of `/proc/<pid>/stat`, so a recycled pid cannot pose as the watchdog); both only record a soft score instead of killing |
+| P-3 | Self-hash covered only the first 1 MB | `nk_seg_verify()` splits `.text` into 8 rotating segments — one per 1.5 s, full coverage in 12 s — so the coverage ceiling is gone and per-round cost drops to 1/8; the first round only samples |
+| P-4 | Criteria still enumerated known strings | `nk_struct_scan()` walks executable mappings and judges by structure (path whitelist prefixes, a ` (deleted)` suffix, `/memfd:` without an ART JIT prefix); `nk_thread_anomaly()` became "total + off-whitelist count > 12", which renaming cannot dodge; everything stays a soft score |
+| P-5 | One forged channel was enough | `nk_cross_conflict()` compares `getppid`(173) taken by raw `svc #0` against `PPid` from `/proc/self/status`; a mismatch records a soft score, so both channels must be forged at once |
+| P-6 | Five places each `malloc(256 KB)` and scanned maps | New `nk_vma_t` + `nk_vma_refresh()`: one 1 MB read of `/proc/self/maps`, parsed with `sscanf("%lx-%lx %7s %*s %*s %*s %n")` into lo/hi/perm/path, carrying generation `g_vma_gen` so it is idempotent within a round; structured criteria consume that single copy |
+| S-1 | Microarchitectural criteria killed outright | Now only sets bits in `g_uarch_flags` |
+| S-2 | Hard-coded 24 MHz / 19.2 MHz cannot cross SoCs | `nk_cntvct_calibrate()` runs in a constructor (before any business code) and calibrates the local `cntvct`-to-`CLOCK_MONOTONIC` ratio over two short windows; `nk_uarch_update()` then only measures drift and flags above 35% relative deviation |
+| S-4 | Lightweight emulator syscall tables | `nk_syscall_semantic()` probes three syscall numbers arm64 does not implement (0x7fff / 0x0e00 / 0x3a00); a return that is neither `-ENOSYS`(-38) nor `-EPERM`(-1) records a soft score — an emulator's dispatch table breaks at the edges first |
+| S-6 | Caching the fd occupies the slot it measures | `nk_hwbp_slot_count()` opens and immediately closes `perf_event_open` per slot, counting how many hardware breakpoint slots really work (< 3 records a soft score), never caching an fd; it only runs once a root framework is detected, since `untrusted_app` is refused by SELinux |
+
+Wiring: `nk_tool_scan(!early)` now runs `nk_seg_verify → nk_struct_scan → nk_peer_verify → nk_cross_conflict → nk_uarch_update → nk_syscall_semantic → nk_behavior_scan` in that order; the low-frequency items `nk_thread_anomaly` / `nk_hwbp_slot_count` moved into the 60-second behavior check so the 1.5-second round stays cheap; the watchdog thread runs `nk_wd_reap + nk_seg_verify` every round.
+
+### Lessons
+
+1. **Obfuscating the anti-debug module itself hangs the process at startup.** Running `ci/nk_ad.c` through all seven passes (bcf / indirect_branch / split_blocks / flattening / constant_encryption / substitution / string_encryption) produced zero output and a hang: `debuggerd -b` showed `nanosleep ← usleep ← our constructor ← __dl_soinfo::call_constructors`, `nk_ad.log` was completely empty, `RC=124`, reproducible 3/3. Restricting the file to `string_encryption` only (`nk-self.toml`) restored normal startup. Rule: **self-obfuscation is string encryption only — semantic passes never touch `nk_ad.c`.**
+2. **Quantified plaintext leak scan.** Before hardening: `nk_ad` 79 hits, `__nk_ad_check` 1, `TracerPid` 2, `frida` 23, `lsposed` 4. After: `nk_ad` 1 (the log path only), `__nk_ad_check` 0, `TracerPid` 0, `frida` 0, `lsposed` 0.
 
 ---
 
