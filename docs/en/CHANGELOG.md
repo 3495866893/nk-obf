@@ -2,7 +2,7 @@
 
 > Written from the moment the project was first requested ("build me NKBuild") up to the v1.0 public release.
 > Timeline starts 2026-11-21.
-> Versioning: development used internal numbers (1.1–1.18); there is exactly **one public release line, `v1.0`** (versionCode 20).
+> Versioning: development used internal numbers (1.1–1.18); the public line is **`v1.0` plus its incremental patch `v1.0.2`** (versionCode 20).
 
 ---
 
@@ -188,3 +188,20 @@ No version bump (still 1.0.2 / versionCode 22); only the Release assets are repl
 | Split files | `ci/nk_ad.c` went from 2,099 lines to a shell (headers + eight `#include "nk_ad_parts/NN_*.inc"`) plus eight numbered parts, keeping the original order so the token stream is unchanged |
 | Documentation fix | Several documents claimed `nk_ad.c` is "not obfuscated"; the truth is "`string_encryption` only, no semantic pass, entry symbol randomised per build". Eight places across README / ARCHITECTURE / FEATURES / index (zh + en) were corrected, and the six names that must stay visible are now listed |
 | Build | Private repo run `45191819853` success (P-3, split include and randomised injection all in one build) |
+
+## Phase 15.3 · v12.2: E / N / Q series
+
+Still 1.0.2, no version bump.
+
+| Item | Problem | Change | Grade |
+| --- | --- | --- | --- |
+| E-2 | Only `TracerPid` was read, so a watchdog already seized by another tracer looked idle | `nk_wd_reseize()`: the main process reverse-`PTRACE_SEIZE`s the watchdog → `PTRACE_INTERRUPT` → `wait4(WNOHANG)` proves it is schedulable → `DETACH`. `EPERM` means someone else holds it (`wd-seized-by-other`), `ESRCH` means it is gone (`wd-gone`) | soft score |
+| E-4 | `g_uarch_flags` was set but never consumed — dead code | `nk_uarch_consume()`: timer-ratio drift **and** two real emulation evidences → hard action; drift alone scores once (power-saving governors drift on real devices too) | soft + combined hard |
+| E-6 | Emulator detection relied on file contents only | `nk_prop_get()` reads `ro.kernel.qemu` / `ro.hardware` / `ro.product.cpu.abi` through `__system_property_get` as a second source | soft score |
+| N-1 | No visibility into an installed seccomp filter | `prctl(PR_GET_SECCOMP)` self-check, log only (Android 8+ ships filters; scoring would always fire) | log only |
+| N-2 | PAC / BTI availability unknown | `getauxval(AT_HWCAP/AT_HWCAP2)` reads `HWCAP_PACA(1<<30)`, `HWCAP_PACG(1<<31)`, `HWCAP2_BTI(1<<17)`; log only | log only |
+| N-3 | A relocated binary runs just as well | `readlink("/proc/self/exe")` and require one of `/data/app/`, `/data/local/`, `/data/data/`, `/data/user/`, `/system/`, `/vendor/`, `/apex/`, `/product/`, `/odm/`, `/mnt/`; otherwise `self-path-outside-install` | soft score |
+| Q-3 | In the first second after fork `g_wd_pid` is not yet recorded, so our own watchdog looked foreign | For the first 8 s, `g_wd_pid<=0` and comm `nk-wd` → pass (`nk_boot_age_ms()`) | false-positive guard |
+| Q-6 | A maps buffer that filled up made "missing entry" look like evidence | New `g_vma_trunc`: when truncated, `exec-suspicious-path` is not scored | false-positive guard |
+
+Files: new `ci/nk_ad_parts/09_nk_env_probe.inc` (5.1 KB); the shell gained one include; nine parts in total.
