@@ -2,7 +2,7 @@
 
 > 这份记录从「主人第一次说『做个 NKBuild』」开始，按阶段列出每一次真实改动、每个踩过的坑和最终数字。
 > 时间线：2026-11-21 起。
-> 版本号约定：开发期用过 1.1–1.18 这类小号，**对外只有发布版 `v1.0`** 一个版本号（versionCode 20）。
+> 版本号约定：开发期用过 1.1–1.18 这类小号，**对外是 `v1.0` 与其增量补丁 `v1.0.2`**（versionCode 20 / 22）。
 
 ---
 
@@ -188,3 +188,20 @@
 | 单文件拆分 | `ci/nk_ad.c` 2,099 行 → 壳（头 + 8 条 `#include "nk_ad_parts/NN_*.inc"`）+ 8 个分块，编号按原始顺序，token 流等价 |
 | 文档纠错 | 之前多篇文档把 `nk_ad.c` 说成完全不混淆，实际是「只过 `string_encryption`、语义 pass 全不碰、入口符号每次随机」。README / ARCHITECTURE / FEATURES / index 中英共 8 处已改，并补了 6 个必须留名的符号清单 |
 | 构建 | 私有仓 run `45191819853` success（P-3 + 分块 + 随机注入同时生效） |
+
+## 阶段 15.3 · v12.2：E / N / Q 系列（反调试补完）
+
+仍属 1.0.2，不升版本号。
+
+| 编号 | 问题 | 改法 | 档位 |
+| --- | --- | --- | --- |
+| E-2 | 只看 `/proc/self/status` 的 TracerPid，看门狗被别的 tracer 先占住看不出来 | `nk_wd_reseize()`：主进程反向 `PTRACE_SEIZE(wd)` → `PTRACE_INTERRUPT` → `wait4(WNOHANG)` 证明可调度 → `DETACH`。`EPERM` = 已被别人占（软分 `wd-seized-by-other`），`ESRCH` = 进程没了（`wd-gone`） | 软分 |
+| E-4 | `g_uarch_flags` 只翻位、没有任何消费点，等于死代码 | `nk_uarch_consume()`：定时器比例漂移 **且** 已有 2 条真·模拟器证据 → 才硬处置；单条漂移只记一次软分（省电调频会让正常机也漂） | 软分 + 合判硬 |
+| E-6 | 模拟器判定只依赖文件内容，伪造成本低 | `nk_prop_get()` 走 `dlsym("__system_property_get")` 读 `ro.kernel.qemu` / `ro.hardware` / `ro.product.cpu.abi` 作第二信源 | 软分 |
+| N-1 | 不知道进程是否被挂了 seccomp 过滤层 | `prctl(PR_GET_SECCOMP)` 自检，只写日志（Android 8+ 自带过滤器，打分必误杀） | 仅日志 |
+| N-2 | PAC / BTI 可用性未知 | `getauxval(AT_HWCAP/AT_HWCAP2)` 读 `HWCAP_PACA(1<<30)` / `HWCAP_PACG(1<<31)` / `HWCAP2_BTI(1<<17)`，只写日志 | 仅日志 |
+| N-3 | 自身二进制被搬到别处也照样跑 | `readlink("/proc/self/exe")` 校验是否落在 `/data/app/`、`/data/local/`、`/data/data/`、`/data/user/`、`/system/`、`/vendor/`、`/apex/`、`/product/`、`/odm/`、`/mnt/` 之内，否则软分 `self-path-outside-install` | 软分 |
+| Q-3 | 看门狗刚 fork 那一两秒 `g_wd_pid` 还没落盘，自己人会被当成外来 tracer | 启动后 8 秒内、`g_wd_pid<=0` 且 comm 为 `nk-wd` → 放过（`nk_boot_age_ms()`） | 防误杀 |
+| Q-6 | maps 读满 1 MB 或条目打满 320 时，把「缺条目」当成证据 | 新增 `g_vma_trunc`，截断时结构化判据（`exec-suspicious-path`）自动降级不记分 | 防误杀 |
+
+文件：新增 `ci/nk_ad_parts/09_nk_env_probe.inc`（5.1 KB），`nk_ad.c` 壳多一条 include；分块总数 9。
