@@ -160,3 +160,19 @@ Wiring: `nk_tool_scan(!early)` now runs `nk_seg_verify → nk_struct_scan → nk
 | Reference artifact | 21,145,056 B, `.text` 16,086,400 B, `brk 0 / udf 0` |
 | Cold-start reliability | 100/100 without hang (RMX3888), 100/100 (RMX3300) |
 | Size after obfuscation | 2–3× the original; steady-state cost −10% to −40% |
+
+## Phase 15.1 · v12.1 (S-3 / S-5) and 1.0.2 release
+
+Completes the remaining S-series checks. Both are "looks like an emulator" corroboration: soft score only, never fatal.
+
+| ID | Check | Method |
+| --- | --- | --- |
+| S-3 | Cache side-channel ratio | 4 MB buffer; the same pages walked sequentially and in shuffled order, 512 steps each, best of 3 rounds. Random below 1.08x sequential flags `cache-no-penalty`; per-access random latency below 6 ns flags `cache-latency-too-low`. Seed differs every round, so the access sequence is not statically predictable |
+| S-5 | cpuinfo / MIDR consistency | Missing `implementer` in `/proc/cpuinfo` flags `cpuinfo-no-implementer`; qemu/goldfish/ranchu/GenuineIntel tokens flag `cpuinfo-emulator-token`; `processor` line count differing from `sysconf(_SC_NPROCESSORS_ONLN)` by more than 2x flags `cpu-count-mismatch`; `MIDR_EL1` zero flags `midr-zero`, an implementer outside the real ARM vendor set (0x41/0x48/0x4d/0x51/0x53/0x61/0x6e) flags `midr-implausible` |
+
+| Item | Change |
+| --- | --- |
+| `ci/nk_ad.c` | 77,129 → 81,824 bytes (2,039 lines); adds `nk_cache_ratio()` / `nk_cpuinfo_conflict()` / `nk_ns_now()` |
+| Desktop NKBuild | 1.0.0 → **1.0.2** (version in title bar and brand line) |
+| Mobile NKBuild | 1.0 → **1.0.2** (versionCode 22) |
+| Build | Private repo run `45178198836` success, 2,097,528 bytes; plaintext leaks still `nk_ad` 1 / `__nk_ad_check` 0 / `TracerPid` 0 / `frida` 0 |
