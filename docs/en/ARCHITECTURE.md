@@ -17,7 +17,7 @@ LLVM IR
 rewritten IR (ciphertext constants, flattened state machines, call __nk_ad_check())
    │  LLVM 21 backend
    ▼
-object files (.o) ──link──► .so / executable ◄── nk_ad_extra.o (separate, unobfuscated)
+object files (.o) ──link──► .so / executable ◄── nk_ad_extra.o (separate, not passed through the full pass set)
 ```
 
 The dividing line is deliberate: **the obfuscator never writes anti-debug logic into IR.** IR receives one external call per function entry; the implementation is a plain C file compiled and linked on its own. The consequence is that a broken obfuscation pass can never break the watchdog's own control flow, and adding a detection check does not require regenerating IR.
@@ -118,7 +118,7 @@ The same tiering removes the trap problem. `flattening` marks a switch default `
 
 ## The self-obfuscation boundary of `nk_ad.c`
 
-`ci/nk_ad.c` is compiled on its own into `nk_ad_extra.o`, and **it is not "unobfuscated" — it goes through exactly one pass, `string_encryption`** (`ci/nk-self.toml`). The boundary:
+`ci/nk_ad.c` is compiled on its own into `nk_ad_extra.o`, and **it is not "not passed through the full pass set" — it goes through exactly one pass, `string_encryption`** (`ci/nk-self.toml`). The boundary:
 
 1. **Strings must be encrypted.** Before hardening the shipped binary carried `nk_ad` 79 times, `TracerPid` 2, `frida` 23 as plaintext; one `strings` run listed the whole detection set. With `string_encryption` alone those counts are 1 / 0 / 0, and the single remaining `nk_ad` hit is the `/data/local/tmp/nk_ad.log` path.
 2. **No semantic pass, ever.** `bcf` / `indirect_branch` / `split_blocks` / `flattening` / `constant_encryption` / `substitution` together make the artifact spin inside a **global constructor** (`debuggerd`: `nanosleep ← usleep ← call_constructors`, `State: S`, `wchan=__arm64_sys_nanosleep`, zero log lines). Compiling `nk_ad.c` as part of `SRCS` also produces `Undefined temporary symbol .L_vXXXX`.
