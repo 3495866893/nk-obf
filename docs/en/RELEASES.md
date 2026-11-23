@@ -6,8 +6,8 @@ Where to download, what each asset is, how the license-key layer behaves, and ho
 
 | Artifact | Location | Size | Notes |
 |---|---|---|---|
-| Android APK | Release `v1.0` → `NKBuild-mobile-1.0-kami.apk` | 9.98 MB | Android 8.0+, signed with a pinned key, upgrades in place |
-| Desktop EXE | Release `v1.0` → `NKBuild-1.0-win64.exe` | 13.35 MB | Windows x64, single file, no install |
+| Android APK | Release `v1.0.2` → `NKBuild-mobile-1.0.2-kami.apk` | 9.98 MB | Android 8.0+, signed with a pinned key, upgrades in place |
+| Desktop EXE | Release `v1.0.2` → `NKBuild-1.0.2-win64.exe` | 13.35 MB | Windows x64, single file, no install |
 | Example obfuscated binary | Release `nk-builds` → `lucifer` | 21,145,056 B | Overwritten by every build (`--clobber`) |
 | Toolchain bundle | Release `nk-builds` → `nk-toolchain.tar.gz` | — | The pinned clang 21 + lld + sysroot tree used by the cached builds |
 | Prebuilt LLVM | Release `llvm-build-21.1.8` → `llvm-build.tar.zst` | 232 MB | CI cache; does not consume artifact quota |
@@ -48,7 +48,7 @@ Fastest path: make `lic_ok()` return `True` and leave the rest alone.
 - Desktop: the filename carries the version, `NKBuild-<version>-win64.exe` (ASCII — GitHub strips non-ASCII names).
 - Output binary: `<out_name>.cfg`, published by CI as the `lucifer` asset of Release `nk-builds`.
 
-## Checksums (Release `v1.0`)
+## Checksums (Release `v1.0.2`)
 
 | File | SHA256 |
 |---|---|
@@ -64,14 +64,14 @@ Fastest path: make `lic_ok()` return `True` and leave the rest alone.
 | 3 | Runner | `build lucifer` compiles unit by unit, links, strips; the reference run took **41 s** |
 | 4 | Release `nk-builds` | `<out_name>.cfg` and `nk-toolchain.tar.gz` are published with `--clobber`, so each build overwrites the previous pair |
 | 5 | Client | Polls the run, downloads the asset, stores it locally (`Download/NKBuild` on Android) |
-| 6 | Release `v1.0` | Client installers are attached manually, once per release |
+| 6 | Release `v1.0.2` | Client installers are attached manually, once per release |
 
 The two distribution channels serve different purposes and must not be confused:
 
 | Channel | Contents | Lifetime |
 |---|---|---|
 | Release `nk-builds` | Every build's output binary and toolchain bundle | Indefinite, overwritten per build |
-| Release `v1.0` | Client installers (`NKBuild-mobile-1.0-kami.apk`, `NKBuild-1.0-win64.exe`) | Indefinite, replaced per release |
+| Release `v1.0.2` | Client installers (`NKBuild-mobile-1.0.2-kami.apk`, `NKBuild-1.0.2-win64.exe`) | Indefinite, replaced per release |
 | Release `llvm-build-21.1.8` | `llvm-build.tar.zst` (232 MB) — the CI compiler cache | Indefinite |
 | Workflow artifacts | Small final artifacts only | `retention-days: 3` |
 
