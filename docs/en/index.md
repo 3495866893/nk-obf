@@ -44,7 +44,7 @@ The tree was cleaned before publication: `proj/` and `projects/myproj/` (37.4 Mi
 
 ## Four-step quick start
 
-1. **Get a client.** Windows: `NKBuild-1.0-win64.exe` (13.35 MB) from Release v1.0. Android: `NKBuild-mobile-1.0-kami.apk` (9.98 MB). Or drive the workflow from the command line — see [USAGE.md](USAGE.md).
+1. **Get a client.** Windows: `NKBuild-1.0.2-win64.exe` (13.35 MB) from Release v1.0.2. Android: `NKBuild-mobile-1.0-kami.apk` (9.98 MB). Or drive the workflow from the command line — see [USAGE.md](USAGE.md).
 2. **Point it at a source directory.** The client scans compile units, headers and resources separately; on Android the precheck page flags files that will break the build (>70 MB, spaces or non-ASCII in unit filenames, >60 compile units) before anything is uploaded.
 3. **Choose passes.** Either tick the 16 toggles or load a TOML; the client generates `ci/ui-<proj>.toml` and uploads it with the sources.
 4. **Build and collect.** Dispatch `build-obf.yml`, wait for `build lucifer`, download `<out>.cfg`; the desktop client drops it in its resolved output directory, the Android client in `Download/NKBuild` with a one-tap install.
@@ -67,13 +67,13 @@ gh workflow run build-obf.yml \
 | Compiler / plugin host | LLVM 21 (CI pins `21.1.8`) |
 | Android toolchain | NDK r29, `minSdk 26` |
 | Passes | 16 total: 8 core on by default, 5 experimental off, 3 disabled (not selectable) |
-| Runtime watchdog | `ci/nk_ad.c`, generation v11.1 |
+| Runtime watchdog | `ci/nk_ad.c`, generation v12.2 |
 | End-to-end CI | 17.6 min → **1.8 min** after caching |
 | Last reference build | run `45041678195`, `build lucifer` **41 s**, artifact **21,145,056 B** |
 | Artifact sha256 | `6753A4C83F20A5FABEDC9903C1DD9741F23E5FA5E685A6534A20D14E5DF26F34` |
 | Code section | 16,086,400 B, `brk 0 / udf 0` |
 | Repository size | 294 files / 24.9 MiB |
-| Current release | v1.0 |
+| Current release | v1.0.2 |
 
 ## Documentation index
 
