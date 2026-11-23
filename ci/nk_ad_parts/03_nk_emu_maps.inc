@@ -13,8 +13,8 @@ static int nk_emu_maps(void) {
     int has_vdso  = (strstr(buf, "[vdso]") != NULL);
     nk_dbg("nk_ad[emu] maps %d B full=%d stack=%d vdso=%d\n", n, full, has_stack, has_vdso);
     if (!full) {                      /* 只读到一部分就不下结论 */
-        if (!has_stack) nk_soft("no-stack");
-        if (!has_vdso)  nk_soft("no-vdso");
+        if (!has_stack) nk_emu_hit(2, "no-stack");
+        if (!has_vdso)  nk_emu_hit(3, "no-vdso");
     }
     free(buf);
     return 0;
