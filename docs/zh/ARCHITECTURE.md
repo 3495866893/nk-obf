@@ -1,6 +1,6 @@
 # 架构：从源码目录到加固产物
 
-> 本篇讲：五段流水线怎么串起来、16 个 pass 在 IR 上的固定执行顺序、大 TU 的三级降级为什么长这样、`nk_ad.c` 为什么不参与混淆、CI 缓存与 Release 怎么分工、断点续接与任务历史用什么数据结构。
+> 本篇讲：五段流水线怎么串起来、16 个 pass 在 IR 上的固定执行顺序、大 TU 的三级降级为什么长这样、`nk_ad.c` 的自混淆边界、CI 缓存与 Release 怎么分工、断点续接与任务历史用什么数据结构。
 
 ## 分层视图
 
@@ -122,19 +122,24 @@ ppsz=$(timeout 300 "$CLANG" "${CF[@]}" -E -P "$f" 2>/dev/null | wc -c)
 
 runner 上 `disk & deps` 步骤会停掉 `systemd-oomd` 并挂 16 GB swap，同时 `overcommit_memory=1`。实测 `imgui.cpp` 在 `flattening`/`indirect` 下峰值能到 10 GB+，而 runner 可用内存会掉到 **119–398 MB**。这两项只是保险，真正解决问题的是降级策略。
 
-## `nk_ad.c` 为什么不参与混淆
+## `nk_ad.c` 的自混淆边界
 
-`ci/nk_ad.c` 单独编译成 `nk_ad_extra.o`，**不带 `-fpass-plugin`**，再进链接列表。四条理由：
+`ci/nk_ad.c` 单独编译成 `nk_ad_extra.o` 再进链接列表，**不是「完全不混淆」，而是只过一道 `string_encryption`**（`ci/nk-self.toml`）。边界是这么定的：
 
-1. **自指问题**。一旦被混淆，「检查自己有没有被改」这件事本身就要过状态机；`flattening` 会改变代码段大小与布局，哈希基线自己就对不上。
-2. **实测会炸**。把 `nk_ad.c` 丢进 `SRCS` 参与混淆，直接产生 `Undefined temporary symbol .L_vXXXX` 汇编错误。
-3. **可调试**。反调试是唯一需要在真机上反复看日志的部分，保持原样才能读栈、对源码行。
-4. **可整体关闭**。`NK_AD=0` 时用 `-DNK_AD_OFF` 编成空实现，`__nk_ad_check()` 与 `nk_die_r()` 两处提前返回，文件其余部分保留（这样 `anti_debugging` 注入的调用点仍然有定义）。
+1. **字符串必须加密**。加固前成品里 `nk_ad` 明文 79 处、`TracerPid` 2 处、`frida` 23 处，`strings` 一跑就把检测清单读完了。现在只上 `string_encryption`，这几个计数降到 1 / 0 / 0（剩下的 1 处是 `/data/local/tmp/nk_ad.log` 日志路径）。
+2. **语义类 pass 一个不能上**。`bcf` / `indirect_branch` / `split_blocks` / `flattening` / `constant_encryption` / `substitution` 全部叠上去，实测产物在**全局构造函数里 `usleep` 死循环**（`debuggerd` 栈：`nanosleep ← usleep ← call_constructors`，`State: S`、`wchan=__arm64_sys_nanosleep`、日志 0 行）。另外单独编译时若把 `nk_ad.c` 丢进 `SRCS` 一起过 pass，会出 `Undefined temporary symbol .L_vXXXX` 汇编错误。
+3. **入口符号每次构建随机**。`build-lucifer.sh` 生成 `NK_AD_SYM="__nk_$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')_g"` 并 export，插件侧用 `getenv("NK_AD_SYM")` 取名字 `getOrInsertFunction`，运行时侧用 `#ifndef NK_AD_SYM / #define NK_AD_SYM __nk_ad_check` 兜默认值 —— 成品里搜不到固定符号名。
+4. **`NK_SKIP_ADB=1` 防自指**。给 `nk_ad.c` 自己过 pass 时，`anti_debugging` 会往它的每个函数入口再插一次 `call <NK_AD_SYM>()`，递归且无意义；插件在 `runOnFunction` 开头读这个变量直接返回。
+5. **必须留名的符号**。IR 里内联的 ART 表校验要链接到 `__nk_art_lo` / `__nk_art_hi` / `__nk_vm` / `__nk_ad_panic`；P-3 编译期基线回填要写进 `__nk_base_hash` / `__nk_base_exempt`。这 6 个名字是设计上的例外，其余全部随机或加密。
+6. **可整体关闭**。`NK_AD=0` 时用 `-DNK_AD_OFF` 编成空实现，`nk_die_r()` 与 `NK_AD_SYM()` 两处提前返回，文件其余部分保留（注入点仍然有定义）。
 
 ```bash
-# 反调试模块：单独编译，不经混淆
+# 反调试模块：单独编译，只过 string_encryption（跳过 flattening 防炸内存）
+NK_AD_SYM="__nk_$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')_g"
+NK_SKIP_ADB=1 NK=1 NK_CONFIG="$PWD/nk/config/presets/nk-self.toml" \
 "$CLANG" -x c --target=aarch64-linux-android21 --sysroot="$SYS" \
-  "-resource-dir=$TC/lib/clang/21" -O2 -fPIE -fno-ident $NK_AD_DEF \
+  "-resource-dir=$TC/lib/clang/21" -O2 -fPIE -fno-ident -fvisibility=hidden \
+  "-DNK_AD_SYM=$NK_AD_SYM" -fpass-plugin="$NK_PLUG" \
   -c "$PWD/ci/nk_ad.c" -o "$PWD/nk_ad_extra.o"
 ```
 
@@ -161,7 +166,12 @@ P-4 用的两组常量：路径白名单前缀 `/system/`、`/system_ext/`、`/v
 
 接线：`nk_tool_scan(!early)` 依次跑 `nk_seg_verify → nk_struct_scan → nk_peer_verify → nk_cross_conflict → nk_uarch_update → nk_syscall_semantic → nk_behavior_scan`；低频的 `nk_thread_anomaly` / `nk_hwbp_slot_count` 放进 60 秒一次的行为检查；看门狗线程每轮跑 `nk_wd_reap + nk_seg_verify`。
 
-自混淆的边界在 v12 定死：`nk_ad.c` 只过 `string_encryption`（`ci/nk-self.toml`），语义类 pass 一个不碰 —— 7 个 pass 全上会在构造函数里挂死（事故链条见 [CHANGELOG.md](CHANGELOG.md) 阶段 15 教训 1）。
+v12 之后又加了两层：
+
+- **P-3 编译期基线**：链接时先不 strip，跑 `ci/tools/nk_patch_baseline.py` 把主代码段按 64 段逐段 FNV-1a 写进 `__nk_base_hash[]`，命中重定位目标的段在 `__nk_base_exempt[]` 里置位；再 `brand`、最后 `llvm-strip --strip-all`。运行时 `nk_cbase_check()` 每轮只比对一段，12 秒覆盖全量，改任何一段都会撞 `nk_ad: text chunk differs from build baseline`。
+- **注入位置随机化**：插件把「函数名 FNV-1a + `NK_AD_SEED`」混成 `nkH`，`nkH % 100 >= 62` 的函数不插（约 38% 跳过），插入点在入口/第 2/第 3 个基本块之间轮换，ART 表校验只在一半函数展开 —— 成品里找不到整齐划一的注入模式。
+
+文件本身也从 2,099 行单文件拆成了壳 + 8 个分块：`ci/nk_ad.c` 只剩头文件与 `#include "nk_ad_parts/NN_*.inc"`，分块按原始顺序编号，`include` 顺序 = 原文件顺序，token 流等价（这样拆分不引入任何新错误）。
 
 ## CI 缓存与 Release 分发
 
