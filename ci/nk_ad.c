@@ -1444,6 +1444,10 @@ static void nk_time_probe(void)
 static unsigned long long g_beh_last;
 static unsigned long long g_beh_boot;
 
+/* v12：行为检查里用到的两个低频判据，定义在后面，这里先声明 */
+static void nk_thread_anomaly(void);
+static void nk_hwbp_slot_count(void);
+
 static void nk_behavior_scan(void)
 {
     struct timespec ts;
