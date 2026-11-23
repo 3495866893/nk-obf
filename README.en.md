@@ -59,7 +59,9 @@ Experimental passes `mba` / `chaos_state_machine` / `vector_obfuscation` / `func
 
 ## Runtime watchdog
 
-`ci/nk_ad.c` is a **deliberately unobfuscated** C file linked into the target. It provides: TracerPid and all-thread scanning, `maps` diffing, libc prologue validation, self and multi-module `.text` hashing, JNI function-table validation, anonymous executable segments, raw `svc #0` self-checks, perf hardware-breakpoint slots, Frida / LSPosed / Zygisk / eDBG / QBDI signatures, uprobe BRK rewriting detection, and root-framework tiering. A hit calls `_exit(97)`; unreadable files fail open — never a false kill.
+`ci/nk_ad.c` is compiled on its own into `nk_ad_extra.o` and linked in (it goes through `string_encryption` only — boundary below). It provides: TracerPid and all-thread scanning, `maps` diffing, libc prologue validation, self and multi-module `.text` hashing, JNI function-table validation, anonymous executable segments, raw `svc #0` self-checks, perf hardware-breakpoint slots, Frida / LSPosed / Zygisk / eDBG / QBDI signatures, uprobe BRK rewriting detection, and root-framework tiering. A hit is delivered through `nk_fatal_poly()` (`brk #0x1`, a fake-ANR spin then exit, or a raw `svc #0` exit, rotated); unreadable files fail open — never a false kill.
+
+**Self-obfuscation boundary:** `nk_ad.c` is fed `ci/nk-self.toml` (`string_encryption` only); semantic passes are never applied — all seven together hang the process inside the constructor. The entry symbol is re-randomised every build (`NK_AD_SYM=__nk_<8 hex>_g`, shared by the plugin and the runtime), and `NK_SKIP_ADB=1` stops the plugin from injecting into the module itself. In the shipped binary the plaintext `nk_ad` count is 1 (the log path) and `__nk_ad_check` / `TracerPid` / `frida` / `lsposed` are all 0.
 
 ## Measured
 
