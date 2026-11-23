@@ -71,7 +71,7 @@ The core 8 are what a normal build runs: two data passes, four control-flow pass
 
 ## Runtime watchdog: `ci/nk_ad.c`
 
-`nk_ad.c` is a plain C file. It is compiled on its own into `nk_ad_extra.o`, linked into the target, and **never obfuscated** — so its behavior cannot be broken by `flattening` or `bcf`, and it can be debugged with an ordinary debugger. Every check runs inside `__nk_ad_check()`; a hit terminates silently with `_exit(97)`.
+`nk_ad.c` is a shell file (eight `#include "nk_ad_parts/NN_*.inc"`, ~2,100 lines in total). It is compiled on its own into `nk_ad_extra.o` and linked into the target, obfuscated with **`string_encryption` only** — semantic passes are never applied, so its behaviour cannot be broken by `flattening` or `bcf`, and the entry symbol is re-randomised every build. Every check runs inside `__nk_ad_check()`; a hit terminates silently with `_exit(97)`.
 
 Two environment variables control it at runtime:
 
