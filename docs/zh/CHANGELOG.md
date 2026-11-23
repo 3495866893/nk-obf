@@ -125,6 +125,30 @@
 - 发布 `v1.0`：`NKBuild-mobile-1.0-kami.apk` + `NKBuild-1.0-win64.exe`，手机上显示 `v1.0（versionCode 20）`，关于页大字号 `NK / OLLVM-NEXT / 新一代混淆`。
 - 公开前自查：仓库内**没有任何真实 PAT**（只有文档里的 `ghp_xxxx…` 占位），删掉私人工程目录，示例签名口令与 XL 测试密钥在 `CREDITS` 里注明「仅供示例，自行更换」。
 
+## 阶段 15 · 反调试 v12 加固
+
+`ci/nk_ad.c` 从 64,441 字节增到约 76,962 字节（1,933 行）。起点是一份静态评估：30 多个检测点全部汇到 `nk_die_r()` 里同一句 `_exit(NK_EXIT)`，在 `.text` 里把那条 `bl` 改成 `ret` 就全线失效；另外几条判据仍停在「枚举已知字符串」的层次。
+
+| 编号 | 问题 | 改法 |
+| --- | --- | --- |
+| P-1 | 处置出口唯一 | 新增 `nk_panic_ill()`（`brk #0x1` → SIGILL）、`nk_panic_spin()`（伪装 ANR：忙等 5 秒后 exit，自带超时，绝不无限挂）、`nk_panic_exit()`（裸 `svc #0` 走 exit_group），由 `nk_fatal_poly()` 按计数器 `g_panic_n % 3` 轮换，静态上不再存在唯一处置点 |
+| P-2 | 看门狗进程可被冒充 | `nk_wd_reap()`（`waitpid(WNOHANG)` 回收僵尸 + `kill(pid,0)` 探活）与 `nk_peer_verify()`（用 `/proc/<pid>/stat` 第 22 域 starttime 校验身份，防 pid 回收复用后冒充）只记软分，不判死 |
+| P-3 | 自哈希只覆盖前 1 MB | `nk_seg_verify()` 把 `.text` 切 8 段轮转校验，1.5 秒一段、12 秒覆盖全量，覆盖窗口上限消失且单轮成本降到 1/8；首轮只采样不比对 |
+| P-4 | 只枚举已知字符串 | `nk_struct_scan()` 改为遍历可执行映射按结构判定（路径白名单前缀、` (deleted)` 后缀、非 ART JIT 前缀的 `/memfd:`）；`nk_thread_anomaly()` 从「枚举坏名字」改成「总数 + 白名单外计数 > 12」，改名绕不过去；全部软分 |
+| P-5 | 只伪造一条通道就成立 | `nk_cross_conflict()` 用裸 `svc #0` 的 `getppid`(173) 与 `/proc/self/status` 的 `PPid` 交叉比对，不一致记软分，必须同时伪造两条通道 |
+| P-6 | 5 处各自 `malloc(256 KB)` 全扫 maps | 新增 `nk_vma_t` + `nk_vma_refresh()`：1 MB 一次性读 `/proc/self/maps`，`sscanf("%lx-%lx %7s %*s %*s %*s %n")` 解析出 lo/hi/perm/path，带代际号 `g_vma_gen` 保证同轮幂等，新的结构化判据统一消费这一份 |
+| S-1 | 微架构判据直接判死 | 改为只翻 `g_uarch_flags` 位 |
+| S-2 | 写死 24 MHz / 19.2 MHz 类固定频率跨不了 SoC | `nk_cntvct_calibrate()` 在构造函数（早于业务）用两个短窗口标定本机 `cntvct` 与 `CLOCK_MONOTONIC` 的比例，之后 `nk_uarch_update()` 只测漂移，相对偏差 > 35% 才置位 |
+| S-4 | 轻量模拟器的 syscall 分发表 | `nk_syscall_semantic()` 抽三个 arm64 未实现的号（0x7fff / 0x0e00 / 0x3a00），返回既不是 `-ENOSYS`(-38) 也不是 `-EPERM`(-1) 就记软分——模拟器的分发表最先在边界崩 |
+| S-6 | 缓存 fd 会自占槽位 | `nk_hwbp_slot_count()` 逐槽 `perf_event_open` 再立刻 close，统计实际可用硬件断点槽数（< 3 记软分），绝不缓存 fd；且只在检出 root 框架时执行（untrusted_app 会被 SELinux 拒） |
+
+接线：`nk_tool_scan(!early)` 里依次跑 `nk_seg_verify → nk_struct_scan → nk_peer_verify → nk_cross_conflict → nk_uarch_update → nk_syscall_semantic → nk_behavior_scan`；低频项 `nk_thread_anomaly` / `nk_hwbp_slot_count` 放进 60 秒一次的行为检查，避开 1.5 秒一轮的开销；看门狗线程每轮跑 `nk_wd_reap + nk_seg_verify`。
+
+### 教训
+
+1. **反调试模块自己过混淆会导致启动卡死**。把 `ci/nk_ad.c` 也送去过 7 个 pass（bcf / indirect_branch / split_blocks / flattening / constant_encryption / substitution / string_encryption）后，成品启动**零输出卡死**：`debuggerd -b` 栈是 `nanosleep ← usleep ← 我们的构造函数 ← __dl_soinfo::call_constructors`，`nk_ad.log` 一行都没有，`RC=124`，3/3 复现。改成只过 `string_encryption`（`nk-self.toml`）后恢复正常。结论：**自混淆只做字符串加密，语义类 pass 一律不碰 `nk_ad.c`**。
+2. **明文泄露扫描的量化结果**。加固前 `nk_ad` 明文 79 处、`__nk_ad_check` 1 处、`TracerPid` 2 处、`frida` 23 处、`lsposed` 4 处；加固后 `nk_ad` 1 处（只剩日志路径）、`__nk_ad_check` 0、`TracerPid` 0、`frida` 0、`lsposed` 0。
+
 ---
 
 ## 数字回顾
