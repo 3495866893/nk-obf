@@ -131,7 +131,7 @@ probability = 100
 
 ## `nk_ad.c` 运行时检测清单
 
-`ci/nk_ad.c` 是一个 1204 行的 C 文件，编成 `nk_ad_extra.o` 后链接进产物。入口 `__nk_ad_check()` 的节奏是：**每 32 次调用才跑一次完整检查**（`(++g_calls & 31u) != 0` 直接返回），另有一个 detached worker 线程每 1.5 秒深检一次，其中「带 sleep / 故意缺页」的模拟器深度测试 4 秒一次。命中硬证据一律 `_exit(97)`，不打印、不弹窗。
+`ci/nk_ad.c` 是一个壳文件（8 条 `#include "nk_ad_parts/NN_*.inc"`，分块合计约 2,100 行），编成 `nk_ad_extra.o` 后链接进产物；它只过 `string_encryption` 一道 pass，入口符号每次构建随机。入口 `__nk_ad_check()` 的节奏是：**每 32 次调用才跑一次完整检查**（`(++g_calls & 31u) != 0` 直接返回），另有一个 detached worker 线程每 1.5 秒深检一次，其中「带 sleep / 故意缺页」的模拟器深度测试 4 秒一次。命中硬证据一律 `_exit(97)`，不打印、不弹窗。
 
 ### 一、反调试
 
