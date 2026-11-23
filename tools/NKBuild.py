@@ -305,7 +305,7 @@ class App(ctk.CTk if ctk else object):
             raise SystemExit("缺少 customtkinter：pip install customtkinter")
         ctk.set_appearance_mode("dark")
         super().__init__()
-        self.title("NKBuild · 云端混淆编译")
+        self.title("NKBuild 1.0.2 · 云端混淆编译")
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         w, h = min(1080, sw - 80), min(820, sh - 100)
         self.geometry("%dx%d+%d+%d" % (w, h, max(0, (sw - w) // 2),
@@ -521,6 +521,8 @@ class App(ctk.CTk if ctk else object):
                      ).pack(side="left")
         col = ctk.CTkFrame(brand, fg_color="transparent")
         col.pack(side="left", padx=(10, 0))
+        ctk.CTkLabel(col, text="v1.0.2 · IR 级混淆 + 运行时看门狗",
+                       text_color=SUBTLE, font=ctk.CTkFont(FONT_UI, 11)).pack(anchor="w")
         ctk.CTkLabel(col, text="OLLVM-NEXT", text_color=TEXT,
                      font=ctk.CTkFont(family=FONT_UI, size=15, weight="bold")
                      ).pack(anchor="w")
