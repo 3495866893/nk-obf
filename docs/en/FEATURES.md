@@ -162,3 +162,22 @@ Reference limits behind these rules: GitHub's git/blob API accepts single files 
 | `brk` / `udf` in disassembly | 0 / 0 |
 | Plaintext `yz.dujiuyue.cn` occurrences | 0 |
 | Plaintext `kami` occurrences | 0 |
+
+## Experimental passes (all 16 passes are selectable)
+
+Eight passes used to be marked experimental or disabled in both clients. They are all selectable now — backed by a
+single-pass CI run on `projects/hello`:
+
+| pass | what it does | CI verdict (single pass) | risk |
+|---|---|---|---|
+| `mba` | bitwise identity substitution | ✅ builds, cfg 1,796,344 B | bigger output, slower compile |
+| `chaos_state_machine` | more aggressive state machine | ✅ builds, 1,801,576 B | can change behaviour; try on a small project first |
+| `vector_obfuscation` | vectorised obfuscation | ✅ builds, 1,802,232 B | large size growth, modest gain |
+| `function_wrapper` | function wrapping | ✅ builds, 1,799,832 B | changes calling conventions; careful with vtables |
+| `function_call_obfuscate` | call-site obfuscation | ✅ builds, 1,804,888 B | crashes are hard to diagnose |
+| `anti_hooking` | inline aarch64 integrity check | ✅ builds, 1,792,456 B | rewrites function bodies; try it alone |
+| `anti_class_dump` | class-dump protection | ✅ builds, 1,791,128 B | meant for Objective-C, mostly a no-op on AArch64 |
+| `objc` | ObjC obfuscation | ✅ builds, 1,797,528 B | a no-op in pure C/C++ projects |
+
+How to use: desktop → *Obfuscation strength → options…*; Android → *混淆* tab, all three groups are tappable, and the
+*满血* preset now means **all 16**. Recommended path: get the core 8 green first, then add experimental passes one at a time.
