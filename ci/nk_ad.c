@@ -375,18 +375,13 @@ static void nk_soft_tool(const char *tag) {
 }
 
 /* ---------- 分块源码：按原顺序 include，单 TU 等价 ---------- */
+
+/* ---------- 分块源码：按原顺序 include，单 TU 等价 ---------- */
+#include "nk_ad_parts/nk_behavior_scan.inc"
+#include "nk_ad_parts/nk_cross_conflict.inc"
+#include "nk_ad_parts/nk_emu_maps.inc"
 #include "nk_ad_parts/nk_emu_prop.inc"
 #include "nk_ad_parts/nk_emu_syscall.inc"
-#include "nk_ad_parts/nk_emu_maps.inc"
 #include "nk_ad_parts/nk_jni_table_ok.inc"
-#include "nk_ad_parts/nk_behavior_scan.inc"
 #include "nk_ad_parts/nk_proc_starttime.inc"
-#include "nk_ad_parts/nk_cross_conflict.inc"
 #include "nk_ad_parts/nk_syscall_semantic.inc"
-#include "nk_ad_parts/02_util.inc"
-#include "nk_ad_parts/03_util.inc"
-#include "nk_ad_parts/04_util.inc"
-#include "nk_ad_parts/05_util.inc"
-#include "nk_ad_parts/06_util.inc"
-#include "nk_ad_parts/07_util.inc"
-#include "nk_ad_parts/08_util.inc"
