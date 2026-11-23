@@ -668,6 +668,11 @@ private fun SetPage(
     haze: HazeState?,
 ) {
     val ctx = LocalContext.current
+    // 版本号从 PackageManager 现取，写死会出现「关于页 1.0.2、检查更新里 1.0」的自相矛盾
+    val localVer = remember {
+        runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "?" }
+            .getOrDefault("?")
+    }
     var token by remember { mutableStateOf(prefs.token) }
     var owner by remember { mutableStateOf(prefs.owner) }
     var repo by remember { mutableStateOf(prefs.repo) }
@@ -782,7 +787,7 @@ private fun SetPage(
                     Text(
                         if (st.updText.isBlank())
                             "云端版本 " + st.cloudVer.ifBlank { prefs.cloudVer.ifBlank { "?" } } +
-                                " · 本地 v1.0"
+                                " · 本地 v" + localVer
                         else st.updText,
                         color = if (st.updText.startsWith("检查失败")) Color(0xFFE0556B) else TextMain,
                         fontSize = 13.sp
