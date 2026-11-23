@@ -26,14 +26,14 @@ NK 是一个基于 **LLVM 21** 的 **IR 级代码混淆插件**（`libNk.so`）�
 
 | 产物 | 位置 | 大小 |
 |---|---|---|
-| 手机端 APK | Release `v1.0` → `NKBuild-mobile-1.0-kami.apk` | 9.98 MB |
-| 桌面端 EXE | Release `v1.0` → `NKBuild-1.0-win64.exe` | 13.35 MB |
+| 手机端 APK | Release `v1.0` → `NKBuild-mobile-1.0.2-kami.apk` | 9.98 MB |
+| 桌面端 EXE | Release `v1.0` → `NKBuild-1.0.2-win64.exe` | 13.35 MB |
 
 校验（`sha256sum` / `Get-FileHash -Algorithm SHA256`）：
 
 ```
-43F42D12F325119AC95914AB77E7C7505522EA19538AFD7B2E21C5F51D0723D3  NKBuild-mobile-1.0-kami.apk
-90F60A2CA0899A48838F263255E3741D1490DB0BF73BB726512F8834A8AE8EE1  NKBuild-1.0-win64.exe
+43F42D12F325119AC95914AB77E7C7505522EA19538AFD7B2E21C5F51D0723D3  NKBuild-mobile-1.0.2-kami.apk
+90F60A2CA0899A48838F263255E3741D1490DB0BF73BB726512F8834A8AE8EE1  NKBuild-1.0.2-win64.exe
 ```
 
 | 混淆后的示例二进制 | Release `nk-builds` → `lucifer` | 21,145,056 B |
