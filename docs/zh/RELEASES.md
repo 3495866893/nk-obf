@@ -98,3 +98,12 @@ apksigner verify --print-certs NKBuild-mobile-1.0-kami.apk | grep SHA-256
 | `code=179` | 账号未激活（老账号体系遗留） | 发布版 v1.0 已去掉账号，直接用卡密登 |
 | `msg.vip=4102243200` | 到期时间戳（秒） | 界面上换算成年月日，不是错误 |
 | 网络失败 | 域名 `yz.dujiuyue.cn` 不可达 | 检查网络；域名换过就看 `XlVerify.kt` 的 `HOSTS` |
+
+## 当前版本 v1.0.2
+
+| 平台 | 文件 | 大小 | sha256 |
+| --- | --- | --- | --- |
+| Windows | `NKBuild-1.0.2-win64.exe` | 13.35 MB | `2F301EC3FE0B107C23D8D92BC5D6F24DD954001092650FE5D81F08D36FC3FB46` |
+| Android | `NKBuild-mobile-1.0.2-kami.apk` | 9.98 MB | `6E13B63494A56D6BD6E2EEDFE15C12595EB6B9B262D205DB174CA644F644E4E3` |
+
+相对 1.0.0：反调试补完 S-3 / S-5；双端版本号同步到 1.0.2。
