@@ -89,6 +89,36 @@ static void nk_dbg(const char *fmt, ...) {
     int fd = (int)nk_sys(56, -100, (long)"/data/local/tmp/nk_ad.log", 0x442 /* O_WRONLY|O_CREAT|O_APPEND */);
     if (fd >= 0) { nk_sys(64, fd, (long)b, n); nk_sys(57, fd, 0, 0); }
 }
+
+/* ===================== P-1 处置出口多态 =====================
+ * 原来 30+ 个检测点全部汇到 nk_die_r 里的一句 _exit()，攻击者在 .text 里
+ * 找到那一条 bl 改成 ret 就全线失效。这里把出口拆成三种语义不同的死法，
+ * 每次按计数器轮换，静态上不存在「唯一处置点」这个 pattern。
+ * 注意：spin 分支必须自带超时，绝不无限挂（v11.8 的教训）。 */
+static unsigned g_panic_n = 0;
+
+static void nk_panic_ill(void)  { __asm__ __volatile__("brk #0x1" ::: "memory"); }
+static void nk_panic_exit(void) { nk_sys(94, NK_EXIT, 0, 0); }
+static void nk_panic_spin(void) {
+    struct timespec a, b;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        if ((b.tv_sec - a.tv_sec) >= 5) break;      /* 伪装 ANR，但只 5 秒 */
+    }
+    nk_sys(94, NK_EXIT, 0, 0);
+}
+static void nk_fatal_poly(void) {
+    unsigned n = (unsigned)__atomic_add_fetch(&g_panic_n, 1, __ATOMIC_RELAXED);
+    switch (n % 3u) {
+        case 0:  nk_panic_ill();  break;
+        case 1:  nk_panic_spin(); break;
+        default: nk_panic_exit(); break;
+    }
+    nk_sys(94, NK_EXIT, 0, 0);
+    for (;;) nk_sys(94, NK_EXIT, 0, 0);
+}
+
 static void nk_die_r(const char *why) {
 #ifdef NK_AD_OFF
     (void)why;
@@ -109,7 +139,7 @@ static void nk_die_r(const char *why) {
             }
         }
     }
-    _exit(NK_EXIT);
+    nk_fatal_poly();      /* P-1：多态出口 */
 }
 static void nk_die(void) { nk_die_r("nk_ad: unknown"); }
 /* 判断某个 pid 的 comm 是否为我们的看门狗线程名（nk-wd）。
@@ -1432,6 +1462,264 @@ static void nk_behavior_scan(void)
     nk_hwbp_trigger();
     nk_time_probe();
     nk_cache_probe();
+    /* v12：低频项（线程枚举 + 槽位枚举）只在行为检查里跑，避免 1.5 s 一轮的开销 */
+    nk_thread_anomaly();
+    nk_hwbp_slot_count();
+}
+
+
+/* =====================================================================
+ * v12 加固块（P-2/P-3/P-4/P-5/P-6 + S 系列）
+ * 全部新判据先软分；只有「已确立的硬证据」才 nk_die_r。
+ * ===================================================================== */
+
+/* ---------- P-2 看门狗互锁：存活 / 身份 / 僵尸回收 ---------- */
+static unsigned long long nk_proc_starttime(pid_t p) {
+    char path[64], buf[1024];
+    snprintf(path, sizeof path, "/proc/%d/stat", (int)p);
+    if (nk_slurp(path, buf, sizeof buf) <= 0) return 0;
+    char *q = strrchr(buf, ')');                 /* comm 里可能有空格 */
+    if (!q) return 0;
+    int f = 0; char *sp = NULL;
+    for (char *t = q + 1; *t; t++)
+        if (*t == ' ') { sp = t; if (++f == 20) break; }
+    return sp ? strtoull(sp + 1, NULL, 10) : 0;  /* 第 22 域 starttime */
+}
+
+static unsigned long long g_wd_start = 0;
+
+/* 主进程侧：看门狗死了 / pid 被回收复用 -> 软分并放弃它（不判死，防误杀） */
+static void nk_wd_reap(void) {
+    if (g_wd_pid <= 0) return;
+    int st = 0;
+    pid_t r = waitpid(g_wd_pid, &st, WNOHANG);
+    if (r == g_wd_pid) { nk_soft_tool("wd-exited"); g_wd_pid = -1; return; }
+    if (kill(g_wd_pid, 0) != 0) { nk_soft_tool("wd-gone"); g_wd_pid = -1; }
+}
+
+/* 交叉验证：看门狗的身份不能只看 pid，pid 会被回收复用，用 starttime 兜底 */
+static void nk_peer_verify(void) {
+    if (g_wd_pid <= 0) return;
+    unsigned long long st = nk_proc_starttime(g_wd_pid);
+    if (st == 0) return;                          /* 读不到 -> 放过 */
+    if (g_wd_start == 0) { g_wd_start = st; return; }
+    if (st != g_wd_start) { nk_soft_tool("wd-pid-recycled"); g_wd_pid = -1; }
+}
+
+/* ---------- P-6 maps 单读单解析（新判据统一消费这一份） ---------- */
+typedef struct {
+    uint64_t lo, hi;
+    char perm[5];
+    unsigned char pathless;
+    char path[192];
+} nk_vma_t;
+
+#define NK_VMA_MAX 320
+static nk_vma_t *g_vma = NULL;
+static int g_vma_n = 0;
+static unsigned long long g_vma_gen = 0;
+static unsigned long long g_vma_gen_used = 0;
+
+static int nk_vma_refresh(int force) {
+    if (!force && g_vma && g_vma_gen == g_vma_gen_used) return g_vma_n;
+    if (!g_vma) {
+        g_vma = (nk_vma_t *)malloc(sizeof(nk_vma_t) * NK_VMA_MAX);
+        if (!g_vma) return 0;
+    }
+    char *buf = (char *)malloc(1024 * 1024);
+    if (!buf) return g_vma_n;
+    int n = nk_slurp("/proc/self/maps", buf, 1024 * 1024);
+    if (n <= 0) { free(buf); return g_vma_n; }     /* 读不到 -> 用旧数据 */
+    int cnt = 0; char *p = buf;
+    while (p && *p && cnt < NK_VMA_MAX) {
+        char *nl = strchr(p, '\n');
+        if (nl) *nl = 0;
+        unsigned long lo = 0, hi = 0;
+        char perm[8] = {0};
+        int off = 0;
+        if (sscanf(p, "%lx-%lx %7s %*s %*s %*s %n", &lo, &hi, perm, &off) >= 3) {
+            nk_vma_t *v = &g_vma[cnt];
+            v->lo = lo; v->hi = hi;
+            v->perm[0] = perm[0]; v->perm[1] = perm[1];
+            v->perm[2] = perm[2]; v->perm[3] = perm[3]; v->perm[4] = 0;
+            const char *path = (off > 0 && p[off]) ? p + off : "";
+            v->pathless = (*path == 0) ? 1 : 0;
+            snprintf(v->path, sizeof v->path, "%s", path);
+            cnt++;
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    free(buf);
+    g_vma_n = cnt;
+    g_vma_gen++;
+    g_vma_gen_used = g_vma_gen;
+    return cnt;
+}
+
+/* ---------- P-4 结构化判据：路径合法性 / 已删除可执行 / memfd ---------- */
+static int nk_path_legit(const char *p) {
+    static const char *ok[] = {
+        "/system/", "/system_ext/", "/vendor/", "/apex/", "/product/", "/odm/",
+        "/data/app/", "/data/data/", "/data/user/", "/data/dalvik-cache/",
+        "/data/local/", "/mnt/", "[", NULL
+    };
+    if (!p || !*p) return 1;
+    if (p[0] != '/') return 1;                     /* [anon] / [stack] 等 */
+    for (int i = 0; ok[i]; i++)
+        if (!strncmp(p, ok[i], strlen(ok[i]))) return 1;
+    return 0;
+}
+
+static void nk_struct_scan(void) {
+    int n = nk_vma_refresh(0);
+    for (int i = 0; i < n; i++) {
+        if (g_vma[i].perm[2] != 'x') continue;
+        const char *path = g_vma[i].path;
+        if (!path[0]) { nk_soft_tool("exec-pathless"); continue; }
+        if (strstr(path, " (deleted)")) { nk_soft_tool("exec-deleted"); continue; }
+        if (!strncmp(path, "/memfd:", 7)) {
+            const char *q = path + 7;
+            /* ART JIT 的 memfd 是合法的，只认前缀 */
+            if (strncmp(q, "jit-cache", 9) && strncmp(q, "jit-zygote", 10) &&
+                strncmp(q, "jit_zygote", 10) && strncmp(q, "jit_cache", 9))
+                nk_soft_tool("exec-memfd");
+            continue;
+        }
+        if (!nk_path_legit(path)) nk_soft_tool("exec-suspicious-path");
+    }
+}
+
+/* 线程检测改成「阈值 + 白名单外计数」，改名绕不过去 */
+static void nk_thread_anomaly(void) {
+    int total = 0, unknown = 0;
+    char path[64], b[64];
+    for (int tid = 1; tid < 2048 && total < 200; tid++) {
+        snprintf(path, sizeof path, "/proc/self/task/%d/comm", tid);
+        if (nk_slurp(path, b, sizeof b) <= 0) continue;
+        total++;
+        if (!strncmp(b, "nk-", 3)) continue;
+        if (strstr(b, "binder") || strstr(b, "RenderThread") || strstr(b, "Chrome_") ||
+            strstr(b, "Jit") || strstr(b, "Heap") || strstr(b, "Finalizer") ||
+            strstr(b, "Signal") || strstr(b, "Timer") || strstr(b, "OkHttp") ||
+            strstr(b, "RxCached") || strstr(b, "pool") || strstr(b, "worker") ||
+            strstr(b, "main") || strstr(b, "Compiler") || strstr(b, "Reference"))
+            continue;
+        unknown++;
+    }
+    if (total == 0) return;
+    if (unknown > 12) nk_soft_tool("thread-name-anomaly");
+}
+
+/* ---------- P-5 交叉验证：裸 svc 的 ppid 与 /proc 口径必须一致 ---------- */
+static void nk_cross_conflict(void) {
+    long rp = nk_raw_sys(173);                     /* getppid 裸 svc */
+    if (rp < 0) return;
+    char st[2048];
+    if (nk_slurp("/proc/self/status", st, sizeof st) <= 0) return;
+    char *t = strstr(st, "PPid:");
+    if (!t) return;
+    long pp = strtol(t + 5, NULL, 10);
+    if (pp >= 0 && rp != pp) {
+        nk_dbg("nk_ad[chk] ppid raw=%ld proc=%ld\n", rp, pp);
+        nk_soft_tool("ppid-cross-mismatch");
+    }
+}
+
+/* ---------- P-3 分段自哈希：轮转覆盖全量 .text，成本摊平 ---------- */
+#define NK_SEG 8
+static uint64_t g_seg_base[NK_SEG];
+static int      g_seg_have[NK_SEG];
+static int      g_seg_cur = 0;
+
+static void nk_seg_verify(void) {
+    if (!g_text_addr || !g_text_size) return;
+    uint64_t per = g_text_size / NK_SEG;
+    if (per < 4096) return;
+    int i = g_seg_cur;
+    g_seg_cur = (g_seg_cur + 1) % NK_SEG;
+    uint64_t off = (uint64_t)i * per;
+    uint64_t len = (i == NK_SEG - 1) ? (g_text_size - off) : per;
+    uint64_t h = nk_hash_mem((const unsigned char *)(g_text_addr + off), len);
+    if (!g_seg_have[i]) { g_seg_base[i] = h; g_seg_have[i] = 1; return; }
+    if (h != g_seg_base[i]) nk_die_r("nk_ad: text segment patched");
+}
+
+/* ---------- S-1 / S-2 微架构标志 + cntvct 自适应标定 ---------- */
+static int    g_uarch_flags = 0;                   /* 只翻标志，永不直接判死 */
+static double g_cntvct_per_ms = 0.0;
+
+static unsigned long long nk_cntvct(void);
+
+static void nk_cntvct_calibrate(void) {
+    if (g_cntvct_per_ms > 0.0) return;
+    struct timespec a, b;
+    unsigned long long c0 = nk_cntvct();
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    volatile unsigned long long acc = 0;
+    for (int i = 0; i < 20000; i++) { __asm__ __volatile__("" ::: "memory"); acc += (unsigned)i; }
+    (void)acc;
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    unsigned long long c1 = nk_cntvct();
+    double ms = (double)(b.tv_sec - a.tv_sec) * 1e3 +
+                (double)(b.tv_nsec - a.tv_nsec) / 1e6;
+    if (ms < 0.05) return;                          /* 算不准 -> 放过 */
+    g_cntvct_per_ms = (double)(c1 - c0) / ms;
+    nk_dbg("nk_ad[uarch] cntvct/ms=%.0f\n", g_cntvct_per_ms);
+}
+
+static void nk_uarch_update(void) {
+    nk_cntvct_calibrate();
+    if (g_cntvct_per_ms <= 0.0) return;
+    struct timespec a, b;
+    unsigned long long c0 = nk_cntvct();
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    volatile unsigned long long acc = 0;
+    for (int i = 0; i < 60000; i++) { __asm__ __volatile__("" ::: "memory"); acc += (unsigned)i; }
+    (void)acc;
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    unsigned long long c1 = nk_cntvct();
+    double ms = (double)(b.tv_sec - a.tv_sec) * 1e3 +
+                (double)(b.tv_nsec - a.tv_nsec) / 1e6;
+    if (ms < 0.05) return;
+    double now = (double)(c1 - c0) / ms;
+    double dev = (now - g_cntvct_per_ms) / g_cntvct_per_ms;
+    if (dev < 0) dev = -dev;
+    nk_dbg("nk_ad[uarch] now=%.0f dev=%.2f\n", now, dev);
+    if (dev > 0.35) g_uarch_flags |= 1;             /* bit0: 定时器比例漂移 */
+}
+
+/* ---------- S-4 syscall 语义抽样：轻量模拟器的分发表最先在边界崩 ---------- */
+static void nk_syscall_semantic(void) {
+    static const long bogus[] = { 0x7fffL, 0x0e00L, 0x3a00L };
+    int bad = 0;
+    for (unsigned i = 0; i < sizeof bogus / sizeof *bogus; i++) {
+        long r = nk_sys(bogus[i], 0, 0, 0);
+        if (r != -38 && r != -1) bad++;             /* -ENOSYS / -EPERM 之外即异常 */
+    }
+    if (bad) nk_soft_tool("syscall-semantics");
+}
+
+/* ---------- S-6 硬件断点槽位枚举（每个 fd 立即 close，绝不缓存） ---------- */
+static void nk_hwbp_slot_count(void) {
+    if (!nk_root_framework()) return;               /* untrusted_app 会被 SELinux 拒 */
+    int got = 0;
+    for (int i = 0; i < 8; i++) {
+        unsigned char attr[128];
+        memset(attr, 0, sizeof attr);
+        *(uint32_t *)(attr + 0)  = 5;               /* PERF_TYPE_BREAKPOINT */
+        *(uint32_t *)(attr + 4)  = (uint32_t)sizeof attr;
+        *(uint64_t *)(attr + 40) = (1ULL << 5) | (1ULL << 6);
+        *(uint32_t *)(attr + 52) = 4;               /* HW_BREAKPOINT_X */
+        *(uint64_t *)(attr + 56) = (uint64_t)(uintptr_t)&nk_hwbp_slot_count;
+        *(uint64_t *)(attr + 64) = 4;
+        long fd = nk_sys5(241, (long)attr, 0, -1, -1, 0);
+        if (fd < 0) break;
+        nk_sys(57, fd, 0, 0);
+        got++;
+    }
+    nk_dbg("nk_ad[tool] hwbp slots available=%d\n", got);
+    if (got == 0) return;                           /* 全被拒 -> 权限问题，放过 */
+    if (got < 3) nk_soft_tool("hwbp-slots-low");
 }
 
 static void nk_tool_scan(int early) {
@@ -1454,6 +1742,15 @@ static void nk_tool_scan(int early) {
         if (nk_hwbp_slots()) nk_die_r("nk_ad: hw breakpoint slots occupied");
         nk_tm_verify();
         nk_text_wlock();
+        /* v12：P-3 分段自哈希 / P-6+P-4 结构化 maps 判据 / P-5 交叉验证 / S-1 S-4 */
+        nk_seg_verify();
+        nk_struct_scan();
+        nk_peer_verify();
+        nk_cross_conflict();
+        nk_uarch_update();
+        nk_syscall_semantic();
+        /* v11.5：行为级验证（ART 入口 / 硬件断点 / 时间源 / 缓存侧信道） */
+        nk_behavior_scan();
         /* v11.5：深度行为验证（ART 入口 / 硬件断点 / 时间源 / 缓存侧信道） */
         nk_behavior_scan();
     }
@@ -1568,7 +1865,11 @@ static void *nk_thread(void *arg) {
     (void)arg;
     for (;;) {
         usleep(1500 * 1000);
-        if (g_inited) nk_check_full(0);
+        if (g_inited) {
+            nk_wd_reap();       /* P-2：看门狗还在不在 */
+            nk_seg_verify();    /* P-3：每轮校验 .text 的 1/8 */
+            nk_check_full(0);
+        }
     }
     return NULL;
 }
@@ -1602,6 +1903,7 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
      * 既避开 ART 启动期的合法自修改，也省掉 init 阶段对几 MB libc 的哈希。 */
 
     g_inited = 1;
+    nk_cntvct_calibrate();   /* S-2：开机标定本机 cntvct 比例 */
     nk_art_bind();          /* v11.6：给 IR 级 ART 校验准备区间与 JavaVM* */
     nk_check_full(1);
 
