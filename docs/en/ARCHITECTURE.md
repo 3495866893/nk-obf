@@ -125,6 +125,29 @@ Four reasons, all learned the hard way:
 3. **Iteration cost.** The detection list grew from a 4-check first version to v11.1 over five revision rounds (204-line, 8-item, 2-P0 and 4-item review lists). Adding a check must not require touching an IR generator.
 4. **Failure isolation.** The link step can leave `nk_ad_extra.o` out entirely (`anti_debug=false`), producing a build with no watchdog and no behavioral surprises.
 
+### v12 hardening (P/S series)
+
+The v12 rule: **anything that can stay a soft score stays a soft score, and nothing that kills keeps a single exit.** The six P items reshape how a verdict is reached and delivered; the S items target simulated execution.
+
+| # | Problem | Change | Grade |
+|---|---|---|---|
+| P-1 | 30+ detection points all funnel into one `_exit(NK_EXIT)` inside `nk_die_r()`; patching one `bl` to `ret` disables the lot | `nk_panic_ill()` (`brk #0x1` → SIGILL) / `nk_panic_spin()` (fake ANR: 5 s busy-wait then exit, self-timing) / `nk_panic_exit()` (raw `svc #0` exit_group), rotated by `nk_fatal_poly()` on `g_panic_n % 3` | mechanism (no single disposal site) |
+| P-2 | A recycled watchdog pid can impersonate the peer | `nk_wd_reap()` reaps zombies and probes with `kill(pid,0)`; `nk_peer_verify()` checks identity through field 22 starttime of `/proc/<pid>/stat` | soft score (avoid killing hardened shells and vendor perf daemons) |
+| P-3 | Self-hash covered only the first 1 MB of `.text` | `nk_seg_verify()` rotates 8 segments, one per 1.5 s, full coverage in 12 s, per-round cost 1/8; first round samples only | hard evidence |
+| P-4 | Criteria still enumerated known strings | `nk_struct_scan()` judges executable mappings structurally; `nk_thread_anomaly()` became "total + off-whitelist count > 12" | soft score |
+| P-5 | Forging the `/proc` channel alone was enough | `nk_cross_conflict()` compares `getppid`(173) from raw `svc #0` against `PPid` from `/proc/self/status` | soft score |
+| P-6 | Five sites each `malloc(256 KB)` and scanned maps | `nk_vma_t` + `nk_vma_refresh()`: one 1 MB read, `sscanf("%lx-%lx %7s %*s %*s %*s %n")`, `g_vma_gen` keeps it idempotent within a round | mechanism (single data source) |
+| S-1 | Microarchitectural criteria killed outright | Only sets bits in `g_uarch_flags` | soft score |
+| S-2 | Hard-coded 24 MHz / 19.2 MHz cannot cross SoCs | A constructor calls `nk_cntvct_calibrate()`, which pins the `cntvct` / `CLOCK_MONOTONIC` ratio over two short windows; `nk_uarch_update()` then measures drift only and flags above 35% relative deviation | soft score |
+| S-4 | Emulator syscall dispatch tables fake `ENOSYS` | `nk_syscall_semantic()` probes 0x7fff / 0x0e00 / 0x3a00; a return that is neither `-ENOSYS`(-38) nor `-EPERM`(-1) scores | soft score |
+| S-6 | A cached fd occupies the slot being measured | Opens and immediately closes `perf_event_open` per slot, counting usable slots (< 3 scores), never caching an fd; runs only once a root framework is detected | soft score |
+
+Two constants drive P-4. Legal path prefixes are `/system/`, `/system_ext/`, `/vendor/`, `/apex/`, `/product/`, `/odm/`, `/data/app/`, `/data/data/`, `/data/user/`, `/data/dalvik-cache/`, `/data/local/`, `/mnt/` and `[`; ART JIT `/memfd:` prefixes are `jit-cache`, `jit-zygote`, `jit_zygote` and `jit_cache`, and a match is passed through.
+
+Wiring: `nk_tool_scan(!early)` runs `nk_seg_verify → nk_struct_scan → nk_peer_verify → nk_cross_conflict → nk_uarch_update → nk_syscall_semantic → nk_behavior_scan`; the low-frequency `nk_thread_anomaly` / `nk_hwbp_slot_count` live in the 60-second behavior check; the watchdog thread runs `nk_wd_reap + nk_seg_verify` each round.
+
+v12 also fixes the boundary of self-obfuscation: `nk_ad.c` goes through `string_encryption` only (`ci/nk-self.toml`) and through no semantic pass at all — all seven passes together hang the process inside the constructor (see [CHANGELOG.md](CHANGELOG.md), Phase 15, lesson 1).
+
 ## CI: cache layout and Release-based distribution
 
 | Layer | Mechanism | Size / key |
