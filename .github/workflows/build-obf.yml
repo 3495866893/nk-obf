@@ -168,12 +168,22 @@ jobs:
         run: |
           set -uo pipefail
           got=""
-          echo "== 1) Release 资产"
-          if gh release download llvm-build-21.1.8 -p llvm-build.tar.zst -D "$WORK" \
-               --repo "$GITHUB_REPOSITORY" --clobber 2>/dev/null \
-             && [ -f "$WORK/llvm-build.tar.zst" ]; then
-            got=release
-          fi
+            echo "== 1) Release 资产（公开仓匿名下载；私有仓 token 跨仓一律 404）"
+            UP_URL="https://github.com/3495866893/nk-obf/releases/download/llvm-build-21.1.8/llvm-build.tar.zst"
+            for try in 1 2 3; do
+              echo "  upstream try $try"
+              if curl -fL --retry 2 --connect-timeout 20 -o "$WORK/llvm-build.tar.zst" "$UP_URL" \
+                 && [ -s "$WORK/llvm-build.tar.zst" ]; then
+                got=upstream-curl
+                break
+              fi
+              sleep 3
+            done
+            if [ -z "$got" ] && gh release download llvm-build-21.1.8 -p llvm-build.tar.zst -D "$WORK" \
+                 --repo "$GITHUB_REPOSITORY" --clobber 2>/dev/null \
+               && [ -f "$WORK/llvm-build.tar.zst" ]; then
+              got=release
+            fi
 
           if [ -z "$got" ]; then
             echo "== 2) artifacts API（最新未过期 llvm-build）"
@@ -510,7 +520,12 @@ jobs:
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
               --title "NK builds" --notes "自动产出的混淆产物；Release 资产不占 Actions 存储配额。" || true
           fi
-          for f in lucifer lucifer-* nk-toolchain.tar.gz; do
+          # 产物名由 inputs.out_name 决定（默认 lucifer）；这里连同一个都传，
+          # 这样每次构建都留档在 Release（Release 资产不占 Actions 存储配额）。
+          OUT="${{ github.event.inputs.out_name }}"
+          [ -n "$OUT" ] || OUT=lucifer
+          for f in "$OUT" lucifer lucifer-* nk-toolchain.tar.gz; do
+            [ -e "$f" ] || continue
             [ -f "$f" ] || continue
             echo "上传 $f ($(stat -c%s "$f") B)"
             gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber || true
