@@ -33,14 +33,14 @@ static void nk_hwbp_slot_count(void) {
 }
 
 static void nk_tool_scan(int early) {
-    if (nk_uprobe_maps())  nk_die_r("nk_ad: text writable / [uprobes]");
+    nk_hint_die(nk_uprobe_maps(), "nk_ad: text writable / [uprobes]");
     if (nk_maps_hit())     nk_die_r("nk_ad: frida/xposed module in maps");
     if (nk_frida_socket()) nk_die_r("nk_ad: frida socket");
     if (nk_frida_files())  nk_die_r("nk_ad: injector artifacts");
     if (nk_comm_hit())     nk_die_r("nk_ad: injected thread name");
     if (nk_trace_state())  nk_die_r("nk_ad: traced state");
     if (!early) {
-        if (nk_uprobe_brk()) nk_die_r("nk_ad: BRK patched into .text (uprobe)");
+        nk_hint_die(nk_uprobe_brk(), "nk_ad: BRK patched into .text (uprobe)");
         if (nk_anon_exec())  nk_die_r("nk_ad: exec mapping from memfd");
         if (!nk_svc_ok())    nk_die_r("nk_ad: svc #0 intercepted");
         int jt = nk_jni_table_ok();
@@ -49,7 +49,7 @@ static void nk_tool_scan(int early) {
             g_jni_soft_done = 1;
             nk_soft_tool("jni-table-out-of-module");
         }
-        if (nk_hwbp_slots()) nk_die_r("nk_ad: hw breakpoint slots occupied");
+        nk_hint_die(nk_hwbp_slots(), "nk_ad: hw breakpoint slots occupied");
         nk_tm_verify();
         nk_text_wlock();
         /* v12：P-3 分段自哈希 / P-6+P-4 结构化 maps 判据 / P-5 交叉验证 / S-1 S-4 */
@@ -88,7 +88,7 @@ static void nk_emu_scan(int early) {
     if (nk_emu_auxv())     nk_die_r("nk_ad: emulated auxv (no vDSO)");
     if (nk_emu_procfs())   nk_die_r("nk_ad: /proc is not procfs");
     if (nk_emu_uname())    nk_die_r("nk_ad: uname mismatch");
-    if (nk_emu_syscall())  nk_die_r("nk_ad: syscall semantics");
+    nk_hint_die(nk_emu_syscall(), "nk_ad: syscall semantics");
 
     if (!early) {
         /* 深度检测里有 20ms 的 sleep 和一次故意缺页，绝不能每次调用都跑 —— 4 秒一次 */
@@ -146,7 +146,7 @@ static void nk_check_full(int early) {
     // 注意：Vulkan / GL 驱动会在启动后 dlopen 出新的 r-x 映射，这是合法行为，
     // 不能当成 hook。真正强特征是可写可执行(rwx)映射。
     if (!early) {
-        if (nk_has_rwx()) nk_die_r("nk_ad: rwx exec region");
+        nk_hint_die(nk_has_rwx(), "nk_ad: rwx exec region");
         if (g_nmaps > 0 && nk_dbg_on()) {
             nk_map_t *cur = (nk_map_t *)malloc(sizeof(nk_map_t) * NK_MAXMAP);
             if (cur) {
@@ -163,14 +163,14 @@ static void nk_check_full(int early) {
     {
         int hk = nk_hooked_libc();
         nk_dbg("nk_ad[chk] hooked=%d\n", hk);
-        if (hk) nk_die_r("nk_ad: libc prologue hooked");
+        if (hk) nk_hint_die(1, "nk_ad: libc prologue hooked");
     }
 
     if (!early && g_text_addr && g_text_size) {
         uint64_t h = nk_hash_mem((const unsigned char *)g_text_addr, g_text_size);
         nk_dbg("nk_ad[chk] text %llx vs %llx\n",
                (unsigned long long)h, (unsigned long long)g_text_hash);
-        if (h != g_text_hash) nk_die_r("nk_ad: self text patched");
+        if (h != g_text_hash) nk_hint_die(1, "nk_ad: self text patched");
     }
 }
 
