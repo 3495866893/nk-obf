@@ -419,6 +419,18 @@ static void nk_emu_note(const char *tag) {
 /* ---------- 分块源码：按原顺序 include，单 TU 等价 ---------- */
 
 /* ---------- 分块源码：按原顺序 include，单 TU 等价 ---------- */
+/* v12.9 判据分级：环境/完整性/钩子/计时这类「可能被 ROM、内核、梯子、系统服务影响」
+ * 的判据默认只记日志（nk_soft_tool），不再直接判死；需要硬碰硬时设 NK_AD_STRICT=1。 */
+static int nk_strict_mode(void) {
+    const char *e = getenv("NK_AD_STRICT");
+    return (e && *e && *e != '0') ? 1 : 0;
+}
+static void nk_hint_die(int cond, const char *why) {
+    if (!cond) return;
+    if (nk_strict_mode()) nk_die_r(why);
+    else nk_soft_tool(why);
+}
+
 #include "nk_ad_parts/01_nk_emu_prop.inc"
 #include "nk_ad_parts/02_nk_emu_syscall.inc"
 #include "nk_ad_parts/03_nk_emu_maps.inc"
