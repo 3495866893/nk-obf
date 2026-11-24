@@ -2,29 +2,7 @@
 
 > 这份记录从「主人第一次说『做个 NKBuild』」开始，按阶段列出每一次真实改动、每个踩过的坑和最终数字。
 > 时间线：2026-11-21 起。
-> ## 阶段 15.4 · v12.3 / v12.4：真机误杀修复
-
-真机反馈两件事：正常设备报 `emulation score>=3` 直接退出；手机端只勾了反调试，出来的包却带着一堆混淆。
-
-| 问题 | 根因 | 修法 |
-|---|---|---|
-| 正常设备被误杀（`emulation score>=3`） | ① 7 个软证据每个 1.5 s 深检都重复加分，4~6 s 就攒满 3 分；② 看门狗 `PTRACE_SEIZE` 与 `g_wd_pid` 落盘有先后，深检把**自家看门狗**当外来 tracer（日志 `19158 traced by 19159`） | ① 每个软证据只在位图里计一次（`nk_emu_hit`），判死门槛 3 → **4 个不同项**，E-4 的 2 → 3；`timer-ratio` / `comm-readback` / `segv-not-delivered` 降级为**只记日志**；② 新增 `nk_tracer_is_ours()`：已知 pid 直接认，不知道时用「**本进程直接子进程 + comm == nk-wd**」认亲，认上就把 `g_wd_pid` 补上；fork 后轮询 40×25 ms → 120×25 ms |
-| 只开反调试却出混淆 | 大 TU 分级（`fsz>200 KB \|\| 预处理>800 KB`）无条件把用户配置换成 `nk-nofold.toml`（7 pass） | 只有用户自己开了 **≥5 个 pass** 才做大 TU 降级，否则原样尊重用户配置（日志 `→ 用户配置只开 N 个 pass，尊原配置`） |
-
-**真机回归（RMX3888 / Android 16 / 12 秒 3 线程 malloc 压力样例 `projects/loop`）**
-
-| 场景 | 结果 |
-|---|---|
-| 8 pass + 反调试，直跑 5 次 | **5/5 rc=0**，每次 12 行 `tick` + `loop done sink=900`，日志有 `nk_ad[tracer] 认亲：xxxxx 是自家看门狗` |
-| 只开反调试（`ci/only-adb.toml`），直跑 3 次 | **3/3 rc=0**，日志 `→ 用户配置只开 1 个 pass，尊原配置`，成品 2,069,464 B |
-| 上面两种二进制被 `projects/tracer` 牵引 | **rc=97**（`nk_ad[die] reason=nk_ad: thread traced`）——反调试本身照常生效 |
-| 明文扫描（只开反调试的成品） | `nk_ad` / `TracerPid` / `frida` / 卡密域名 **各 0 处**（自混淆照旧生效） |
-
-教训：判据本身没错，错在「**多信源重复计分**」和「**把自己人当敌人**」。前者让 4~6 秒就够判死，后者让看门狗变成自杀开关。
-
----
-
-版本号约定：开发期用过 1.1–1.18 这类小号，**对外是 `v1.0` 与其增量补丁 `v1.0.2`**（versionCode 20 / 22）。
+> 版本号约定：开发期用过 1.1–1.18 这类小号，**对外是 `v1.0` 与其增量补丁 `v1.0.2`**（versionCode 20 / 22）。
 
 ---
 
@@ -227,3 +205,26 @@
 | Q-6 | maps 读满 1 MB 或条目打满 320 时，把「缺条目」当成证据 | 新增 `g_vma_trunc`，截断时结构化判据（`exec-suspicious-path`）自动降级不记分 | 防误杀 |
 
 文件：新增 `ci/nk_ad_parts/09_nk_env_probe.inc`（5.1 KB），`nk_ad.c` 壳多一条 include；分块总数 9。
+
+## 阶段 15.4 · v12.4：反调试误杀（第一轮）
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 真机启动即 `exit 97`，日志混着 `emulation score>=3` / `emulator cpuinfo` | 软证据每次深检都重复加分（worker 1.5 s 一轮），几秒就撞阈值；`/proc/cpuinfo` 判定过严 | 软证据位图去重（`nk_emu_hit(bit, tag)`）、判死门槛 3 → 4 个不同项、`timer-ratio`/`comm-readback`/`segv-not-delivered` 降级为只记日志 |
+| 只开「反调试」一个 pass，产物却像重度混淆 | 超大编译单元的自动降级（`nk-nofold` / `nk-light`）覆盖了用户配置 | 降级仅在用户配置里 `enabled = true` 数量 ≥5 时启用，否则尊重用户配置 |
+
+## 阶段 15.5 · v12.5：看门狗不再 ptrace（决定性修复）
+
+真机证据：`nk_ad[chk] TracerPid=27125 wd=27125` → `nk_ad[tool] status State: t` → `nk_ad[die] reason=nk_ad: traced state`。
+
+自家看门狗原本用 `PTRACE_SEIZE` 看护主进程，这会把主进程留在 ptrace-stop（`State: t`），主进程的 `nk_trace_state()` 又把自家看门狗当成外来调试器 —— 自己把自己杀了。
+
+修法：看门狗改成每 300 ms 读 `/proc/<pid>/status` 的 `TracerPid`，`>0` 就 `kill(target, 9)`；fork 返回即认亲（`g_wd_pid = wd`）；主进程反向 seize（E-2）置空。**完全不建立 ptrace 关系，主进程调度状态不再被改变。**
+
+## 阶段 16 · v1.0.5（发布：修复重大 bug）
+
+- 版本：双端 **1.0.5**（桌面 `NKBuild-1.0.5-win64.exe` 14,002,438 B，手机 `NKBuild-mobile-1.0.5-kami.apk` 10,460,373 B，versionCode 25）。
+- 新增**启动验证闸门**：反调试开启时先跑环境检查，通过则打印紫色大字横幅「NK 1.0.5 验证通过」+ 颜文字，终端停留 3 秒后清屏进主程序；不通过则打印「请关闭你的调试工具」并退出。`NK_AD_GATE=0` 关闭横幅，`NK_AD_ALLOW_DEBUG=1` 允许 ptrace 调试。
+- 真机回归（RMX3888 / Android 16）：8 pass + 反调试 5/5 `rc=0`；只开反调试 3/3 `rc=0`；两者被 `tracer` 牵引均 `exit 97`。
+- 逐 pass 运行时矩阵（16 个 pass 各单独编译 + 真机各 3 次）：**全部 `rc=0`**，没有一个 pass 单独会崩。
+- 已知缺陷：16 个 pass **全开**（`all16`）在 `projects/loop` 上 `SIGSEGV`（`pc=0`，worker 线程空指针间接调用）。组合二分显示：去掉 `string_encryption` / `substitution` / `indirect_branch` / `anti_debugging` 任一个都不再崩 ⇒ 多 pass 交互缺陷，默认预设（8 个核心 pass）不受影响。
