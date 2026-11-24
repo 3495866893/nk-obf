@@ -236,19 +236,23 @@ try() {  # $1=preset(空=不加插件) $2=cfg $3=plugin $4=out
     # 大 TU 换成轻量配置（只加密字符串 + 指令替换 + 反调试），
     # flattening/bcf/indirect 在这种 TU 上会把内存吃爆 → runner SIGTERM 143
     NOFOLD="$PWD/nk/config/presets/nk-nofold.toml"    # 8 pass 减 flattening
-    LIGHT="$PWD/nk/config/presets/nk-light.toml"      # 兜底：极重文件才用
+    LIGHT="$PWD/nk/config/presets/nk-light.toml"      # 3 pass：string + substitution + anti_debug
+    MINT="$PWD/nk/config/presets/nk-min.toml"         # 2 pass：只 string + anti_debug（几乎不涨体积）
     # 只在用户自己开了 >=5 个 pass 时才做「大 TU 降级」；否则尊重用户配置（只开反调试就别偷偷加混淆）
     nkon=$(grep -c '^enabled *= *true' "$cfg" 2>/dev/null | tr -dc '0-9')
     [ -n "$nkon" ] || nkon=0
     if [ "$nkon" -lt 5 ]; then
       export NK_CONFIG="$cfg"
       echo "   → 用户配置只开 $nkon 个 pass，尊原配置（不做大 TU 降级）"
-    elif { [ "$fsz" -gt 200000 ] || [ "$ppsz" -gt 800000 ]; } && [ -f "$NOFOLD" ]; then
-      export NK_CONFIG="$NOFOLD"
-      echo "   → 大 TU（预处理 ${ppsz}B）：跳过 flattening，其余 7 个 pass 照常"
-    elif { [ "$fsz" -gt 200000 ] || [ "$ppsz" -gt 800000 ]; } && [ -f "$LIGHT" ]; then
+    elif { [ "$fsz" -gt 3000000 ] || [ "$ppsz" -gt 4000000 ]; } && [ -f "$MINT" ]; then
+      export NK_CONFIG="$MINT"
+      echo "   → 超大 TU（预处理 ${ppsz}B）：只做字符串加密 + 反调试（控体积）"
+    elif { [ "$fsz" -gt 900000 ] || [ "$ppsz" -gt 1200000 ]; } && [ -f "$LIGHT" ]; then
       export NK_CONFIG="$LIGHT"
-      echo "   → 大 TU（预处理 ${ppsz}B）：退回 nk-light.toml（只 3 个 pass）"
+      echo "   → 大 TU（预处理 ${ppsz}B）：退回 nk-light.toml（3 个 pass，控体积）"
+    elif { [ "$fsz" -gt 200000 ] || [ "$ppsz" -gt 400000 ]; } && [ -f "$NOFOLD" ]; then
+      export NK_CONFIG="$NOFOLD"
+      echo "   → 中等 TU（预处理 ${ppsz}B）：跳过 flattening，其余 7 个 pass 照常"
     else
       export NK_CONFIG="$cfg"
     fi
