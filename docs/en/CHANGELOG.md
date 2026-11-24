@@ -206,23 +206,25 @@ Still 1.0.2, no version bump.
 
 Files: new `ci/nk_ad_parts/09_nk_env_probe.inc` (5.1 KB); the shell gained one include; nine parts in total.
 
-## Phase 15.4 · v12.3 / v12.4: real-device false-positive fix
+## Phase 15.4 · v12.4: anti-debug false positives (round 1)
 
-Two field reports: a normal device died with `emulation score>=3`; and a phone-side build that
-selected **only** anti-debug came back looking heavily obfuscated.
-
-| Issue | Root cause | Fix |
+| Symptom | Root cause | Fix |
 |---|---|---|
-| Normal device killed by `emulation score>=3` | ① All 7 soft signals were re-scored on every 1.5 s deep scan, so three points accumulated within 4–6 s; ② the watchdog's `PTRACE_SEIZE` completes *after* `g_wd_pid` is written, so the deep scan treated **our own watchdog** as a foreign tracer (log `19158 traced by 19159`). | ① Each soft signal is counted once via a bitmask (`nk_emu_hit`); the kill threshold moved from 3 to **4 distinct** signals (E-4: 2 → 3); `timer-ratio` / `comm-readback` / `segv-not-delivered` became **log-only**. ② New `nk_tracer_is_ours()`: match by pid when known, otherwise accept a tracer that is a **direct child of this process with comm == nk-wd** and back-fill `g_wd_pid`; post-fork polling 40×25 ms → 120×25 ms. |
-| Only-anti-debug build came out obfuscated | The large-TU tiering (`fsz>200 KB \|\| preprocessed>800 KB`) unconditionally swapped the user config for `nk-nofold.toml` (7 passes). | Tiering now applies **only when the user enabled ≥5 passes**; otherwise the user config is used verbatim (log line `→ 用户配置只开 N 个 pass，尊原配置`). |
+| Real devices died at startup with `exit 97`, logs mixing `emulation score>=3` / `emulator cpuinfo` | Soft evidence was re-counted on every deep scan (worker runs every 1.5 s), hitting the threshold within seconds; the `/proc/cpuinfo` check was too strict | Soft evidence is now de-duplicated via a bitmap (`nk_emu_hit(bit, tag)`), the kill threshold moved from 3 to 4 distinct items, and `timer-ratio` / `comm-readback` / `segv-not-delivered` became log-only |
+| Selecting only "anti-debug" still produced heavily obfuscated output | The large-TU auto-downgrade (`nk-nofold` / `nk-light`) overrode the user config | Downgrade only applies when the user config enables ≥5 passes |
 
-**Regression on device (RMX3888 / Android 16, 12 s / 3 threads / malloc stress sample `projects/loop`)**
+## Phase 15.5 · v12.5: the watchdog no longer uses ptrace (decisive fix)
 
-| Scenario | Result |
-|---|---|
-| 8 passes + anti-debug, 5 straight runs | **5/5 rc=0**, 12 `tick` lines + `loop done sink=900`; log shows `nk_ad[tracer] 认亲：xxxxx 是自家看门狗` |
-| Anti-debug only (`ci/only-adb.toml`), 3 runs | **3/3 rc=0**; log `→ 用户配置只开 1 个 pass，尊原配置`; binary 2,069,464 B |
-| Both binaries under `projects/tracer` | **rc=97** (`nk_ad[die] reason=nk_ad: thread traced`) — detection still works |
-| Plaintext scan (anti-debug-only build) | `nk_ad` / `TracerPid` / `frida` / kami domain: **0 hits each** (self-obfuscation intact) |
+Device evidence: `nk_ad[chk] TracerPid=27125 wd=27125` → `nk_ad[tool] status State: t` → `nk_ad[die] reason=nk_ad: traced state`.
 
-Lesson: the criteria were fine; the bugs were **double-counting one signal from several sources** (kill in 4–6 s) and **mistaking our own watchdog for an attacker** (self-kill switch).
+The watchdog used `PTRACE_SEIZE` on the main process, which parks it in ptrace-stop (`State: t`); the process's own `nk_trace_state()` then treated the watchdog as a foreign tracer and killed itself.
+
+Fix: the watchdog polls `TracerPid` from `/proc/<pid>/status` every 300 ms and calls `kill(target, 9)` when it is `>0`; `g_wd_pid` is set right after `fork()`; the reverse-seize check (E-2) is a no-op. **No ptrace relationship is created at all, so the main process scheduling state is untouched.**
+
+## Phase 16 · v1.0.5 (release: critical fix)
+
+- Both clients are **1.0.5** (desktop `NKBuild-1.0.5-win64.exe` 14,002,438 B, Android `NKBuild-mobile-1.0.5-kami.apk` 10,460,373 B, versionCode 25).
+- New **startup gate**: with anti-debug on, the binary checks the environment first, prints a purple banner "NK 1.0.5 验证通过" plus a kaomoji, waits 3 s on a terminal, clears the screen and continues; on failure it prints "请关闭你的调试工具" and exits. `NK_AD_GATE=0` disables the banner, `NK_AD_ALLOW_DEBUG=1` allows ptrace debugging.
+- Device regression (RMX3888 / Android 16): 8 passes + anti-debug 5/5 `rc=0`; anti-debug only 3/3 `rc=0`; both exit 97 when traced.
+- Per-pass runtime matrix (all 16 passes compiled alone and run 3x on device): **all `rc=0`** — no single pass crashes on its own.
+- Known defect: with **all 16 passes** enabled (`all16`) the `projects/loop` binary dies with `SIGSEGV` (`pc=0`, null indirect call in a worker thread). The combination bisect shows that dropping any of `string_encryption` / `substitution` / `indirect_branch` / `anti_debugging` removes the crash — a multi-pass interaction; the default preset (8 core passes) is unaffected.
