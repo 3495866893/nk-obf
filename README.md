@@ -26,14 +26,14 @@ NK 是一个基于 **LLVM 21** 的 **IR 级代码混淆插件**（`libNk.so`）�
 
 | 产物 | 位置 | 大小 |
 |---|---|---|
-| 手机端 APK | Release `v1.0.2` → `NKBuild-mobile-1.0.2-kami.apk` | 9.98 MB |
-| 桌面端 EXE | Release `v1.0.2` → `NKBuild-1.0.2-win64.exe` | 13.35 MB |
+| 手机端 APK | Release `v1.0.5` → `NKBuild-mobile-1.0.5-kami.apk` | 10.46 MB |
+| 桌面端 EXE | Release `v1.0.5` → `NKBuild-1.0.5-win64.exe` | 14.0 MB |
 
 校验（`sha256sum` / `Get-FileHash -Algorithm SHA256`）：
 
 ```
-7921AF1379F1113AB7A88F1FA4B14098A2393FC9964A9089F197EC3A41AF02E4  NKBuild-mobile-1.0.2-kami.apk
-0CD0E592095483340BD0CAA191DAE3B678CCCD73657FE89AB19D3E266937F3CE  NKBuild-1.0.2-win64.exe
+239B7BE199EC6F5B46BDBA634E2B98C326987230D15045F1B2866E6D4E276D8C  NKBuild-mobile-1.0.5-kami.apk
+3242CE4B439C4E1EB4876553E68F99396A9ADA74F77E239CDDD168F786AD82F7  NKBuild-1.0.5-win64.exe
 ```
 
 | 混淆后的示例二进制 | Release `nk-builds` → `lucifer` | 21,145,056 B |
@@ -84,7 +84,7 @@ gh workflow run build-obf.yml -R <owner>/nk-obf \
 
 ## 版本
 
-当前发布 **v1.0.2**（`v1.0` 保留为上一版）。历史演进（含每个 bug 的根因与修法）见 [CHANGELOG](docs/zh/CHANGELOG.md)。
+当前发布 **v1.0.5**（修复重大 bug：反调试自杀；`v1.0.2`、`v1.0` 保留为历史版本）。历史演进（含每个 bug 的根因与修法）见 [CHANGELOG](docs/zh/CHANGELOG.md)。
 
 ## Contributors
 
