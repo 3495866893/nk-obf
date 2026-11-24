@@ -247,6 +247,7 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
     nk_cntvct_calibrate();   /* S-2：开机标定本机 cntvct 比例 */
     nk_art_bind();          /* v11.6：给 IR 级 ART 校验准备区间与 JavaVM* */
     nk_check_full(1);
+    nk_gate_banner();   /* v12.6：环境全过 -> 紫色横幅 3 秒 -> 清屏 */
 
     pid_t self = getpid();
     pid_t wd = fork();
