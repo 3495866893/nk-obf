@@ -48,11 +48,19 @@ static const char NK_GATE_ART_FAIL[] =
 
 static const char NK_GATE_CLEAR[] = "\033[0m\033[2J\033[H";
 
+/* 默认开；NK_AD_GATE=0 关闭（自动化测试用） */
+static int nk_gate_on(void) {
+    const char *e = getenv("NK_AD_GATE");
+    return (e && e[0] == '0') ? 0 : 1;
+}
+
 static void nk_gate_banner(void) {
-    if (!nk_gate_isatty()) return;          /* 非终端：静默放行，不拖 3 秒 */
-    nk_gate_w(1, NK_GATE_ART);
-    usleep(3 * 1000 * 1000);                /* 停留 3 秒 */
-    nk_gate_w(1, NK_GATE_CLEAR);
+    if (!nk_gate_on()) return;
+    nk_gate_w(1, NK_GATE_ART);              /* 终端 / 重定向都打横幅 */
+    if (nk_gate_isatty()) {
+        usleep(3 * 1000 * 1000);            /* 终端里停留 3 秒 */
+        nk_gate_w(1, NK_GATE_CLEAR);        /* 然后清屏进主程序 */
+    }
 }
 
 /* 失败提示：即使不是终端也写 stderr，用户重定向日志时同样看得到原因 */
