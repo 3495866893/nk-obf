@@ -228,3 +228,10 @@
 - 真机回归（RMX3888 / Android 16）：8 pass + 反调试 5/5 `rc=0`；只开反调试 3/3 `rc=0`；两者被 `tracer` 牵引均 `exit 97`。
 - 逐 pass 运行时矩阵（16 个 pass 各单独编译 + 真机各 3 次）：**全部 `rc=0`**，没有一个 pass 单独会崩。
 - 已知缺陷：16 个 pass **全开**（`all16`）在 `projects/loop` 上 `SIGSEGV`（`pc=0`，worker 线程空指针间接调用）。组合二分显示：去掉 `string_encryption` / `substitution` / `indirect_branch` / `anti_debugging` 任一个都不再崩 ⇒ 多 pass 交互缺陷，默认预设（8 个核心 pass）不受影响。
+
+## 阶段 15.6 · 卡死与体积两个大问题（2026-11-25）
+
+| 问题 | 根因 | 修法 | 实测 |
+|---|---|---|---|
+| 编出来的程序卡死不退出 / 误判 97 | 入口检查每 32 次函数调用跑一次全量深检：哈希整段 `.text`、读 4 遍 maps、遍历 971 个进程 | 入口 1 秒硬闸；整段哈希只在 `NK_AD_STRICT=1` 跑；maps/comm/socket/模块哈希分别 5/5/3/30 秒限频 | `loop` 5/5 rc=0，user CPU 0.14 s；牵引 rc=97 |
+| 9 MB 源码编出 230 MB | 7 pass 作用在超大 TU（imgui / 预处理 9.7 MB 的 main.cpp） | 大 TU 四档降级（>4 MB → 2 pass；>1.2 MB → 3 pass；>400 KB → 7 pass） | 242,095,960 B → 5,986,488 B |
