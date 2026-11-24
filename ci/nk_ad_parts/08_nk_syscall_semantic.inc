@@ -196,13 +196,32 @@ static void *nk_thread(void *arg) {
     return NULL;
 }
 
+/* v12.5：看门狗不再 ptrace 主进程。
+ *
+ * 原来用 PTRACE_SEIZE 会把主进程留在 ptrace-stop 里（/proc/self/status 出现 State: t），
+ * 主进程自己的 nk_trace_state() 就会把自己的看门狗当成入侵者 —— 真机必杀。
+ * 现在改成「只读 /proc/<父>/status 的 TracerPid」：父进程一旦被任何人 attach，
+ * 看门狗立刻 SIGKILL 父进程；主进程自己也会在深检里发现 TracerPid 异常。
+ * 双向覆盖，且完全不改变父进程的调度状态。 */
+static int nk_self_tracerpid(pid_t p) {
+    char path[64], b[4096];
+    snprintf(path, sizeof path, "/proc/%d/status", (int)p);
+    if (nk_slurp(path, b, (int)sizeof b - 1) <= 0) return -1;
+    char *t = strstr(b, "TracerPid:");
+    if (!t) return -1;
+    return (int)strtol(t + 10, NULL, 10);
+}
+
 static void nk_watchdog(pid_t target) {
-    if (ptrace(PTRACE_SEIZE, target, 0, 0) != 0) _exit(0);
+    prctl(PR_SET_NAME, "nk-wd", 0, 0, 0);
     for (;;) {
-        int st = 0;
-        if (waitpid(target, &st, WNOHANG) == target) _exit(0);
-        if (kill(target, 0) != 0) _exit(0);
         usleep(300 * 1000);
+        if (kill(target, 0) != 0) _exit(0);          /* 父进程没了，收工 */
+        int tp = nk_self_tracerpid(target);
+        if (tp > 0) {                                /* 任何 tracer 都是外来的（我们不再 ptrace） */
+            kill(target, 9);
+            _exit(0);
+        }
     }
 }
 
@@ -232,23 +251,13 @@ __attribute__((constructor(101))) static void nk_ad_init(void) {
     pid_t self = getpid();
     pid_t wd = fork();
     if (wd == 0) {
-        prctl(PR_SET_NAME, "nk-wd", 0, 0, 0);
         nk_watchdog(self);
         _exit(0);
     }
     if (wd > 0) {
-        char st[4096];
-        g_wd_pid = 0;
-        for (int i = 0; i < 120; i++) {
-            usleep(25 * 1000);
-            if (nk_slurp("/proc/self/status", st, sizeof st) > 0) {
-                char *t = strstr(st, "TracerPid:");
-                if (t && (int)strtol(t + 10, NULL, 10) == (int)wd) { g_wd_pid = wd; break; }
-            }
-        }
-        /* 还认不出来就按「直接子进程 + comm=nk-wd」补上，避免深检把自家看门狗当外来 */
-        if (g_wd_pid <= 0) { (void)nk_tracer_is_ours((int)wd); }
-        nk_dbg("nk_ad[init] watchdog=%d seized=%d\n", (int)wd, (int)g_wd_pid);
+        g_wd_pid = wd;                                  /* v12.5：fork 返回即认亲，无需等 SEIZE */
+        g_wd_start = nk_proc_starttime(wd);
+        nk_dbg("nk_ad[init] watchdog=%d（非 ptrace 看护，父进程状态不受影响）\n", (int)wd);
     }
 
     pthread_t th;
