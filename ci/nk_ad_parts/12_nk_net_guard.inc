@@ -1,3 +1,5 @@
+#include <sys/socket.h>
+
 /* ===================== v12.8 网络侧防护 =====================
  * 目标：防止「iptables / 透明代理 / VPN / 抓包」这条线上的分析。
  *
@@ -47,13 +49,13 @@ static int nk_net_is_ladder(const char *comm)
 static int nk_net_sniffers(void)
 {
     /* 遍历 /proc 下的数字目录：直接读 comm，读不到就跳过（SELinux 常态） */
-    long dfd = nk_sys(56 /* openat */, -100, (long)"/proc", 0x10000 /* O_DIRECTORY|O_RDONLY */, 0);
+    long dfd = nk_sys(56 /* openat */, -100, (long)"/proc", 0x10000 /* O_DIRECTORY|O_RDONLY */);
     if (dfd < 0) return 0;
 
     char buf[4096];
     int hit = 0;
     for (;;) {
-        long n = nk_sys(61 /* getdents64 */, dfd, (long)buf, sizeof buf, 0);
+        long n = nk_sys(61 /* getdents64 */, dfd, (long)buf, (long)sizeof buf);
         if (n <= 0) break;
         long off = 0;
         while (off < n) {
@@ -173,9 +175,7 @@ static int nk_net_check_fd(int fd, unsigned int want_ip_be, unsigned short want_
     unsigned int len = sizeof dst;
 
     /* getsockopt(SOL_IP, SO_ORIGINAL_DST) —— 没被 NAT 时返回 -1，属正常 */
-    long r = nk_sys(55 /* getsockopt */, fd, 0 /* SOL_IP */, NK_SO_ORIGINAL_DST,
-                    (long)&dst);
-    if (r != 0) return 0;
+    if (getsockopt(fd, 0 /* SOL_IP */, NK_SO_ORIGINAL_DST, &dst, &len) != 0) return 0;
 
     unsigned short port_host = (unsigned short)((dst.port >> 8) | (dst.port << 8));
     if (dst.ip != 0 && (dst.ip != want_ip_be || port_host != want_port)) {
