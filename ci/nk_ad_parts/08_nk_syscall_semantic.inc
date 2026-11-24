@@ -32,12 +32,31 @@ static void nk_hwbp_slot_count(void) {
     if (got < 3) nk_soft_tool("hwbp-slots-low");
 }
 
+/* v12.11：几个「读 256 KB maps / 遍历 971 个 pid」的重探针单独限频。
+ * 抓 Frida 这类硬证据不需要 100 ms 级实时性，5 秒一轮完全够用。 */
+static int nk_slow_due(unsigned long long *slot, unsigned long long ms) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    unsigned long long now = (unsigned long long)ts.tv_sec * 1000ULL
+                           + (unsigned long long)ts.tv_nsec / 1000000ULL;
+    if (now - *slot < ms) return 0;
+    *slot = now;
+    return 1;
+}
+
 static void nk_tool_scan(int early) {
-    nk_hint_die(nk_uprobe_maps(), "nk_ad: text writable / [uprobes]");
-    if (nk_maps_hit())     nk_die_r("nk_ad: frida/xposed module in maps");
-    if (nk_frida_socket()) nk_die_r("nk_ad: frida socket");
-    if (nk_frida_files())  nk_die_r("nk_ad: injector artifacts");
-    if (nk_comm_hit())     nk_die_r("nk_ad: injected thread name");
+    static unsigned long long t_maps, t_comm, t_sock, t_tm;
+    if (nk_slow_due(&t_maps, 5000ULL)) {
+        nk_hint_die(nk_uprobe_maps(), "nk_ad: text writable / [uprobes]");
+        if (nk_maps_hit()) nk_die_r("nk_ad: frida/xposed module in maps");
+    }
+    if (nk_slow_due(&t_sock, 3000ULL)) {
+        if (nk_frida_socket()) nk_die_r("nk_ad: frida socket");
+        if (nk_frida_files())  nk_die_r("nk_ad: injector artifacts");
+    }
+    if (nk_slow_due(&t_comm, 5000ULL)) {
+        if (nk_comm_hit())     nk_die_r("nk_ad: injected thread name");
+    }
     if (nk_trace_state())  nk_die_r("nk_ad: traced state");
     if (!early) {
         nk_hint_die(nk_uprobe_brk(), "nk_ad: BRK patched into .text (uprobe)");
@@ -50,7 +69,7 @@ static void nk_tool_scan(int early) {
             nk_soft_tool("jni-table-out-of-module");
         }
         nk_hint_die(nk_hwbp_slots(), "nk_ad: hw breakpoint slots occupied");
-        nk_tm_verify();
+        if (nk_slow_due(&t_tm, 30000ULL)) nk_tm_verify();
         nk_text_wlock();
         /* v12：P-3 分段自哈希 / P-6+P-4 结构化 maps 判据 / P-5 交叉验证 / S-1 S-4 */
         nk_seg_verify();
@@ -72,6 +91,7 @@ static void nk_tool_scan(int early) {
 }
 
 static unsigned long long g_emu_last_deep;
+static unsigned long long g_entry_last;      /* v12.11：入口检查时间闸 */
 
 static unsigned long long nk_now_ms(void) {
     struct timespec t;
@@ -166,7 +186,9 @@ static void nk_check_full(int early) {
         if (hk) nk_hint_die(1, "nk_ad: libc prologue hooked");
     }
 
-    if (!early && g_text_addr && g_text_size) {
+    /* v12.11：整段 .text 哈希（3 MB+）只在 NK_AD_STRICT=1 时跑；
+     * 常规由 nk_seg_verify()/nk_cbase_check() 分段轮转覆盖，成本摊平。 */
+    if (!early && nk_strict_mode() && g_text_addr && g_text_size) {
         uint64_t h = nk_hash_mem((const unsigned char *)g_text_addr, g_text_size);
         nk_dbg("nk_ad[chk] text %llx vs %llx\n",
                (unsigned long long)h, (unsigned long long)g_text_hash);
@@ -180,6 +202,17 @@ __attribute__((visibility("default"))) void NK_AD_SYM(void) {
 #endif
     if (!g_inited) return;
     if ((++g_calls & 31u) != 0) return;
+    /* v12.11：入口检查加时间闸。App 每帧几千次函数调用，只靠 &31 限流
+     * 仍是每秒几十次全量检查（哈希 3.4 MB .text + 读 4 遍 maps +
+     * 遍历 971 个 pid），直接打满 CPU 像卡死。这里再加 1 秒硬闸。 */
+    {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        unsigned long long now_e = (unsigned long long)ts.tv_sec * 1000ULL
+                                 + (unsigned long long)ts.tv_nsec / 1000000ULL;
+        if (now_e - g_entry_last < 1000ULL) return;
+        g_entry_last = now_e;
+    }
     nk_check_full(0);
 }
 
