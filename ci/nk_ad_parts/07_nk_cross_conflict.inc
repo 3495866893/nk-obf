@@ -29,7 +29,7 @@ static void nk_seg_verify(void) {
     uint64_t len = (i == NK_SEG - 1) ? (g_text_size - off) : per;
     uint64_t h = nk_hash_mem((const unsigned char *)(g_text_addr + off), len);
     if (!g_seg_have[i]) { g_seg_base[i] = h; g_seg_have[i] = 1; return; }
-    if (h != g_seg_base[i]) nk_die_r("nk_ad: text segment patched");
+    if (h != g_seg_base[i]) nk_hint_die(1, "nk_ad: text segment patched");
 }
 
 /* ---------- P-3 编译期基线（链接后由 ci/tools/nk_patch_baseline.py 回填）----------
@@ -92,7 +92,7 @@ static void nk_cbase_check(void)
     if (h != (uint64_t)__nk_base_hash[i]) {
         nk_dbg("nk_ad[base] seg %d 期望 %llx 实际 %llx\n", i,
                (unsigned long long)__nk_base_hash[i], (unsigned long long)h);
-        nk_die_r("nk_ad: text chunk differs from build baseline");
+        nk_hint_die(1, "nk_ad: text chunk differs from build baseline");
     }
 }
 
