@@ -228,3 +228,10 @@ Fix: the watchdog polls `TracerPid` from `/proc/<pid>/status` every 300 ms and c
 - Device regression (RMX3888 / Android 16): 8 passes + anti-debug 5/5 `rc=0`; anti-debug only 3/3 `rc=0`; both exit 97 when traced.
 - Per-pass runtime matrix (all 16 passes compiled alone and run 3x on device): **all `rc=0`** — no single pass crashes on its own.
 - Known defect: with **all 16 passes** enabled (`all16`) the `projects/loop` binary dies with `SIGSEGV` (`pc=0`, null indirect call in a worker thread). The combination bisect shows that dropping any of `string_encryption` / `substitution` / `indirect_branch` / `anti_debugging` removes the crash — a multi-pass interaction; the default preset (8 core passes) is unaffected.
+
+## Phase 15.6 · Two big issues: hang and size (2026-11-25)
+
+| Issue | Root cause | Fix | Measured |
+|---|---|---|---|
+| Built binary hangs / false 97 | Entry check ran a full deep scan every 32 function calls: hashing the whole `.text`, reading `maps` 4x, walking 971 processes | 1 s hard gate on the entry check; whole-`.text` hash only under `NK_AD_STRICT=1`; maps/comm/socket/module-hash limited to 5/5/3/30 s | `loop` 5/5 rc=0, 0.14 s user CPU; traced rc=97 |
+| 9 MB source -> 230 MB binary | 7 passes applied to very large TUs (imgui, 9.7 MB preprocessed main.cpp) | Four-tier size downgrade (>4 MB -> 2 passes; >1.2 MB -> 3; >400 KB -> 7) | 242,095,960 B -> 5,986,488 B |
