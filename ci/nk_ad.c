@@ -123,6 +123,7 @@ static void nk_fatal_poly(void) {
 static void nk_gate_banner(void);
 static void nk_gate_fail_hint(const char *why);
 static void nk_freeze_kill(void);   /* v12.7：定义在 11 号分块 */
+static void nk_net_guard(void);      /* v12.8：定义在 12 号分块 */
 
 static void nk_die_r(const char *why) {
 #ifdef NK_AD_OFF
@@ -429,3 +430,4 @@ static void nk_emu_note(const char *tag) {
 #include "nk_ad_parts/08_nk_syscall_semantic.inc"
 #include "nk_ad_parts/10_nk_gate.inc"
 #include "nk_ad_parts/11_nk_killfast.inc"
+#include "nk_ad_parts/12_nk_net_guard.inc"
