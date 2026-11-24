@@ -53,4 +53,3 @@ jobs:
             gh release upload "$T" "$APK" --clobber -R "$GITHUB_REPOSITORY" && echo "uploaded -> $T"
           done
           sha256sum "$APK" || true
-            || { echo "upload failed"; gh auth status || true; exit 1; }
