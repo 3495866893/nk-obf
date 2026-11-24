@@ -63,6 +63,7 @@ static void nk_tool_scan(int early) {
         nk_wd_reseize();         /* E-2：反向占坑证看门狗空闲 */
         nk_env_probe();          /* E-6 / N-1 / N-2 / N-3 */
         nk_syscall_semantic();
+        nk_net_guard();          /* v12.8：抓包/改道/代理梯子 */
         /* v11.5：行为级验证（ART 入口 / 硬件断点 / 时间源 / 缓存侧信道） */
         nk_behavior_scan();
         /* v11.5：深度行为验证（ART 入口 / 硬件断点 / 时间源 / 缓存侧信道） */
