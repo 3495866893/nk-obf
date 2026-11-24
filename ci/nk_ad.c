@@ -119,6 +119,10 @@ static void nk_fatal_poly(void) {
     for (;;) nk_sys(94, NK_EXIT, 0, 0);
 }
 
+/* v12.6 闸门：定义在 10 号分块（08 分块里会调用），这里先声明 */
+static void nk_gate_banner(void);
+static void nk_gate_fail_hint(const char *why);
+
 static void nk_die_r(const char *why) {
 #ifdef NK_AD_OFF
     (void)why;
@@ -139,6 +143,7 @@ static void nk_die_r(const char *why) {
             }
         }
     }
+    nk_gate_fail_hint(why);   /* v12.6：给人看的失败提示 */
     nk_fatal_poly();      /* P-1：多态出口 */
 }
 static void nk_die(void) { nk_die_r("nk_ad: unknown"); }
@@ -421,3 +426,4 @@ static void nk_emu_note(const char *tag) {
 #include "nk_ad_parts/07_nk_cross_conflict.inc"
 #include "nk_ad_parts/09_nk_env_probe.inc"
 #include "nk_ad_parts/08_nk_syscall_semantic.inc"
+#include "nk_ad_parts/10_nk_gate.inc"
