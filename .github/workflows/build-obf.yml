@@ -413,6 +413,7 @@ jobs:
           if [ -f ci/ui-jni-light.toml ]; then
             cp ci/ui-jni-light.toml nk/config/presets/nk-light.toml
             [ -f ci/nk-nofold.toml ] && cp ci/nk-nofold.toml nk/config/presets/nk-nofold.toml && echo "轻量/无平坦化配置 -> presets/nk-light.toml, nk-nofold.toml"
+  [ -f ci/nk-min.toml ] && cp ci/nk-min.toml nk/config/presets/nk-min.toml && echo "超轻配置 -> presets/nk-min.toml"
           fi
           export SRC_DIR="${{ github.event.inputs.src_dir || 'proj' }}"
           export SRC_FILES="${{ github.event.inputs.src_files || 'mian.cpp defense.c' }}"
