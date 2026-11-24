@@ -1,150 +1,211 @@
-#include "globals.h"
-#include "memory.h"
-#include "platform.h"
-#include "game.h"
-#include "camera.h"
-#include "esp.h"
-#include "ui.h"
-#include "config.h"
-#include "physics.h"
+// AETHER 3D 悬浮菜单入口：
+//   android::ANativeWindowCreator 建窗口 -> EGL/GLES3 -> ImGui -> 每帧 Draw -> eglSwapBuffers
+// 界面全部画在 AetherUI.cpp 里，这里只负责生命周期。
 
-#include "GraphicsManager.h"
-#include "TouchHelperA.h"
+#include <android/native_window.h>
+#include <EGL/egl.h>
+#include <GLES3/gl3.h>
+#include <unistd.h>
 
-#include "../res/xl_verify.h"   /* XL云验证：SM4-CBC(动态IV)+HMAC-SM3 卡密登录 */
-
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
-Reader *dr = nullptr;
+#include "ANativeWindowCreator.h"
+#include "AetherUI.h"
+#include "ProjectConfig.hpp"
+#include "TouchSimple.h"
+#include "imgui.h"
+#include "imgui_impl_android.h"
+#include "imgui_impl_opengl3.h"
 
-std::unique_ptr<AndroidImgui> graphics = nullptr;
-ANativeWindow *window = nullptr;
-android::ANativeWindowCreator::DisplayInfo displayInfo;
-ImGuiWindow *g_window = nullptr;
-ImFont *zh_font = nullptr;
+#if APPUI_CJK_FONT
+#include "Font.h"
+#endif
 
-int abs_ScreenX = 0;
-int abs_ScreenY = 0;
-int native_window_screen_x = 0;
-int native_window_screen_y = 0;
-float px = 0.0f;
-float py = 0.0f;
+static EGLDisplay g_display = EGL_NO_DISPLAY;
+static EGLConfig g_config{};
+static EGLSurface g_surface = EGL_NO_SURFACE;
+static EGLContext g_context = EGL_NO_CONTEXT;
+static ANativeWindow* g_window = nullptr;
+static int g_screenW = 0, g_screenH = 0;
+static float g_uiScale = 1.f;
 
-long int libUE4 = 0;
-long int Uworld = 0;
-long int Uleve = 0;
-long int Arrayaddr = 0;
-long int MySelf = 0;
-long int Gname = 0;
-long int PlayerController = 0;
-long int CameraManagerPtr = 0;
-int Count = 0;
+static void CleanupEgl(bool releaseWindow) {
+  if (g_display != EGL_NO_DISPLAY)
+    eglMakeCurrent(g_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  if (g_surface != EGL_NO_SURFACE) {
+    eglDestroySurface(g_display, g_surface);
+    g_surface = EGL_NO_SURFACE;
+  }
+  if (g_context != EGL_NO_CONTEXT) {
+    eglDestroyContext(g_display, g_context);
+    g_context = EGL_NO_CONTEXT;
+  }
+  if (g_display != EGL_NO_DISPLAY) {
+    eglTerminate(g_display);
+    g_display = EGL_NO_DISPLAY;
+  }
+  if (releaseWindow && g_window) {
+    ANativeWindow_release(g_window);
+    g_window = nullptr;
+  }
+}
 
-Vec3 CameraLocation;
-Vec3 CameraRotation;
-float CameraFov = 0.0f;
+static bool InitEgl(int w, int h) {
+  g_window = android::ANativeWindowCreator::Create(PROJECT_OVERLAY_WINDOW_NAME, w, h, true);
+  if (!g_window)
+    return false;
+  ANativeWindow_acquire(g_window);
 
-bool Initialized = false;
-bool PhysXReady = false;
-bool NeedRecreateOverlay = false;
-bool NeedRestoreWindow = false;
-int PlayerCount = 0;
-float FrameRate = 120.0f;
-WindowRect LastWindow;
-OcclusionProbe NearestProbe;
-AimedBone AimedBonePoint;
+  g_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+  if (g_display == EGL_NO_DISPLAY)
+    return false;
+  if (!eglInitialize(g_display, nullptr, nullptr))
+    return false;
 
-ImColor BoxColor = ImColor(255, 0, 0, 255);
-ImColor SnaplineColor = ImColor(255, 0, 0, 255);
-ImColor BoneColor = ImColor(255, 0, 0, 255);
-ImColor OccludedBoxColor = ImColor(0, 255, 0, 255);
-ImColor OccludedLineColor = ImColor(0, 255, 0, 255);
+  const EGLint attribs[] = {EGL_SURFACE_TYPE,
+                            EGL_WINDOW_BIT,
+                            EGL_RENDERABLE_TYPE,
+                            EGL_OPENGL_ES2_BIT,
+                            EGL_RED_SIZE,
+                            8,
+                            EGL_GREEN_SIZE,
+                            8,
+                            EGL_BLUE_SIZE,
+                            8,
+                            EGL_ALPHA_SIZE,
+                            8,
+                            EGL_DEPTH_SIZE,
+                            16,
+                            EGL_STENCIL_SIZE,
+                            8,
+                            EGL_NONE};
+  EGLint n = 0;
+  if (!eglChooseConfig(g_display, attribs, &g_config, 1, &n) || n <= 0)
+    return false;
 
-int main(int argc, char *argv[]) {
-    (void) argc;
-    (void) argv;
-    ConfigManager::Load();
+  EGLint format = 0;
+  eglGetConfigAttrib(g_display, g_config, EGL_NATIVE_VISUAL_ID, &format);
+  ANativeWindow_setBuffersGeometry(g_window, 0, 0, format);
 
-    /* 卡密验证：已存卡密则后台自动登录，否则进入登录窗 */
-    XLV::Init();
+  const EGLint ctxAttr[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+  g_context = eglCreateContext(g_display, g_config, EGL_NO_CONTEXT, ctxAttr);
+  if (g_context == EGL_NO_CONTEXT)
+    return false;
+  g_surface = eglCreateWindowSurface(g_display, g_config, g_window, nullptr);
+  if (g_surface == EGL_NO_SURFACE)
+    return false;
+  if (!eglMakeCurrent(g_display, g_surface, g_surface, g_context))
+    return false;
+  return true;
+}
 
+static bool InitImGui() {
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.IniFilename = nullptr;                     // 不落 imgui.ini
+  io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;  // 悬浮窗需要鼠标/触摸事件
 
-    ::graphics = GraphicsManager::getGraphicsInterface();
-    if (!::graphics) {
-        printf("renderer creation failed\n");
-        return 1;
-    }
+#if APPUI_CJK_FONT
+  {
+    ImFontConfig cfg;
+    cfg.OversampleH = 1;
+    cfg.OversampleV = 1;
+    cfg.PixelSnapH = true;
+    cfg.FontDataOwnedByAtlas = false;  // 字体数据是静态数组，不交给 ImGui 释放
+    const float fontPx = 34.f * g_uiScale;
+    ImFont* font = io.Fonts->AddFontFromMemoryTTF((void*)OPPOSans_H, (int)OPPOSans_H_size, fontPx,
+                                                 &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    if (!font)
+      io.Fonts->AddFontDefault();
+  }
+#else
+  io.Fonts->AddFontDefault();
+#endif
 
-    Platform::RefreshDisplay();
+    ImGui_ImplAndroid_Init(g_window);
+  ImGui_ImplOpenGL3_Init("#version 300 es");
+  return true;
+}
 
-    ::native_window_screen_x = ::displayInfo.width;
-    ::native_window_screen_y = ::displayInfo.height;
-    ::abs_ScreenX = ::displayInfo.width;
-    ::abs_ScreenY = ::displayInfo.height;
+static void Frame() {
+  auto info = android::ANativeWindowCreator::GetDisplayInfo();
+  if ((int)info.width != g_screenW || (int)info.height != g_screenH) {
+    g_screenW = (int)info.width;
+    g_screenH = (int)info.height;
+    UpdateScreenData(g_screenW, g_screenH, info.orientation);
+  }
 
-    ::window = android::ANativeWindowCreator::Create(
-        "test", native_window_screen_x, native_window_screen_y,
-        ConfigManager::Current.HideFromCapture);
+  Touch_PumpAll();
 
-    ::graphics->Init_Render(::window, native_window_screen_x,
-                            native_window_screen_y);
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2((float)g_screenW, (float)g_screenH);
 
-    Touch::Init({static_cast<float>(::abs_ScreenX),
-                 static_cast<float>(::abs_ScreenY)},
-                true);
-    Touch::setOrientation(displayInfo.orientation);
+  ImGui_ImplOpenGL3_NewFrame();
+  ImGui_ImplAndroid_NewFrame(g_screenW, g_screenH);
+  ImGui::NewFrame();
 
-    Platform::InitRenderEnv();
+    AetherUI::Draw((float)g_screenW, (float)g_screenH, g_uiScale);
 
-    bool running = true;
-    while (running) {
-        Platform::BeginFrame();
+  ImGui::Render();
+  glViewport(0, 0, g_screenW, g_screenH);
+  glClearColor(0.f, 0.f, 0.f, 0.f);  // 全透明背景
+  glClear(GL_COLOR_BUFFER_BIT);
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+  eglSwapBuffers(g_display, g_surface);
+}
 
-        Touch::UpdateImGuiInput();
-        graphics->NewFrame(true);
+int main(int argc, char** argv) {
+  (void)argc;
+  (void)argv;
 
-        XLV::Tick();
+  auto info = android::ANativeWindowCreator::GetDisplayInfo();
+  g_screenW = (int)info.width;
+  g_screenH = (int)info.height;
+  if (g_screenW <= 0 || g_screenH <= 0) {
+    fprintf(stderr, "overlay: failed to read display info\n");
+    return 1;
+  }
 
-        if (XLV::Verified()) {
-            static bool login_logged = false;
-            if (!login_logged) {
-                login_logged = true;
-                XLV_LOGI("验证通过，到期时间：%s", XLV::Expiry().c_str());
-            }
+  const int shortSide = g_screenW < g_screenH ? g_screenW : g_screenH;
+  g_uiScale = shortSide / 900.f;
+  if (g_uiScale < 0.85f)
+    g_uiScale = 0.85f;
+  if (g_uiScale > 2.2f)
+    g_uiScale = 2.2f;
 
-            UI::Layout_tick_UI(&running);
+  if (!InitEgl(g_screenW, g_screenH)) {
+    fprintf(stderr, "overlay: EGL init failed\n");
+    CleanupEgl(true);
+    return 2;
+  }
+  if (!InitImGui()) {
+    fprintf(stderr, "overlay: ImGui init failed\n");
+    CleanupEgl(true);
+    return 3;
+  }
 
-            Game::Update();
+  Touch_Init(g_screenW, g_screenH, info.orientation, false);  // false = 独占 + 注入，需要 root
+  printf("overlay running %dx%d scale=%.2f\n", g_screenW, g_screenH, g_uiScale);
 
-            if (Game::IsAttached() && CameraFov > 0.0f) {
-                Camera::Setup({CameraLocation,
-                               Rotator{CameraRotation.x, CameraRotation.y,
-                                       CameraRotation.z},
-                               CameraFov},
-                              static_cast<float>(abs_ScreenX),
-                              static_cast<float>(abs_ScreenY));
-            } else {
-                Camera::Setup({}, 0.0f, 0.0f);
-            }
+  using clock = std::chrono::steady_clock;
+  auto next = clock::now();
+  while (!AetherUI::GetState().requestExit) {
+    Frame();
+    next += std::chrono::milliseconds(16);  // ~60fps
+    auto now = clock::now();
+    if (next > now)
+      std::this_thread::sleep_until(next);
+    else
+      next = now;
+  }
 
-            ESP::DrawPlayers(ImGui::GetForegroundDrawList());
-            ESP::DrawCollision(ImGui::GetForegroundDrawList());
-            ESP::DrawObjectNames(ImGui::GetForegroundDrawList());
-        } else {
-            /* 未通过卡密验证：只显示登录窗，不挂游戏、不绘制 */
-            XLV::ShowWindow(&running);
-        }
-
-        graphics->EndFrame();
-
-        Platform::LimitFrameRate();
-    }
-
-    Physics::StopWorkerThreads();
-
-    Touch::Close();
-    graphics->Shutdown();
-    android::ANativeWindowCreator::Destroy(::window);
-
-    return 0;
+  Touch_Close();
+  ImGui_ImplOpenGL3_Shutdown();
+  ImGui_ImplAndroid_Shutdown();
+  ImGui::DestroyContext();
+  CleanupEgl(true);
+  return 0;
 }

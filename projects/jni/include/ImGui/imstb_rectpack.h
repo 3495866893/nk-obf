@@ -1,11 +1,3 @@
-/* TEXT_INJECTOR:BEGIN */
-/*此源码完全免费，请勿被骗
-看到不加群死全家@WanMiankernel
-q群 1105344707
-晚宀宝宝
-当前注入时间：2026-09-05 12:09:45（北京时间）
-*/
-/* TEXT_INJECTOR:END */
 // [DEAR IMGUI]
 // This is a slightly modified version of stb_rect_pack.h 1.01.
 // Grep for [DEAR IMGUI] to find the changes.
@@ -323,7 +315,7 @@ static int stbrp__skyline_find_min_y(stbrp_context *c, stbrp_node *first, int x0
       if (node->y > min_y) {
          // raise min_y higher.
          // we've accounted for all waste up to min_y,
-         // but we'll now add more waste for everything we've visited
+         // but we'll now add more waste for everything we've visted
          waste_area += visited_width * (node->y - min_y);
          min_y = node->y;
          // the first time through, visited_width might be reduced
@@ -478,7 +470,7 @@ static stbrp__findresult stbrp__skyline_pack_rectangle(stbrp_context *context, i
 
    // insert the new node into the right starting point, and
    // let 'cur' point to the remaining nodes needing to be
-   // stitched back in
+   // stiched back in
 
    cur = *res.prev_link;
    if (cur->x < res.x) {
