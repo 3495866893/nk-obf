@@ -6,8 +6,8 @@
 
 | 产物 | 位置 | 大小 | 说明 |
 |---|---|---|---|
-| 手机端 APK | Release `v1.0.2` → `NKBuild-mobile-1.0.2-kami.apk` | 9.98 MB | Android 8.0+（`minSdk 26`），签名已固定，可直接覆盖升级 |
-| 桌面端 EXE | Release `v1.0.2` → `NKBuild-1.0.2-win64.exe` | 13.35 MB | Windows x64 单文件，免安装 |
+| 手机端 APK | Release `v1.0.5` → `NKBuild-mobile-1.0.5-kami.apk` | 10.46 MB | Android 8.0+（`minSdk 26`），签名已固定，可直接覆盖升级 |
+| 桌面端 EXE | Release `v1.0.5` → `NKBuild-1.0.5-win64.exe` | 14.0 MB | Windows x64 单文件，免安装 |
 | 混淆后的示例二进制 | Release `nk-builds` → `lucifer` | 21,145,056 B | 每次构建自动覆盖（`--clobber`） |
 | 工具链 | Release `nk-builds` → `nk-toolchain.tar.gz` | KB 级（只含 `source.properties` 与打包入口） | clang 21 + lld + sysroot 打包入口 |
 | LLVM 预编译 | Release `llvm-build-21.1.8` → `llvm-build.tar.zst` | 232 MB | CI 缓存用，不占 artifact 配额 |
@@ -85,8 +85,8 @@ apksigner verify --print-certs NKBuild-mobile-1.0-kami.apk | grep SHA-256
 1. 改 `android/app/build.gradle.kts` 的 `versionCode`（+1），`versionName` 保持 `1.0`。
 2. push 到 `android/**` 触发 `build-apk.yml`，签名固定 `android/keystore/nkbuild.p12`。
 3. 桌面端跑 `pyinstaller tools/NKBuild.spec`，产物改名 `NKBuild-1.0-win64.exe`。
-4. `gh release create v1.0.2 <两个文件> --repo 3495866893/nk-obf`；tag 已存在时用 `gh release upload v1.0.2 <文件> --clobber`。
-5. 复核：`gh release view v1.0.2 --repo 3495866893/nk-obf`，两个资产大小应是 9.98 MB 与 13.35 MB。
+4. `gh release create v1.0.5 <两个文件> --repo 3495866893/nk-obf`；tag 已存在时用 `gh release upload v1.0.5 <文件> --clobber`。
+5. 复核：`gh release view v1.0.5 --repo 3495866893/nk-obf`，两个资产大小应是 10.46 MB 与 14.0 MB。
 
 `nk-builds` 是滚动 tag，每次构建 `--clobber` 覆盖同名资产，不留历史版本；要留档就自己另存。
 
@@ -99,11 +99,11 @@ apksigner verify --print-certs NKBuild-mobile-1.0-kami.apk | grep SHA-256
 | `msg.vip=4102243200` | 到期时间戳（秒） | 界面上换算成年月日，不是错误 |
 | 网络失败 | 域名 `yz.dujiuyue.cn` 不可达 | 检查网络；域名换过就看 `XlVerify.kt` 的 `HOSTS` |
 
-## 当前版本 v1.0.2
+## 当前版本 v1.0.5
 
 | 平台 | 文件 | 大小 | sha256 |
 | --- | --- | --- | --- |
-| Windows | `NKBuild-1.0.2-win64.exe` | 13.35 MB | `2F301EC3FE0B107C23D8D92BC5D6F24DD954001092650FE5D81F08D36FC3FB46` |
-| Android | `NKBuild-mobile-1.0.2-kami.apk` | 9.98 MB | `6E13B63494A56D6BD6E2EEDFE15C12595EB6B9B262D205DB174CA644F644E4E3` |
+| Windows | `NKBuild-1.0.5-win64.exe` | 14.0 MB | `3242CE4B439C4E1EB4876553E68F99396A9ADA74F77E239CDDD168F786AD82F7` |
+| Android | `NKBuild-mobile-1.0.5-kami.apk` | 10.46 MB | `239B7BE199EC6F5B46BDBA634E2B98C326987230D15045F1B2866E6D4E276D8C` |
 
-相对 1.0.0：反调试补完 S-3 / S-5；双端版本号同步到 1.0.2。
+相对 1.0.2（**修复重大 bug**）：看门狗不再用 `PTRACE_SEIZE`（原本会把主进程留在 `State: t`，导致反调试把自己杀掉）；模拟执行软证据去重、判死改为 ≥4 个不同证据；只开反调试不再被偷偷降级/加重混淆；新增启动验证闸门（紫色横幅「NK 1.0.5 验证通过」+ 3 秒清屏，失败提示关闭调试工具）。
