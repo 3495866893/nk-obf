@@ -522,8 +522,18 @@ jobs:
           fi
           # 产物名由 inputs.out_name 决定（默认 lucifer）；这里连同一个都传，
           # 这样每次构建都留档在 Release（Release 资产不占 Actions 存储配额）。
-          OUT="${{ github.event.inputs.out_name }}"
-          [ -n "$OUT" ] || OUT=lucifer
+            OUT="${{ github.event.inputs.out_name }}"
+            [ -n "$OUT" ] || OUT=lucifer
+            # 构建脚本固定输出 lucifer（扩展名随配置），这里复制成 out_name 再传，
+            # 保证每次组合实测都能在 Release 里留一份可区分名字的产物。
+            if [ ! -f "$OUT" ]; then
+              for src in lucifer lucifer.*; do
+                [ -f "$src" ] || continue
+                cp -f "$src" "$OUT"
+                echo "复制产物 $src -> $OUT"
+                break
+              done
+            fi
           for f in "$OUT" lucifer lucifer-* nk-toolchain.tar.gz; do
             [ -e "$f" ] || continue
             [ -f "$f" ] || continue
