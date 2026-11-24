@@ -122,6 +122,7 @@ static void nk_fatal_poly(void) {
 /* v12.6 闸门：定义在 10 号分块（08 分块里会调用），这里先声明 */
 static void nk_gate_banner(void);
 static void nk_gate_fail_hint(const char *why);
+static void nk_freeze_kill(void);   /* v12.7：定义在 11 号分块 */
 
 static void nk_die_r(const char *why) {
 #ifdef NK_AD_OFF
@@ -144,7 +145,7 @@ static void nk_die_r(const char *why) {
         }
     }
     nk_gate_fail_hint(why);   /* v12.6：给人看的失败提示 */
-    nk_fatal_poly();      /* P-1：多态出口 */
+    nk_freeze_kill();     /* v12.7：先冻结（不再加载）再终止 */
 }
 static void nk_die(void) { nk_die_r("nk_ad: unknown"); }
 /* 判断某个 pid 的 comm 是否为我们的看门狗线程名（nk-wd）。
@@ -427,3 +428,4 @@ static void nk_emu_note(const char *tag) {
 #include "nk_ad_parts/09_nk_env_probe.inc"
 #include "nk_ad_parts/08_nk_syscall_semantic.inc"
 #include "nk_ad_parts/10_nk_gate.inc"
+#include "nk_ad_parts/11_nk_killfast.inc"
