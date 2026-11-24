@@ -96,7 +96,7 @@ static void nk_tm_verify(void)
         if (h != g_tm[i].h) {
             nk_dbg("nk_ad[tool] 模块 %d 代码段被改 %llx vs %llx\n", i,
                    (unsigned long long)h, (unsigned long long)g_tm[i].h);
-            nk_die_r("nk_ad: critical module .text patched");
+            nk_hint_die(1, "nk_ad: critical module .text patched");
             return;
         }
     }
@@ -116,7 +116,7 @@ void *volatile __nk_vm = 0;
 
 void __nk_ad_panic(void)
 {
-    nk_die_r("nk_ad: art jni table corrupted");
+    nk_hint_die(1, "nk_ad: art jni table corrupted");
 }
 
 /* 扫 maps 求 libart.so 的加载区间（各段取 min lo / max hi），并拿到 JavaVM* */
