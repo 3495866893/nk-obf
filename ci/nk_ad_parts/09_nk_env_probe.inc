@@ -30,20 +30,9 @@ static uint64_t nk_boot_age_ms(void) {
 #define NK_PTRACE_CONT      0x07L
 
 static void nk_wd_reseize(void) {
-    if (g_wd_pid <= 0) return;
-    long r = nk_sys5(117 /* ptrace */, NK_PTRACE_SEIZE, (long)g_wd_pid, 0, 0, 0);
-    if (r < 0) {
-        if (r == -1)        nk_soft_tool("wd-seized-by-other");   /* EPERM */
-        else if (r == -3)   nk_soft_tool("wd-gone");              /* ESRCH */
-        else                nk_dbg("nk_ad[e2] seize rc=%ld\n", r);
-        return;
-    }
-    nk_sys5(117, NK_PTRACE_INTERRUPT, (long)g_wd_pid, 0, 0, 0);
-    int st = 0;
-    (void)waitpid(g_wd_pid, &st, WNOHANG);                        /* 只证明可调度 */
-    nk_sys5(117, NK_PTRACE_CONT, (long)g_wd_pid, 0, 0, 0);
-    nk_sys5(117, NK_PTRACE_DETACH, (long)g_wd_pid, 0, 0, 0);
-    nk_dbg("nk_ad[e2] watchdog %d seize/detach ok\n", (int)g_wd_pid);
+    /* v12.5：看门狗不再 ptrace 任何进程，主进程也不去 seize 它
+       —— 双向都不进 ptrace-stop，避免 State: t 自伤。存活由 nk_wd_reap 管。 */
+    return;
 }
 
 /* ---------- E-4：给 g_uarch_flags 接消费点（以前只翻位、没人读） ---------- */
