@@ -71,6 +71,13 @@ static long nk_sys5(long n, long a, long b, long c, long d, long e)
 }
 static int  nk_slurp(const char *path, char *buf, int cap); /* fwd decl */
 
+#ifdef NK_AD_QUIET
+/* v12.12：发布构建把调试日志整段编掉 —— .rodata 里不再有任何 "nk_ad[...]"
+ * 字面量，strings 一把定位再 patch 的路子就断了。检测逻辑一行不改。
+ * 需要日志时用 -DNK_AD_QUIET=0 或 NK_AD_DEBUG=1 的调试构建。 */
+#define nk_dbg(...) ((void)0)
+static int nk_dbg_on(void) { return 0; }
+#else
 static int nk_dbg_on(void) {
     static int cached = -1;
     if (cached < 0) cached = getenv("NK_AD_DEBUG") ? 1 : 0;
@@ -89,6 +96,7 @@ static void nk_dbg(const char *fmt, ...) {
     int fd = (int)nk_sys(56, -100, (long)"/data/local/tmp/nk_ad.log", 0x442 /* O_WRONLY|O_CREAT|O_APPEND */);
     if (fd >= 0) { nk_sys(64, fd, (long)b, n); nk_sys(57, fd, 0, 0); }
 }
+#endif /* NK_AD_QUIET */
 
 /* ===================== P-1 处置出口多态 =====================
  * 原来 30+ 个检测点全部汇到 nk_die_r 里的一句 _exit()，攻击者在 .text 里
@@ -425,9 +433,37 @@ static int nk_strict_mode(void) {
     const char *e = getenv("NK_AD_STRICT");
     return (e && *e && *e != '0') ? 1 : 0;
 }
+/* v12.12：完整性判据累积升级。
+ * 单点（ROM/内核/梯子/系统服务碰一下）只记日志；同一设备 60 秒内命中
+ * >=2 个**不同**判据 ⇒ 升级为硬杀。攻击者要同时躲开好几个点才安全。 */
+static unsigned g_intsig_seen = 0;
+static int g_intsig_n = 0;
+static unsigned long long g_intsig_first = 0;
+
+static int nk_int_sig(const char *why) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    unsigned long long now = (unsigned long long)ts.tv_sec * 1000ULL
+                           + (unsigned long long)ts.tv_nsec / 1000000ULL;
+    unsigned h = 2166136261u;                       /* FNV-1a，给判据算个位号 */
+    for (const char *p = why; p && *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+    unsigned m = 1u << (h & 31u);
+    if (g_intsig_seen == 0 || (now - g_intsig_first) > 60000ULL) {
+        g_intsig_seen = 0;
+        g_intsig_n = 0;
+        g_intsig_first = now;
+    }
+    if (!(g_intsig_seen & m)) { g_intsig_seen |= m; g_intsig_n++; }
+    if (g_intsig_n >= 2) {
+        nk_dbg("nk_ad[hint] 60s 内命中 %d 个不同完整性判据，升级硬杀\n", g_intsig_n);
+        return 1;
+    }
+    return 0;
+}
+
 static void nk_hint_die(int cond, const char *why) {
     if (!cond) return;
-    if (nk_strict_mode()) nk_die_r(why);
+    if (nk_strict_mode() || nk_int_sig(why)) nk_die_r(why);
     else nk_soft_tool(why);
 }
 
