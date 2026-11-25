@@ -106,7 +106,8 @@ if [ -f "$PWD/ci/nk_ad.c" ]; then
   NK_SKIP_ADB=1 NK=1 NK_CONFIG="$NK_SELF_CFG" \
   "$CLANG" -x c --target=aarch64-linux-android21 --sysroot="$SYS" \
            "-resource-dir=$TC/lib/clang/21" -O2 -fPIE -fno-ident \
-           -fvisibility=hidden "-DNK_AD_SYM=$NK_AD_SYM" $NK_AD_DEF \
+           -fvisibility=hidden "-DNK_AD_SYM=$NK_AD_SYM" \
+           "-DNK_AD_QUIET=${NK_AD_QUIET:-1}" $NK_AD_DEF \
            "${NK_SELF_PLUG[@]}" \
            -c "$PWD/ci/nk_ad.c" -o "$NK_AD_OBJ" || { echo "!! nk_ad 编译失败"; exit 1; }
   SRCS+=("$NK_AD_OBJ")
