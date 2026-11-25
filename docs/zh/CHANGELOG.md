@@ -235,3 +235,31 @@
 |---|---|---|---|
 | 编出来的程序卡死不退出 / 误判 97 | 入口检查每 32 次函数调用跑一次全量深检：哈希整段 `.text`、读 4 遍 maps、遍历 971 个进程 | 入口 1 秒硬闸；整段哈希只在 `NK_AD_STRICT=1` 跑；maps/comm/socket/模块哈希分别 5/5/3/30 秒限频 | `loop` 5/5 rc=0，user CPU 0.14 s；牵引 rc=97 |
 | 9 MB 源码编出 230 MB | 7 pass 作用在超大 TU（imgui / 预处理 9.7 MB 的 main.cpp） | 大 TU 四档降级（>4 MB → 2 pass；>1.2 MB → 3 pass；>400 KB → 7 pass） | 242,095,960 B → 5,986,488 B |
+
+## 阶段 15.7 · v12.12：nk_ad 自混淆（常量加密 + MBA）+ 隐身 + 累积升级
+
+之前为了让 `reason=` 不再解成空串，`nk_ad.c` 是**零混淆**编译的（`nk-self-off.toml`），代价是二进制里 `nk_ad` 明文 110 处。这一轮把它换回自混淆，并用单 pass A/B 把「哪些 pass 能作用在自己身上」定死。
+
+| case | 作用于 nk_ad 的 pass | 产物 | 真机 3 次 |
+|---|---|---|---|
+| c1 | 全关 | 182,736 B | `rc=0` ×3 |
+| c2 | `constant_encryption` | 198,312 B | `rc=0` ×3 |
+| c3 | `mba` | 271,208 B | `rc=0` ×3 |
+| c4 | `function_call_obfuscate` | — | **走进判死并被 `SIGSTOP` 挂住**（连 `timeout 30` 都杀不掉） |
+| 三项全开（迭代中） | const + mba + fco | 1,586,824 B | **`rc=26`、stdout 0 字节**（判死时退出码被搅乱） |
+
+结论：`function_call_obfuscate` 与 nk_ad 的判死/间接调用路径不兼容，永久关闭；自混淆定为 **`constant_encryption` + `mba`**（`ci/nk-self-cfm.toml`，1,691 B，文件头写明禁用清单与原因）。
+
+| 指标 | 零混淆（218,048 B） | 常量加密 + MBA（206,968 B） |
+|---|---|---|
+| 正常启动 5 次 | `rc=0` ×5 | **`rc=0` ×5**（`out=564 B`、`loop done sink=900`） |
+| 被 tracer 牵引 | `rc=97` | **`rc=97`**（`nk_ad: thread traced` + 红色「请关闭你的调试工具」） |
+| `nk_ad` 明文 | 110 处 | **32 处**（且全是必须保留的判死原因串） |
+| `TracerPid` 明文 | 2 处 | 1 处 |
+| `kami` / 卡密域名 | 0 / 0 | 0 / 0 |
+| 魔数、查表、判据阈值 | 明文常量 | 全局化 + XOR 拆分 + MBA 恒等式，静态读不出原值 |
+
+同轮另外两件事：
+
+- **隐身**：`-DNK_AD_QUIET=${NK_AD_QUIET:-1}` 把 82 处 `nk_dbg` 日志串整段编掉（连 `/data/local/tmp/nk_ad.log` 路径一起消失）。
+- **累积升级**：单个完整性判据只记日志，但 60 秒窗口内命中 **≥2 个不同判据**即升级硬杀（`nk_int_sig()`，FNV-1a 位图去重）。
