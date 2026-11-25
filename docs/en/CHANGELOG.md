@@ -235,3 +235,31 @@ Fix: the watchdog polls `TracerPid` from `/proc/<pid>/status` every 300 ms and c
 |---|---|---|---|
 | Built binary hangs / false 97 | Entry check ran a full deep scan every 32 function calls: hashing the whole `.text`, reading `maps` 4x, walking 971 processes | 1 s hard gate on the entry check; whole-`.text` hash only under `NK_AD_STRICT=1`; maps/comm/socket/module-hash limited to 5/5/3/30 s | `loop` 5/5 rc=0, 0.14 s user CPU; traced rc=97 |
 | 9 MB source -> 230 MB binary | 7 passes applied to very large TUs (imgui, 9.7 MB preprocessed main.cpp) | Four-tier size downgrade (>4 MB -> 2 passes; >1.2 MB -> 3; >400 KB -> 7) | 242,095,960 B -> 5,986,488 B |
+
+## Phase 15.7 · v12.12: nk_ad self-obfuscation (constant encryption + MBA) with quiet logging and signal accumulation
+
+To stop the `reason=` string from decrypting to an empty string, `nk_ad.c` had been compiled with **zero passes** (`nk-self-off.toml`) — which left 110 plaintext `nk_ad` occurrences in the binary. This round restores self-obfuscation and pins down, via single-pass A/B, which passes are safe to apply to the guard itself.
+
+| case | passes applied to nk_ad | artifact | on-device, 3 runs |
+|---|---|---|---|
+| c1 | none | 182,736 B | `rc=0` ×3 |
+| c2 | `constant_encryption` | 198,312 B | `rc=0` ×3 |
+| c3 | `mba` | 271,208 B | `rc=0` ×3 |
+| c4 | `function_call_obfuscate` | — | **enters the kill path and is left `SIGSTOP`-ped** (even `timeout 30` cannot reap it) |
+| all three (intermediate) | const + mba + fco | 1,586,824 B | **`rc=26`, 0 bytes on stdout** (exit code mangled on the kill path) |
+
+Conclusion: `function_call_obfuscate` is incompatible with the guard's kill/indirect-call paths and stays disabled; self-obfuscation is fixed at **`constant_encryption` + `mba`** (`ci/nk-self-cfm.toml`, 1,691 B, with the disabled list and the reasons in the header).
+
+| metric | zero passes (218,048 B) | const + MBA (206,968 B) |
+|---|---|---|
+| 5 normal runs | `rc=0` ×5 | **`rc=0` ×5** (`out=564 B`, `loop done sink=900`) |
+| traced run | `rc=97` | **`rc=97`** (`nk_ad: thread traced` + red "close your debugging tools" banner) |
+| plaintext `nk_ad` | 110 | **32** (all of them kill-reason strings that must stay) |
+| plaintext `TracerPid` | 2 | 1 |
+| `kami` / license host | 0 / 0 | 0 / 0 |
+| magic numbers, tables, thresholds | plaintext constants | globalized + XOR-split + MBA identities, not readable statically |
+
+Two further changes in the same round:
+
+- **Quiet build**: `-DNK_AD_QUIET=${NK_AD_QUIET:-1}` drops all 82 `nk_dbg` format strings (including the `/data/local/tmp/nk_ad.log` path).
+- **Signal accumulation**: a single integrity signal is log-only, but **two different signals within 60 s** escalate to a hard kill (`nk_int_sig()`, FNV-1a bitmask dedup).
