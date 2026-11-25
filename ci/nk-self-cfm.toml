@@ -1,0 +1,87 @@
+# nk_ad.c 自混淆配置（v12.12）
+# 只开三项：常量加密（藏魔数/查表）、函数调用混淆（藏 call 目标）、MBA（藏算术语义）。
+# 明确不开：string_encryption（曾把判死原因串解成空）、bcf/split/indirect/flattening
+# （在 nk_ad 上造成过构造函数 usleep 死循环与 worker 空指针间接调用）。
+# 插件侧用 NK_SKIP_ADB=1，避免给 nk_ad 自己插 __nk_ad_check 调用。
+[global]
+preset = ""
+seed = "0xDEADBEEF"
+verbose = false
+
+[passes.string_encryption]
+enabled = false
+probability = 100
+anti_dump = true
+force_content = [".*"]
+
+[passes.constant_encryption]
+enabled = true
+iterations = 2
+share_count = 6
+feistel = false
+globalize = true
+globalize_prob = 100
+substitute_xor = true
+substitute_xor_prob = 100
+skip_value = ["^0x0$"]
+
+[passes.substitution]
+enabled = false
+probability = 60
+iterations = 1
+
+[passes.bcf]
+enabled = false
+probability = 60
+iterations = 1
+complexity = 6
+entropy_chain = false
+junk_asm = false
+nested = false
+create_func = false
+
+[passes.split_blocks]
+enabled = false
+splits = 3
+stack_confusion = false
+
+[passes.indirect_branch]
+enabled = false
+use_stack = true
+enc_jump_target = true
+
+[passes.flattening]
+enabled = false
+probability = 100
+
+[passes.anti_debugging]
+enabled = false
+probability = 100
+
+[passes.mba]
+enabled = true
+probability = 60
+layers = 3
+heuristic = true
+
+[passes.chaos_state_machine]
+enabled = false
+
+[passes.vector_obfuscation]
+enabled = false
+
+[passes.function_wrapper]
+enabled = false
+
+[passes.function_call_obfuscate]
+enabled = true
+
+[passes.anti_hooking]
+enabled = false
+
+[passes.anti_class_dump]
+enabled = false
+
+[passes.objc]
+enabled = false
+
