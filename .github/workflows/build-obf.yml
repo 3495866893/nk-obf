@@ -416,6 +416,7 @@ jobs:
             [ -f ci/nk-min.toml ] && cp ci/nk-min.toml nk/config/presets/nk-min.toml && echo "超轻配置 -> presets/nk-min.toml"
             [ -f ci/nk-self-off.toml ] && cp ci/nk-self-off.toml nk/config/presets/nk-self-off.toml
             [ -f ci/nk-self-cfm.toml ] && cp ci/nk-self-cfm.toml nk/config/presets/nk-self-cfm.toml
+            [ -f ci/nk-self-cfm-str.toml ] && cp ci/nk-self-cfm-str.toml nk/config/presets/nk-self-cfm-str.toml
           fi
           export SRC_DIR="${{ github.event.inputs.src_dir || 'proj' }}"
           export SRC_FILES="${{ github.event.inputs.src_files || 'mian.cpp defense.c' }}"
