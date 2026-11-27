@@ -835,7 +835,7 @@ private fun SetPage(
             )
             Spacer(Modifier.height(14.dp))
             Text(
-                "NKBuild 手机版 v1.0.5（versionCode 25）\n" +
+                "NKBuild 手机版 v1.0.6（versionCode 26）\n" +
                     "NK = LLVM 21 Pass 插件（IR 级），配合 nk_ad 运行时看门狗\n" +
                     "构建：GitHub Actions · 产物：AArch64 PIE\n" +
                     "开源：github.com/3495866893/nk-obf",
