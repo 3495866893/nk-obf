@@ -4,10 +4,21 @@ seed = "0xDEADBEEF"
 verbose = false
 
 [passes.string_encryption]
-enabled = false
+enabled = true
+probability = 100
+anti_dump = true
+force_content = [".*"]
 
 [passes.constant_encryption]
-enabled = false
+enabled = true
+iterations = 2
+share_count = 6
+feistel = false
+globalize = true
+globalize_prob = 100
+substitute_xor = true
+substitute_xor_prob = 100
+skip_value = ["^0x0$"]
 
 [passes.substitution]
 enabled = false
@@ -32,7 +43,8 @@ probability = 100
 enabled = false
 
 [passes.chaos_state_machine]
-enabled = false
+enabled = true
+probability = 100
 
 [passes.vector_obfuscation]
 enabled = false
