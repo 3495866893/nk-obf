@@ -151,6 +151,18 @@ Wiring: `nk_tool_scan(!early)` now runs `nk_seg_verify → nk_struct_scan → nk
 
 ---
 
+### Phase 15.8 · 1.0.6: size, hang, false positives
+
+| Problem | Symptom | Root cause | Fix | Measured |
+|---|---|---|---|---|
+| Output size | a 9 MB project produced 230.9 MB | 7 passes over huge TUs (imgui 941 KB preprocessed, main.cpp 9.7 MB preprocessed) inflate 20–30× | four-tier downgrade `nk-min`(2 passes) / `nk-light`(3) / `nk-nofold`(7) / user config, chosen by preprocessed size | 242,095,960 B → **5,986,488 B** |
+| Hang | CPU pegged, process never exits | `NK_AD_SYM` ran a full deep scan every 32 calls (3.4 MB text hash + 4 maps reads + 971-process comm scan) | 1 s entry gate + per-probe rate limits (maps 5 s / comm 5 s / hash 30 s; full hash only under `NK_AD_STRICT=1`) | 12.20 s real / **0.14 s user** |
+| False positive | `emulation score>=3` on a normal device | a single integrity signal killed the process | single signal only logs; **two distinct** signals within 60 s escalate | 5/5 `rc=0`, traced `rc=97` |
+| Watchdog self-kill | `traced state` | `PTRACE_SEIZE` leaves the parent in `State: t` | watchdog polls `TracerPid` every 300 ms instead of ptracing | banner + normal output |
+| Stealth attempt (failed) | string_encryption on → 5/5 `rc=124`, 0 bytes | `string_encryption` on `nk_ad.c` (with const/mba/fco) hangs in constructors | reverted to `nk-self-cfm.toml` (constant encryption + MBA + call obfuscation); candidate kept and marked as failed | 32 plaintext `nk_ad` strings after revert |
+
+Release **v1.0.6** (exe 14,002,496 B · apk 10,460,373 B).
+
 ## Numbers at a glance
 
 | Metric | Value |
@@ -228,38 +240,3 @@ Fix: the watchdog polls `TracerPid` from `/proc/<pid>/status` every 300 ms and c
 - Device regression (RMX3888 / Android 16): 8 passes + anti-debug 5/5 `rc=0`; anti-debug only 3/3 `rc=0`; both exit 97 when traced.
 - Per-pass runtime matrix (all 16 passes compiled alone and run 3x on device): **all `rc=0`** — no single pass crashes on its own.
 - Known defect: with **all 16 passes** enabled (`all16`) the `projects/loop` binary dies with `SIGSEGV` (`pc=0`, null indirect call in a worker thread). The combination bisect shows that dropping any of `string_encryption` / `substitution` / `indirect_branch` / `anti_debugging` removes the crash — a multi-pass interaction; the default preset (8 core passes) is unaffected.
-
-## Phase 15.6 · Two big issues: hang and size (2026-11-25)
-
-| Issue | Root cause | Fix | Measured |
-|---|---|---|---|
-| Built binary hangs / false 97 | Entry check ran a full deep scan every 32 function calls: hashing the whole `.text`, reading `maps` 4x, walking 971 processes | 1 s hard gate on the entry check; whole-`.text` hash only under `NK_AD_STRICT=1`; maps/comm/socket/module-hash limited to 5/5/3/30 s | `loop` 5/5 rc=0, 0.14 s user CPU; traced rc=97 |
-| 9 MB source -> 230 MB binary | 7 passes applied to very large TUs (imgui, 9.7 MB preprocessed main.cpp) | Four-tier size downgrade (>4 MB -> 2 passes; >1.2 MB -> 3; >400 KB -> 7) | 242,095,960 B -> 5,986,488 B |
-
-## Phase 15.7 · v12.12: nk_ad self-obfuscation (constant encryption + MBA) with quiet logging and signal accumulation
-
-To stop the `reason=` string from decrypting to an empty string, `nk_ad.c` had been compiled with **zero passes** (`nk-self-off.toml`) — which left 110 plaintext `nk_ad` occurrences in the binary. This round restores self-obfuscation and pins down, via single-pass A/B, which passes are safe to apply to the guard itself.
-
-| case | passes applied to nk_ad | artifact | on-device, 3 runs |
-|---|---|---|---|
-| c1 | none | 182,736 B | `rc=0` ×3 |
-| c2 | `constant_encryption` | 198,312 B | `rc=0` ×3 |
-| c3 | `mba` | 271,208 B | `rc=0` ×3 |
-| c4 | `function_call_obfuscate` | — | **enters the kill path and is left `SIGSTOP`-ped** (even `timeout 30` cannot reap it) |
-| all three (intermediate) | const + mba + fco | 1,586,824 B | **`rc=26`, 0 bytes on stdout** (exit code mangled on the kill path) |
-
-Conclusion: `function_call_obfuscate` is incompatible with the guard's kill/indirect-call paths and stays disabled; self-obfuscation is fixed at **`constant_encryption` + `mba`** (`ci/nk-self-cfm.toml`, 1,691 B, with the disabled list and the reasons in the header).
-
-| metric | zero passes (218,048 B) | const + MBA (206,968 B) |
-|---|---|---|
-| 5 normal runs | `rc=0` ×5 | **`rc=0` ×5** (`out=564 B`, `loop done sink=900`) |
-| traced run | `rc=97` | **`rc=97`** (`nk_ad: thread traced` + red "close your debugging tools" banner) |
-| plaintext `nk_ad` | 110 | **32** (all of them kill-reason strings that must stay) |
-| plaintext `TracerPid` | 2 | 1 |
-| `kami` / license host | 0 / 0 | 0 / 0 |
-| magic numbers, tables, thresholds | plaintext constants | globalized + XOR-split + MBA identities, not readable statically |
-
-Two further changes in the same round:
-
-- **Quiet build**: `-DNK_AD_QUIET=${NK_AD_QUIET:-1}` drops all 82 `nk_dbg` format strings (including the `/data/local/tmp/nk_ad.log` path).
-- **Signal accumulation**: a single integrity signal is log-only, but **two different signals within 60 s** escalate to a hard kill (`nk_int_sig()`, FNV-1a bitmask dedup).
