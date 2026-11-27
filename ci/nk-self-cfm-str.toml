@@ -7,6 +7,9 @@
 # 明确不开：bcf/split/indirect/flattening
 # （在 nk_ad 上造成过构造函数 usleep 死循环与 worker 空指针间接调用）。
 # 插件侧用 NK_SKIP_ADB=1，避免给 nk_ad 自己插 __nk_ad_check 调用。
+# ⚠ 实验失败（2026-11-28）：真机 5/5 rc=124、输出 0 字节，构造函数阶段卡死。
+#   结论：string_encryption 不能作用在 nk_ad.c 上（无论 anti_dump 开关）；
+#   保留本文件仅作记录，构建脚本已回退到 nk-self-cfm.toml。
 [global]
 preset = ""
 seed = "0xDEADBEEF"
