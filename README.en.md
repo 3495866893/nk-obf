@@ -24,14 +24,14 @@ NK is an **IR-level obfuscation pass plugin** for **LLVM 21** (`libNk.so`) that,
 
 | Artifact | Location | Size |
 |---|---|---|
-| Android APK | Release `v1.0.5` → `NKBuild-mobile-1.0.5-kami.apk` | 10.46 MB |
-| Desktop EXE | Release `v1.0.5` → `NKBuild-1.0.5-win64.exe` | 14.0 MB |
+| Android APK | Release `v1.0.6` → `NKBuild-mobile-1.0.6-kami.apk` | 10.46 MB |
+| Desktop EXE | Release `v1.0.6` → `NKBuild-1.0.6-win64.exe` | 14.0 MB |
 
 Checksums (`sha256sum` / `Get-FileHash -Algorithm SHA256`):
 
 ```
-239B7BE199EC6F5B46BDBA634E2B98C326987230D15045F1B2866E6D4E276D8C  NKBuild-mobile-1.0.5-kami.apk
-3242CE4B439C4E1EB4876553E68F99396A9ADA74F77E239CDDD168F786AD82F7  NKBuild-1.0.5-win64.exe
+56E29489D00FE9813128C55DA371F401FE8CBDE204C07C84D6843F01C07CC5BE  NKBuild-mobile-1.0.6-kami.apk
+308DABCB7947C22B25B018B32C36BFBBCF18BC40B1791B7D631BC987B3B08833  NKBuild-1.0.6-win64.exe
 ```
 
 | Example obfuscated binary | Release `nk-builds` → `lucifer` | 21,145,056 B |
@@ -83,7 +83,7 @@ explanation lives in [LICENSE-NOTICE.md](LICENSE-NOTICE.md).
 
 ## Version
 
-Current release **v1.0.5** (critical fix: self-kill in anti-debug; `v1.0.2` and `v1.0` remain available). The full history — with root cause and fix for every bug — is in the [CHANGELOG](docs/en/CHANGELOG.md).
+Current release **v1.0.6** (output size 230 MB → 5.99 MB, anti-debug hang and false positives fixed; `v1.0.5`, `v1.0.2`, `v1.0` remain available). The full history — with root cause and fix for every bug — is in the [CHANGELOG](docs/en/CHANGELOG.md).
 
 ## Contributors
 
