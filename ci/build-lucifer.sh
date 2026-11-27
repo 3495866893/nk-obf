@@ -90,9 +90,10 @@ if [ -f "$PWD/ci/nk_ad.c" ]; then
   # nk_ad.c 自己也过一遍混淆（字符串加密 + 常量加密 + 指令替换 + 虚假控制流 +
   # 块分割 + 间接跳转 + 反调试），但用 nk-nofold 配置跳过 flattening（大 TU 上会炸内存）。
   # NK_SKIP_ADB=1 让 Pass 不给这个 TU 自己插 __nk_ad_check 调用 —— 否则自己调自己。
-  # 优先用 nk-self-cfm-str.toml（常量加密 + 函数调用混淆 + MBA + 字符串加密，anti_dump 关）；bcf 与 indirect_branch
+  # 优先用 nk-self-cfm.toml（常量加密 + 函数调用混淆 + MBA）；
+# 试过再加 string_encryption（nk-self-cfm-str.toml）→ 真机 5/5 挂死（0 字节输出、ctor 卡住），已回退。；bcf 与 indirect_branch
   # 会把 nk_ad.c 里内联 svc 的自省逻辑编成不可达或死循环，导致启动零输出卡死。
-  NK_SELF_CFG="$PWD/nk/config/presets/nk-self-cfm-str.toml"
+  NK_SELF_CFG="$PWD/nk/config/presets/nk-self-cfm.toml"
   [ -f "$NK_SELF_CFG" ] || NK_SELF_CFG="$PWD/nk/config/presets/nk-nofold.toml"
   [ -f "$NK_SELF_CFG" ] || NK_SELF_CFG="$PWD/nk/config/presets/nk-light.toml"
   NK_SELF_PLUG=()
