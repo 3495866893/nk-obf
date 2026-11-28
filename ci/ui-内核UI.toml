@@ -10,15 +10,7 @@ anti_dump = true
 force_content = [".*"]
 
 [passes.constant_encryption]
-enabled = true
-iterations = 2
-share_count = 6
-feistel = false
-globalize = true
-globalize_prob = 100
-substitute_xor = true
-substitute_xor_prob = 100
-skip_value = ["^0x0$"]
+enabled = false
 
 [passes.substitution]
 enabled = false
@@ -40,8 +32,7 @@ enabled = true
 probability = 100
 
 [passes.mba]
-enabled = true
-probability = 100
+enabled = false
 
 [passes.chaos_state_machine]
 enabled = false
