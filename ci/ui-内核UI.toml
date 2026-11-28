@@ -40,11 +40,11 @@ enabled = true
 probability = 100
 
 [passes.mba]
-enabled = false
-
-[passes.chaos_state_machine]
 enabled = true
 probability = 100
+
+[passes.chaos_state_machine]
+enabled = false
 
 [passes.vector_obfuscation]
 enabled = false
